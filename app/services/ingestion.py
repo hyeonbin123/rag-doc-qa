@@ -18,7 +18,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.chunk import Chunk
 from app.models.document import Document
-from app.services.chunking import build_embedding_text, chunk_markdown
+from app.services.chunking import (
+    CHUNKER_VERSION,
+    build_embedding_text,
+    chunk_markdown,
+    strip_heading_anchor,
+)
 from app.services.embedding import EmbeddingService
 
 GITHUB_API = "https://api.github.com"
@@ -59,7 +64,7 @@ def extract_title(raw_text: str, fallback: str) -> str:
     for line in raw_text.splitlines():
         stripped = line.strip()
         if stripped.startswith("# "):
-            return stripped[2:].strip()
+            return strip_heading_anchor(stripped[2:].strip())
     return fallback
 
 
@@ -103,7 +108,9 @@ async def run_ingestion(
         results = await asyncio.gather(*(fetch(p) for p in paths))
 
     for path, raw_text in results:
-        content_hash = hashlib.sha256(raw_text.encode("utf-8")).hexdigest()
+        # The chunker version is part of the key: otherwise a chunking change would leave
+        # every unchanged doc "skipped" and silently keep its stale chunks.
+        content_hash = hashlib.sha256(f"chunker-v{CHUNKER_VERSION}\n{raw_text}".encode()).hexdigest()
 
         existing = await db.scalar(select(Document).where(Document.source_path == path))
 

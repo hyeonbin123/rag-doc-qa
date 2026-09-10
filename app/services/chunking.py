@@ -71,9 +71,63 @@ class ChunkResult:
     token_count: int
 
 
+CHUNKER_VERSION = 3
+
+_HEADING_ANCHOR_RE = re.compile(r"\s*\{\s*#[^}]*\}\s*$")
+_INCLUDE_DIRECTIVE_RE = re.compile(r"\{\*.*?\*\}")
+_ADMONITION_RE = re.compile(r"^\s*/{3,}\s*[\w-]*\s*(?:\|\s*(?P<label>.*))?$")
+_TITLED_TERM_RE = re.compile(r"<(dfn|abbr)\s+title=([\"'])(.*?)\2[^>]*>(.*?)</\1>")
+_HTML_TAG_RE = re.compile(r"</?[a-zA-Z][^>]*>")
+
+
+def strip_heading_anchor(text: str) -> str:
+    return _HEADING_ANCHOR_RE.sub("", text)
+
+
+def _strip_outside_inline_code(line: str) -> str:
+    parts = line.split("`")
+    for i in range(0, len(parts), 2):  # even-indexed parts sit outside inline code spans
+        parts[i] = _INCLUDE_DIRECTIVE_RE.sub("", parts[i])
+        parts[i] = _TITLED_TERM_RE.sub(r"\4 (\3)", parts[i])
+        parts[i] = _HTML_TAG_RE.sub("", parts[i])
+    return "`".join(parts)
+
+
+def clean_markdown(raw_text: str) -> str:
+    """Strip MkDocs markup that carries no meaning but dilutes embeddings.
+
+    Removes heading anchor ids, code-include directives, admonition delimiters
+    (keeping their labels) and HTML tags. `<dfn>`/`<abbr>` are the exception:
+    their title holds a real definition, so they become "term (definition)".
+    Fenced code passes through verbatim.
+    """
+    cleaned: list[str] = []
+    in_code_block = False
+    for line in raw_text.splitlines():
+        if _FENCE_RE.match(line):
+            in_code_block = not in_code_block
+            cleaned.append(line)
+            continue
+        if in_code_block:
+            cleaned.append(line)
+            continue
+
+        if line.lstrip().startswith("#"):
+            line = strip_heading_anchor(line)
+
+        admonition = _ADMONITION_RE.match(line)
+        if admonition:
+            if admonition.group("label"):
+                cleaned.append(admonition.group("label").strip())
+            continue
+
+        cleaned.append(_strip_outside_inline_code(line))
+    return "\n".join(cleaned)
+
+
 def chunk_markdown(raw_text: str) -> list[ChunkResult]:
     """Chunk a single markdown document into ChunkResult entries."""
-    annotated = _annotate_heading_paths(raw_text)
+    annotated = _annotate_heading_paths(clean_markdown(raw_text))
     if not annotated:
         return []
 

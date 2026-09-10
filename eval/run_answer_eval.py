@@ -30,6 +30,8 @@ JUDGE_SCHEMA = {
     "properties": {
         "faithfulness_score": {
             "type": "integer",
+            "minimum": 1,
+            "maximum": 5,
             "description": "1-5, is the answer supported by the given context?",
         },
         "hallucinated": {
@@ -38,6 +40,8 @@ JUDGE_SCHEMA = {
         },
         "correctness_score": {
             "type": "integer",
+            "minimum": 1,
+            "maximum": 5,
             "description": "1-5, how well does the answer match the reference answer?",
         },
     },
@@ -65,7 +69,7 @@ def _build_judge_prompt(question: str, context: str, answer: str, reference: str
         f"Context passages the model was given:\n{context}\n\n"
         f"Model's answer:\n{answer}\n\n"
         f"Reference answer:\n{reference}\n\n"
-        "Score the model's answer."
+        "Score the model's answer. Both scores use a 1-5 scale, where 1 is worst and 5 is best."
     )
 
 
@@ -100,8 +104,15 @@ async def judge_with_ollama(settings, prompt: str) -> dict:
 async def judge_answer(settings, question: str, context: str, answer: str, reference: str) -> dict:
     prompt = _build_judge_prompt(question, context, answer, reference)
     if settings.generation_provider == "ollama":
-        return await judge_with_ollama(settings, prompt)
-    return await judge_with_anthropic(settings, prompt)
+        result = await judge_with_ollama(settings, prompt)
+    else:
+        result = await judge_with_anthropic(settings, prompt)
+
+    # An out-of-range score would silently skew every average, so fail loudly instead.
+    for key in ("faithfulness_score", "correctness_score"):
+        if not 1 <= result[key] <= 5:
+            raise ValueError(f"judge returned {key}={result[key]}, outside the 1-5 scale")
+    return result
 
 
 async def evaluate_question(
@@ -177,6 +188,16 @@ async def main(top_k: int, tag: str, skip_judge: bool) -> None:
         "| Avg keyword coverage | Avg faithfulness (1-5) | Avg correctness (1-5) | Hallucinated |",
         "|---|---|---|---|",
         metrics_row,
+        "",
+        "## Per-question",
+        "",
+        "| id | coverage | faithfulness | correctness | hallucinated |",
+        "|---|---|---|---|---|",
+        *(
+            f"| {r['id']} | {r['keyword_coverage']:.2f} | {r['faithfulness_score']} "
+            f"| {r['correctness_score']} | {r['hallucinated']} |"
+            for r in results
+        ),
         "",
         "## Worst questions (lowest keyword coverage)",
         "",
