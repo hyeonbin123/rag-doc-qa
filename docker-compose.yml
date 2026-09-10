@@ -22,6 +22,12 @@ services:
       db:
         condition: service_healthy
     env_file: .env
+    environment:
+      # .env targets an app run on the host; inside the container "localhost" is the container itself.
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-raguser}:${POSTGRES_PASSWORD:-ragpass}@db:5432/${POSTGRES_DB:-ragdb}
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "8000:8000"
     command: >

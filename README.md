@@ -81,15 +81,17 @@ docker compose up --build
 ```
 DB 헬스체크 통과 후 API가 마이그레이션(`alembic upgrade head`)을 자동 적용하고 `http://localhost:8000`에서 뜬다. Swagger UI: `http://localhost:8000/docs`.
 
+`.env`는 호스트에서 실행하는 기준(`localhost`)으로 그대로 두면 된다. compose가 API 컨테이너의 `DATABASE_URL`은 `db` 서비스로, `OLLAMA_BASE_URL`은 `host.docker.internal:11434`(호스트에서 실행 중인 Ollama)로 덮어쓴다. 임베딩 모델은 빌드할 때 이미지에 넣어 두므로 실행 중에는 HuggingFace에 접속하지 않고, torch는 CPU 빌드를 써서 이미지 크기는 약 2.2GB다.
+
 ### 3. 문서 수집 (최초 1회)
 ```bash
-docker compose exec api uv run python -m scripts.ingest_fastapi_docs
+docker compose exec api python -m scripts.ingest_fastapi_docs
 ```
-FastAPI 공식 문서(GitHub `tiangolo/fastapi`, `docs/en/docs/**/*.md`)를 가져와 청킹·임베딩 후 DB에 적재한다. 재실행해도 내용이 바뀐 문서만 다시 처리한다(content hash 기반 idempotent). 해시에 청커 버전(`CHUNKER_VERSION`)이 포함되어 있어서, 청킹 로직을 바꾸고 버전을 올리면 전체 문서가 자동으로 다시 처리된다.
+FastAPI 공식 문서(GitHub `tiangolo/fastapi`, `docs/en/docs/**/*.md`)를 가져와 청킹·임베딩 후 DB에 적재한다. 재실행해도 내용이 바뀐 문서만 다시 처리한다(content hash 기반 idempotent). 해시에 청커 버전(`CHUNKER_VERSION`)이 포함되어 있어서, 청킹 로직을 바꾸고 버전을 올리면 전체 문서가 자동으로 다시 처리된다. 컨테이너 안에서는 `uv run` 대신 `python -m`으로 실행한다. `uv run`은 실행할 때마다 dev 의존성까지 설치하려고 하기 때문이다.
 
 ### 4. 데모 사용자 생성 및 질문
 ```bash
-docker compose exec api uv run python -m scripts.seed_demo_user demo@example.com password123
+docker compose exec api python -m scripts.seed_demo_user demo@example.com password123
 
 curl -X POST localhost:8000/auth/login \
   -d "username=demo@example.com&password=password123"
