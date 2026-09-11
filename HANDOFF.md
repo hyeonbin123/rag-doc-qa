@@ -1,7 +1,12 @@
 # HANDOFF
 
 ## Goal
-자기소개서용 포트폴리오 프로젝트(RAG 문서 QA API). 평가셋 확장·검색 개선(2단계)과 Docker 전체 스택 검증(3단계)을 마친 뒤, 4단계로 하이브리드 검색(dense + Postgres 전문 검색, RRF)을 실험했다. 측정해 보니 평균이 더 나빠서 기본값은 dense로 유지했다. 이어서 5단계로 GitHub Actions CI(ruff + pytest)를 추가했다.
+자기소개서용 포트폴리오 프로젝트(RAG 문서 QA API). 진행한 단계:
+- 2단계: 평가셋 확장과 검색 개선
+- 3단계: Docker 전체 스택 검증
+- 4단계: 하이브리드 검색(dense + Postgres 전문 검색, RRF) 실험. 측정해 보니 평균이 더 나빠서 기본값은 dense로 유지
+- 5단계: GitHub Actions CI(ruff + pytest) 추가
+- 6단계: 어휘 순위를 BM25로 바꾸고 튜닝 전용 검증셋을 분리해 다시 측정. 미리 정한 규칙(검증셋과 테스트셋 모두에서 dense보다 나아야 함)을 통과하지 못해 기본값은 여전히 dense
 
 ## Done
 - FastAPI 앱(auth/documents/query/logs/health), SQLAlchemy 모델 4종, Alembic 마이그레이션(pgvector + HNSW), 수집 파이프라인, 평가 하네스
@@ -23,23 +28,29 @@
   - `chunks.content_tsv`: Postgres가 관리하는 생성 컬럼(`to_tsvector('english', heading_path || content)`) + GIN 인덱스 (마이그레이션 0002). DB가 계산하므로 수집 코드는 바꾸지 않음
   - `hybrid_search` / `retrieve()` (`app/services/retrieval.py`), `RETRIEVAL_MODE` 설정(기본 `dense`), API와 두 평가 스크립트의 `--mode` 옵션
   - 30문항 결과: dense MRR 0.933(v3와 문항 단위까지 동일하므로 리팩터링으로 인한 동작 변화 없음) vs hybrid 0.898, Hit@10은 0.97 → 1.00. q017은 9위까지 올라오지만 q001, q009, q003이 밀림
-  - 원인: `ts_rank`에 IDF가 없어서 "fastapi"(청크의 57%), "parameter"(28%) 같은 흔한 단어가 어휘 순위를 흐림. q009는 `release-notes.md`가 어휘 검색 1위였음. q017에서는 어휘 검색이 settings.md를 1위로 찾았지만 RRF를 거치며 희석됨
-  - 기본값은 dense로 유지. 30문항에 맞춘 가중치 튜닝은 평가셋 과적합이 되므로 하지 않음
-- **CI (5단계)**: `.github/workflows/ci.yml`. push와 PR마다 pgvector 서비스 컨테이너를 띄우고 `uv sync --frozen` → ruff → pytest (Python 3.11, `astral-sh/setup-uv@v10.1.0`, `actions/checkout@v7`. setup-uv는 `v10` 같은 주 버전 태그를 만들지 않으므로 정확한 릴리스 태그로 고정해야 함. 첫 CI 실행은 이 때문에 Set up job 단계에서 실패했음). 서비스 컨테이너는 일부러 `ragdb`만 만들어서, 새로 클론한 환경처럼 테스트 DB가 없는 상태를 매번 검증하게 함
-  - `tests/conftest.py`가 `ragdb_test` 데이터베이스와 `vector`/`pgcrypto` 확장이 없으면 직접 만들도록 수정. 기존 README 절차(`docker compose up -d db` → `uv run pytest`)는 새 클론에서 "database ragdb_test does not exist"로 모든 통합 테스트가 실패하는 문서 버그였음
-  - README에 CI 배지 추가
+  - 원인으로 본 것: `ts_rank`에 IDF가 없어서 "fastapi"(청크의 57%), "parameter"(28%) 같은 흔한 단어가 어휘 순위를 흐림
+- **CI (5단계)**: `.github/workflows/ci.yml`. push와 PR마다 pgvector 서비스 컨테이너를 띄우고 `uv sync --frozen` → ruff → pytest (Python 3.11, `astral-sh/setup-uv@v10.1.0`, `actions/checkout@v7`. setup-uv는 `v10` 같은 주 버전 태그를 만들지 않으므로 정확한 릴리스 태그로 고정해야 함). 서비스 컨테이너는 일부러 `ragdb`만 만들어서, 새로 클론한 환경처럼 테스트 DB가 없는 상태를 매번 검증하게 함
+  - `tests/conftest.py`가 `ragdb_test` 데이터베이스와 `vector`/`pgcrypto` 확장이 없으면 직접 만들도록 수정
+- **BM25 + 검증셋 분리 (6단계)**:
+  - `eval/qa_dev.jsonl` 32문항 신규 작성 (튜닝 전용). 테스트셋이 정답으로 쓰는 문서를 주 정답으로 삼지 않음. 경로와 키워드는 `work/check_dev_set.py`로 DB와 대조함 (work/는 gitignore)
+  - `hybrid_search`의 어휘 순위를 `ts_rank`에서 SQL로 계산하는 BM25로 교체. df는 GIN 인덱스로, tf는 tsvector 위치 개수로, 길이는 `token_count`로 계산 (k1=1.2, b=0.75). 스키마 변경 없음. `lexical_search()`로 BM25 순위만 따로 볼 수 있음
+  - RRF에 가중치 도입: `LEXICAL_WEIGHT = 0.75` (검증셋에서 {0.25, 0.5, 0.75, 1.0} 중 선택)
+  - `eval/run_retrieval_eval.py`에 `--dataset`, `--lexical-weight` 옵션 추가
+  - 결과: 검증셋 MRR dense 0.858 / BM25 hybrid 0.953, 테스트셋 dense 0.933 / BM25 hybrid 0.894 → 기본값 dense 유지. 자세한 분석(q017이 RRF 구조 때문에 밀리는 이유, 표본 크기 문제)은 README v5 절
 
 ## Files touched
 - 2단계: `app/services/chunking.py`, `app/services/ingestion.py`, `eval/qa_dataset.jsonl`, `eval/run_answer_eval.py`, `eval/reports/*`, `tests/test_chunking.py`, `README.md`
 - 3단계: `.dockerignore`, `Dockerfile`, `docker-compose.yml`, `pyproject.toml`, `uv.lock`, `README.md`
 - 4단계: `alembic/versions/0002_chunks_fulltext.py`, `app/models/chunk.py`, `app/services/retrieval.py`, `app/config.py`, `app/routers/query.py`, `eval/run_retrieval_eval.py`, `eval/run_answer_eval.py`, `tests/test_retrieval.py`, `.env.example`, `README.md`, `eval/reports/retrieval_eval_v4_*`
 - 5단계: `.github/workflows/ci.yml`, `tests/conftest.py`, `README.md`
+- 6단계: `app/services/retrieval.py`, `eval/qa_dev.jsonl`, `eval/run_retrieval_eval.py`, `tests/test_retrieval.py`, `.env.example`, `README.md`, `eval/reports/retrieval_eval_v5_*`
 
 ## Test results
-- `ruff check .` 통과, `pytest` 25개 통과 (하이브리드 테스트 3개 포함: 어휘로만 걸리는 청크가 1위로 올라오는지, 불용어만 있는 질문, 검색할 단어가 없는 질문)
-- 새 클론 조건 재현: `ragdb_test`를 삭제한 상태에서 pytest 25개 통과, 테스트 DB와 확장(pgcrypto, plpgsql, vector)이 자동으로 생성됨. 원격 CI 결과는 README 배지 또는 GitHub Actions 탭에서 확인
-- `eval/reports/retrieval_eval_v4_dense_20260911_033421.md`: Hit@3 0.97, Hit@10 0.97, MRR 0.933
-- `eval/reports/retrieval_eval_v4_hybrid_20260911_033439.md`: Hit@3 0.97, Hit@10 1.00, MRR 0.898
+- `ruff check .` 통과, `pytest` 26개 통과 (BM25 IDF 테스트 1개 추가: 흔한 단어를 반복한 청크보다 드문 단어가 든 청크가 어휘 순위 1위인지)
+- 새 클론 조건 재현(5단계): `ragdb_test`를 삭제한 상태에서 pytest 통과, 테스트 DB와 확장이 자동으로 생성됨. 원격 CI 결과는 README 배지 또는 GitHub Actions 탭에서 확인
+- 6단계 리포트 (`eval/reports/`):
+  - 검증셋: `retrieval_eval_v5_dev_dense_*` (MRR 0.858), `v5_dev_hybrid_tsrank_*` (0.953, 코드를 바꾸기 전에 측정), `v5_dev_bm25_w025/w050/w075/w100_*` (0.884 / 0.906 / 0.953 / 0.922)
+  - 테스트셋: `retrieval_eval_v5_test_bm25_w075_*` (Hit@3 0.97, Hit@10 0.97, MRR 0.894). dense 테스트셋 수치는 v4 리포트(0.933)와 같음
 - 답변 품질은 기본값이 dense 그대로라 v3 리포트가 여전히 유효함: `eval/reports/answer_eval_v3_keep_definitions_20260910_222402.md` (키워드 커버리지 0.93, 충실도 4.17, 정확도 4.73)
 - 클린 클론(`git clone` 후 `.env.example`만 복사): README 절차 그대로 빌드 → 빈 DB에 수집 155문서/915청크 → 데모 사용자 생성 → 로그인 → 인용이 붙은 답변 (3단계에서 확인)
 
@@ -47,8 +58,10 @@
 - DB 컨테이너는 Docker Desktop이 재시작되면 내려갈 수 있음 → `docker compose up -d db`로 다시 올리면 됨. 데이터는 `pgdata` 볼륨에 남아 있음
 - **Docker는 `coding\start-docker.cmd`로 시작** (로그인할 때는 작업 스케줄러의 "Start Docker Desktop (coding)"이 같은 스크립트를 자동으로 실행함). 이 PC의 Docker Desktop 4.90은 종료할 때마다(정상 종료 포함) 지울 수 없는 AF_UNIX 소켓 파일(Error 1920)을 남기고, 다음 시작 때 이를 치우다 실패하면서 "Quit / Reset to factory defaults" 오류 창을 띄움. 스크립트는 시작 전에 소켓 폴더(`%LOCALAPPDATA%\Docker\run`, `%LOCALAPPDATA%\docker-secrets-engine`)를 `%LOCALAPPDATA%\Docker\stale-sockets\`로 옮김. Claude 도구에서는 Docker Desktop을 직접 실행하지 말고 `Start-ScheduledTask -TaskName "Start Docker Desktop (coding)"`으로 띄울 것 (이렇게 띄운 Docker는 Claude의 Job 바깥에서 실행되는 것을 확인함). **"Reset to factory defaults"는 볼륨(DB)을 지우므로 누르지 말 것**
 - 청커를 고치면 `CHUNKER_VERSION`을 올리고 재수집해야 새 청크 기준으로 측정됨
+- 검색 파라미터를 바꿀 때는 `--dataset eval/qa_dev.jsonl`로만 비교하고, 테스트셋(`qa_dataset.jsonl`)은 최종 설정 하나에만 돌릴 것. 테스트셋을 보면서 고르면 v5에서 분리한 의미가 없어짐
 
 ## TODO / 미완료 작업
-- 기본값인 dense에서 q017은 여전히 실패함. 개선 후보는 IDF가 있는 BM25(예: ParadeDB의 `pg_search` 확장), 또는 튜닝 전용 검증 질문셋을 따로 만든 뒤 어휘 쪽 가중치를 조정하는 것. CI가 생겼으니 DB 이미지 교체 같은 큰 변경도 회귀를 확인하면서 진행할 수 있음
+- q017은 기본값인 dense에서도, BM25 hybrid에서도 top-10에 들지 못함. BM25 순위만 보면 1위이므로, 다음 후보는 두 목록의 후보를 합친 뒤 cross-encoder로 재정렬하는 것(예: `BAAI/bge-reranker-base`, CPU에서도 후보 40~80개 정도는 감당 가능한지 측정 필요)
+- 30문항 규모로는 방법 간 차이를 가려내기 어려움 (문항 하나가 순위 1칸 바뀌면 MRR 약 0.016). 새 질문으로 테스트셋을 늘리는 것도 필요함. 기존 두 셋은 문서를 보며 작성해서 어휘가 겹치기 쉬운 편향이 있으니, 가능하면 문서를 보지 않고 사용자 입장에서 질문을 먼저 쓰고 정답 문서를 나중에 찾는 방식으로
 - Anthropic 경로는 코드만 있고 실제로 돌려 본 적 없음 (API 크레딧 없음). 크레딧을 충전하면 `GENERATION_PROVIDER=anthropic`으로 같은 흐름을 다시 검증
 - `%LOCALAPPDATA%\Docker\stale-sockets\`에 옮겨 둔 소켓 폴더들은 Docker 동작과 무관함. 안의 파일은 0바이트라 용량 문제는 없고, 일반적인 방법으로는 지워지지 않음

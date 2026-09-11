@@ -2,6 +2,9 @@
 
 Usage:
     python -m eval.run_retrieval_eval [--top-k 10] [--tag v1_baseline] [--mode dense|hybrid]
+                                      [--dataset eval/qa_dev.jsonl] [--lexical-weight 1.0]
+
+Tune on eval/qa_dev.jsonl; eval/qa_dataset.jsonl is the held-out test set.
 """
 
 from __future__ import annotations
@@ -9,12 +12,13 @@ from __future__ import annotations
 import argparse
 import asyncio
 from datetime import UTC, datetime
+from pathlib import Path
 
 from app.config import get_settings
 from app.db.session import async_session_maker
 from app.services.embedding import get_embedding_service
-from app.services.retrieval import RetrievalMode, retrieve
-from eval.common import EvalQuestion, load_dataset, write_report
+from app.services.retrieval import LEXICAL_WEIGHT, RetrievalMode, retrieve
+from eval.common import DATASET_PATH, EvalQuestion, load_dataset, write_report
 
 
 def hit_at_k(ranked_paths: list[str], expected: list[str], k: int) -> bool:
@@ -28,9 +32,11 @@ def reciprocal_rank(ranked_paths: list[str], expected: list[str]) -> float:
     return 0.0
 
 
-async def evaluate_question(db, embedder, q: EvalQuestion, top_k: int, mode: RetrievalMode) -> dict:
+async def evaluate_question(
+    db, embedder, q: EvalQuestion, top_k: int, mode: RetrievalMode, lexical_weight: float
+) -> dict:
     query_vector = embedder.embed_query(q.question)
-    retrieved = await retrieve(db, q.question, query_vector, top_k, mode)
+    retrieved = await retrieve(db, q.question, query_vector, top_k, mode, lexical_weight)
     ranked_paths = [r.source_path for r in retrieved]
 
     return {
@@ -44,16 +50,18 @@ async def evaluate_question(db, embedder, q: EvalQuestion, top_k: int, mode: Ret
     }
 
 
-async def main(top_k: int, tag: str, mode: RetrievalMode | None) -> None:
+async def main(
+    top_k: int, tag: str, mode: RetrievalMode | None, dataset: Path, lexical_weight: float
+) -> None:
     settings = get_settings()
     mode = mode or settings.retrieval_mode
     embedder = get_embedding_service()
-    questions = load_dataset()
+    questions = load_dataset(dataset)
 
     results = []
     async with async_session_maker() as db:
         for q in questions:
-            results.append(await evaluate_question(db, embedder, q, top_k, mode))
+            results.append(await evaluate_question(db, embedder, q, top_k, mode, lexical_weight))
 
     n = len(results)
     agg = {
@@ -70,6 +78,11 @@ async def main(top_k: int, tag: str, mode: RetrievalMode | None) -> None:
         f"- embedding model: {settings.embedding_model_name}",
         f"- top_k: {top_k}",
         f"- retrieval mode: {mode}",
+    ]
+    if mode == "hybrid":
+        lines.append(f"- lexical: BM25, RRF weight {lexical_weight}")
+    lines += [
+        f"- dataset: {dataset.name}",
         f"- questions: {n}",
         "",
         "## Aggregate metrics",
@@ -102,5 +115,7 @@ if __name__ == "__main__":
     parser.add_argument("--top-k", type=int, default=10)
     parser.add_argument("--tag", default="run")
     parser.add_argument("--mode", choices=["dense", "hybrid"], default=None)
+    parser.add_argument("--dataset", type=Path, default=DATASET_PATH)
+    parser.add_argument("--lexical-weight", type=float, default=LEXICAL_WEIGHT)
     args = parser.parse_args()
-    asyncio.run(main(args.top_k, args.tag, args.mode))
+    asyncio.run(main(args.top_k, args.tag, args.mode, args.dataset, args.lexical_weight))

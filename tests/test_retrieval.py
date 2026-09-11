@@ -2,7 +2,7 @@ import pytest
 
 from app.models.chunk import Chunk
 from app.models.document import Document
-from app.services.retrieval import hybrid_search, similarity_search
+from app.services.retrieval import hybrid_search, lexical_search, similarity_search
 from tests.conftest import EMBEDDING_DIM
 
 
@@ -67,6 +67,19 @@ async def test_hybrid_search_surfaces_lexical_match_that_dense_drops(db_session)
 
     hybrid = await hybrid_search(db_session, "environment variables", query_vector, top_k=5)
     assert "environment" in hybrid[0].content
+
+
+@pytest.mark.asyncio
+async def test_lexical_search_ranks_rare_terms_above_repeated_common_ones(db_session):
+    vector = [1.0] + [0.0] * (EMBEDDING_DIM - 1)
+    await _seed_document_with_chunk(db_session, vector, "fastapi fastapi fastapi tutorial")
+    await _seed_document_with_chunk(db_session, vector, "fastapi credentials")
+    await _seed_document_with_chunk(db_session, vector, "fastapi basics")
+
+    # Without IDF the chunk repeating "fastapi" would win; BM25 weights the word that
+    # only one chunk contains far above the word every chunk contains.
+    results = await lexical_search(db_session, "fastapi credentials", top_k=5)
+    assert results[0].content == "fastapi credentials"
 
 
 @pytest.mark.asyncio
