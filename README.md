@@ -20,7 +20,12 @@ FastAPI 공식 문서를 대상으로 한 RAG(검색 증강 생성) 기반 문�
   - `ollama`(기본): 로컬 Qwen2.5-7B, 비용 0원
   - `anthropic`: Claude API, `tool_choice`로 인용 스키마 강제
 - **인증**: JWT(access/refresh)
-- **검색 모드**: `RETRIEVAL_MODE=dense`(기본) 또는 `hybrid`(dense 순위와, Postgres `tsvector`로 SQL에서 계산한 BM25 순위를 가중 RRF로 결합). hybrid는 튜닝용 검증셋에서는 앞섰지만 테스트셋에서 dense보다 낮아 기본값으로 쓰지 않음 (아래 v4, v5 참고)
+- **검색 모드**: `RETRIEVAL_MODE`로 고름.
+  - `dense`(기본)
+  - `hybrid`: dense 순위와, Postgres `tsvector`로 SQL에서 계산한 BM25 순위를 가중 RRF로 결합
+  - `rerank`: dense와 BM25 후보를 cross-encoder로 다시 채점
+
+  두 모드 모두 튜닝용 검증셋에서는 dense를 앞섰지만, 미리 정한 기준인 테스트셋 MRR에서는 dense보다 낮아 기본값으로 쓰지 않음. 테스트셋 답변 품질은 rerank가 더 좋았음 (아래 v4~v6 참고)
 - **평가**: 검색 품질(Hit@k, MRR) + 답변 품질(키워드 커버리지, LLM 판정 충실도/정확도)
 
 ## 설계 근거 (자기소개서/면접용 요약)
@@ -30,6 +35,7 @@ FastAPI 공식 문서를 대상으로 한 RAG(검색 증강 생성) 기반 문�
 - **인용을 스키마로 강제**: 프롬프트로 "인용 형식을 지켜라"고 요청하는 대신 스키마를 강제해 파싱 실패 가능성을 구조적으로 제거. Anthropic은 `tool_choice`, Ollama는 `format`(JSON 스키마 제약 디코딩)으로 같은 보장을 얻음.
 - **프로바이더별 호출 구조 차이**: 로컬 7B 모델은 JSON 스키마 제약 디코딩 상태에서 문자열 값 안의 따옴표를 제대로 이스케이프하지 못해, 코드가 포함된 답변이 첫 `"`에서 잘리는 문제가 있었음. 그래서 Ollama 경로만 **답변 생성(자유 텍스트)과 인용 추출(숫자만 담긴 스키마)을 2회 호출로 분리**함. Claude는 tool 입력 이스케이프가 안정적이라 1회 호출을 유지.
 - **평가 하네스**: 변경할 때마다 전/후를 측정해 `eval/reports/`에 커밋. 실패한 문항은 무엇이 대신 검색됐는지까지 확인한 뒤 다음 수정 방향을 정함. v5부터는 파라미터를 튜닝 전용 검증셋(32문항)에서만 고르고, 테스트셋(30문항)에는 고른 설정 하나만 돌림. 테스트셋을 보면서 고르면 그 셋에 맞춘 튜닝이 되기 때문 (아래 측정 결과 참고).
+- **재정렬(cross-encoder) 비용 관리**: 임베딩 모델(bi-encoder)은 질문과 문서를 따로 인코딩하므로 문서 쪽을 미리 색인해 둘 수 있음. 반면 cross-encoder는 질문과 후보를 함께 읽기 때문에 질문이 올 때마다 후보 하나당 모델을 한 번씩 돌려야 함. 이 PC의 CPU에서는 후보 하나에 약 60~80ms가 걸림. 그래서 품질을 재기 전에 "검색 단계 지연 중앙값 1초 이하"라는 예산부터 정하고, 후보 수는 그 안에서만 골랐음. bge-reranker-base는 후보 40개에 약 20초가 걸려 이 예산에서 제외함.
 
 ## 측정 결과 (2026-09-11, 테스트셋 30문항, v5부터 튜닝용 검증셋 32문항 추가)
 
@@ -82,6 +88,49 @@ v4에서 hybrid가 진 원인으로 `ts_rank`에 IDF가 없다는 점을 지목�
 - **해석**: 문항 하나가 1위에서 2위로 내려가면 MRR이 약 0.016 바뀜. 가중치별 곡선이 단조롭지 않고(0.884 → 0.906 → 0.953 → 0.922) 두 셋이 반대 방향을 가리키는 것으로 보아, 30문항 규모로는 dense와 hybrid의 차이를 가려내기 어려움. 두 셋을 합친 62문항 평균은 hybrid(약 0.92)가 dense(약 0.89)보다 높지만, 결과를 본 뒤 규칙을 바꾸면 검증셋을 따로 만든 의미가 없어지므로 기본값은 그대로 둠. 두 셋 모두 문서를 읽으면서 작성해서 질문과 본문의 단어가 겹치기 쉽고, 이 편향은 어휘 검색 쪽에 유리하게 작용할 수 있음.
 - **다음 후보**: 두 목록의 후보를 합친 뒤 cross-encoder로 재정렬(reranker)하면, 한 목록에만 있는 정답(q017)을 순위 합산 없이 질문과 직접 비교해 판단할 수 있음. 결론을 내리려면 새 질문으로 테스트셋 자체도 키워야 함.
 
+### Cross-encoder 재정렬 (v6, 기본값으로 채택하지 않음, 답변 품질은 개선)
+
+v5에서 q017의 정답이 BM25 순위로는 1위인데 RRF 구조 때문에 밀리는 것을 확인했음. 그래서 `RETRIEVAL_MODE=rerank`를 추가함. 두 목록의 후보를 합친 뒤, cross-encoder(`cross-encoder/ms-marco-MiniLM-L-6-v2`)가 질문과 후보 본문을 함께 읽고 다시 채점함 (`app/services/reranking.py`, `rerank_search`). 모델 호출은 CPU를 오래 쓰므로 스레드에서 실행해 이벤트 루프를 막지 않음.
+
+**측정 전에 정한 절차**
+- **지연 예산**: 검색 단계 지연 중앙값 1초 이하 (전체 응답 약 4.6초의 약 20%). 후보 40개 기준 CPU 측정값은 MiniLM-L6 약 3.3초, MiniLM-L12 약 6.5초, bge-reranker-base 약 20초였음. 그래서 모델은 MiniLM-L6으로 고정함
+- **튜닝**: 각 목록에서 가져올 후보 수만 {5, 10, 20} 중에서, 예산 안에 드는 설정끼리 검증셋 MRR로 고름. 테스트셋에는 고른 설정 하나만 돌림
+- **기본값 변경 조건**: 검증셋과 테스트셋 모두에서 MRR이 dense보다 높고, 지연이 예산 안일 것
+
+검증셋 (32문항):
+
+| 설정 | MRR | 지연 p50 | 지연 p95 |
+|---|---|---|---|
+| dense | 0.858 | 10ms | 52ms |
+| rerank, 목록당 5개 | **0.969** | 627ms | 911ms |
+| rerank, 목록당 10개 | 0.953 | 1383ms (예산 초과) | 1786ms |
+| rerank, 목록당 20개 | 0.945 | 2700ms (예산 초과) | 3480ms |
+
+테스트셋 (30문항, 목록당 5개로 1회만 실행):
+
+| 설정 | Hit@3 | Hit@10 | MRR | 지연 p50 |
+|---|---|---|---|---|
+| dense | 0.97 | 0.97 | **0.933** | 9ms |
+| rerank | **1.00** | **1.00** | 0.889 | 620ms |
+
+- **결과**: 테스트셋 MRR이 dense보다 낮으므로(0.889 < 0.933) 규칙대로 기본값은 dense를 유지함. rerank는 설정으로 켤 수 있게 남김.
+- **얻은 것**: q017이 top-10 밖에서 1위로 올라옴. 테스트셋 30문항 모두 정답 문서가 3위 안에 들어옴(Hit@3 0.97 → 1.00).
+- **잃은 것**: dense에서 1위였던 q001·q013은 3위로, q009는 2위로 내려감. 정답 문서는 여전히 3위 안에 있지만 1위가 아니게 되어 MRR이 떨어짐.
+
+**답변 품질 (참고용, 결정에는 쓰지 않음)**
+
+LLM은 top-5를 모두 읽으므로, 정답이 몇 위인지보다 top-5 안에 들었는지가 더 중요할 수 있음. 그래서 같은 날 같은 모델로 두 모드 모두 답변 평가를 돌림. dense 결과는 집계가 v3 리포트와 소수점까지 같아서, 아래 차이를 실행할 때마다 생기는 편차로 보기는 어려움.
+
+| 지표 | dense | rerank |
+|---|---|---|
+| 키워드 커버리지 | 0.93 | **1.00** |
+| 충실도 (1-5) | 4.17 | **4.27** |
+| 정확도 (1-5) | 4.73 | **4.87** |
+| 판정 모델이 환각으로 표시 | 1/30 | **0/30** |
+
+- 충실도·정확도의 합계 차이는 q017 한 문항의 변화와 크기가 같음 (충실도 1 → 4, 정확도 1 → 5). 순위가 내려간 q001·q009·q013은 두 모드의 점수가 같음 (커버리지 1.00, 충실도 4, 정확도 5).
+- **해석**: 검색 순위(MRR)로 보면 dense가, RAG 전체 결과(정답 문서가 top-5에 드는지, 답변 품질)로 보면 rerank가 나음. 차이는 사실상 q017 한 문항에서 나오고, 비용은 검색 지연 약 +0.6초임. 기준을 답변 품질로 바꾸려면 이 결과를 보고 바꿀 게 아니라, 새로 만든 테스트셋에서 미리 정한 기준으로 다시 확인해야 함.
+
 ### 답변 품질 (v3, top_k=5)
 
 | 지표 | 값 |
@@ -96,7 +145,7 @@ v4에서 hybrid가 진 원인으로 `ts_rank`에 IDF가 없다는 점을 지목�
 
 ### 알려진 한계
 
-- **q017 검색 실패**: "secrets like database credentials" 질문이 설정·환경변수 문서 대신 인증 문서(OAuth2, 비밀번호, JWT)로 끌려감. 마크업 정제로는 풀리지 않는, 소형 dense 임베딩의 의미 혼동이고, settings.md는 dense 상위 40개에 들지 않음. BM25 순위만 보면 settings.md가 1위지만, RRF로 합치면 두 목록에 모두 걸린 인증 문서에 밀려 hybrid에서도 top-10 밖임 (위 v5 참고). 평가셋을 통과시키려고 질문을 바꾸지 않고 실패 사례로 남겨 둠.
+- **q017 검색 실패**: "secrets like database credentials" 질문이 설정·환경변수 문서 대신 인증 문서(OAuth2, 비밀번호, JWT)로 끌려감. 마크업 정제로는 풀리지 않는, 소형 dense 임베딩의 의미 혼동이고, settings.md는 dense 상위 40개에 들지 않음. BM25 순위만 보면 settings.md가 1위지만, RRF로 합치면 두 목록에 모두 걸린 인증 문서에 밀려 hybrid에서도 top-10 밖임 (위 v5 참고). `rerank` 모드에서는 cross-encoder가 1위로 올림 (위 v6 참고). 평가셋을 통과시키려고 질문을 바꾸지 않음.
 - **LLM 판정의 오탐**: q017에서 모델은 검색 실패 후 "컨텍스트에 정보가 없다"고 올바르게 답했지만, 판정 모델은 이를 환각으로 표시함.
 - **키워드 커버리지는 거친 지표**: q030은 판정 정확도가 5점인데 답변에 `APIRouter`라는 이름이 없어서 커버리지는 0. 두 지표를 함께 봐야 함.
 
@@ -120,7 +169,7 @@ docker compose up --build
 ```
 DB 헬스체크 통과 후 API가 마이그레이션(`alembic upgrade head`)을 자동 적용하고 `http://localhost:8000`에서 뜬다. Swagger UI: `http://localhost:8000/docs`.
 
-`.env`는 호스트에서 실행하는 기준(`localhost`)으로 그대로 두면 된다. compose가 API 컨테이너의 `DATABASE_URL`은 `db` 서비스로, `OLLAMA_BASE_URL`은 `host.docker.internal:11434`(호스트에서 실행 중인 Ollama)로 덮어쓴다. 임베딩 모델은 빌드할 때 이미지에 넣어 두므로 실행 중에는 HuggingFace에 접속하지 않고, torch는 CPU 빌드를 써서 이미지 크기는 약 2.2GB다.
+`.env`는 호스트에서 실행하는 기준(`localhost`)으로 그대로 두면 된다. compose가 API 컨테이너의 `DATABASE_URL`은 `db` 서비스로, `OLLAMA_BASE_URL`은 `host.docker.internal:11434`(호스트에서 실행 중인 Ollama)로 덮어쓴다. 임베딩 모델과 재정렬 모델(`rerank` 모드용)은 빌드할 때 이미지에 넣어 두므로 실행 중에는 HuggingFace에 접속하지 않는다. torch는 CPU 빌드를 써서 이미지 크기는 약 2.35GB다.
 
 ### 3. 문서 수집 (최초 1회)
 ```bash
@@ -172,6 +221,9 @@ uv run python -m eval.run_retrieval_eval --mode dense --tag v4_dense
 uv run python -m eval.run_retrieval_eval --mode hybrid --tag v4_hybrid
 # 파라미터 튜닝은 검증셋으로만 한다 (--dataset 기본값은 테스트셋인 eval/qa_dataset.jsonl)
 uv run python -m eval.run_retrieval_eval --mode hybrid --dataset eval/qa_dev.jsonl --lexical-weight 0.5 --tag dev_w050
+# rerank: 목록당 후보 수 기본값은 검증셋에서 고른 5 (--rerank-pool로 변경). 리포트에 검색 지연 p50/p95도 기록됨
+uv run python -m eval.run_retrieval_eval --mode rerank --dataset eval/qa_dev.jsonl --tag dev_rerank
+uv run python -m eval.run_answer_eval --mode rerank --tag rerank
 ```
 결과는 `eval/reports/`에 마크다운으로 남는다. 판정 LLM은 `GENERATION_PROVIDER` 설정을 그대로 따르므로, Ollama 설정이면 평가 전체가 무료로 돌아간다.
 

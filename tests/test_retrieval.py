@@ -2,8 +2,25 @@ import pytest
 
 from app.models.chunk import Chunk
 from app.models.document import Document
-from app.services.retrieval import hybrid_search, lexical_search, similarity_search
+from app.services.reranking import RerankerService
+from app.services.retrieval import (
+    hybrid_search,
+    lexical_search,
+    rerank_search,
+    retrieve,
+    similarity_search,
+)
 from tests.conftest import EMBEDDING_DIM
+
+
+class KeywordReranker(RerankerService):
+    """Stands in for the cross-encoder: 1.0 if the passage has the keyword, else 0.0."""
+
+    def __init__(self, keyword: str) -> None:  # intentionally skip loading a real model
+        self.keyword = keyword
+
+    def score(self, question: str, passages: list[str]) -> list[float]:
+        return [1.0 if self.keyword in p else 0.0 for p in passages]
 
 
 async def _seed_document_with_chunk(db_session, embedding: list[float], content: str):
@@ -98,3 +115,46 @@ async def test_hybrid_search_without_searchable_words_falls_back_to_dense(db_ses
 
     results = await hybrid_search(db_session, "?!", vector, top_k=5)
     assert [r.content for r in results] == ["some content"]
+
+
+@pytest.mark.asyncio
+async def test_rerank_search_reorders_the_union_of_dense_and_bm25_candidates(db_session):
+    query_vector = [1.0] + [0.0] * (EMBEDDING_DIM - 1)
+    orthogonal = [0.0] * (EMBEDDING_DIM - 1) + [1.0]
+    await _seed_document_with_chunk(db_session, query_vector, "generic prose about nothing much")
+    await _seed_document_with_chunk(db_session, orthogonal, "load settings from environment variables")
+
+    # One candidate per list: dense brings the generic chunk, BM25 the environment one,
+    # and the order comes from the reranker alone.
+    results = await rerank_search(
+        db_session,
+        "environment variables",
+        query_vector,
+        top_k=2,
+        reranker=KeywordReranker("environment"),
+        pool=1,
+    )
+    assert [r.content for r in results] == [
+        "load settings from environment variables",
+        "generic prose about nothing much",
+    ]
+    assert results[0].score == 1.0
+
+
+@pytest.mark.asyncio
+async def test_rerank_search_respects_top_k(db_session):
+    for i in range(3):
+        vector = [1.0, float(i)] + [0.0] * (EMBEDDING_DIM - 2)
+        await _seed_document_with_chunk(db_session, vector, f"{i} content")
+
+    query_vector = [1.0] + [0.0] * (EMBEDDING_DIM - 1)
+    results = await rerank_search(
+        db_session, "content", query_vector, top_k=2, reranker=KeywordReranker("content")
+    )
+    assert len(results) == 2
+
+
+@pytest.mark.asyncio
+async def test_retrieve_in_rerank_mode_requires_a_reranker(db_session):
+    with pytest.raises(ValueError):
+        await retrieve(db_session, "q", [1.0] + [0.0] * (EMBEDDING_DIM - 1), 5, "rerank")

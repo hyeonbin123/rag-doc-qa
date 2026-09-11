@@ -1,12 +1,18 @@
+import asyncio
 import re
 import uuid
 from dataclasses import dataclass
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-RetrievalMode = Literal["dense", "hybrid"]
+from app.services.chunking import build_embedding_text
+
+if TYPE_CHECKING:
+    from app.services.reranking import RerankerService
+
+RetrievalMode = Literal["dense", "hybrid", "rerank"]
 
 SCORE_FLOOR = 0.3
 RRF_K = 60
@@ -19,6 +25,11 @@ BM25_B = 0.75
 # RRF weight of the BM25 list relative to the dense list (which has weight 1). Picked
 # from {0.25, 0.5, 0.75, 1.0} on eval/qa_dev.jsonl only, never on the test set.
 LEXICAL_WEIGHT = 0.75
+# Candidates taken from each of the dense and BM25 lists for the cross-encoder. Every
+# candidate costs one model forward pass at query time (about 60-80 ms each for
+# MiniLM-L6 on a desktop CPU), so this trades latency for recall. Picked from
+# {5, 10, 20} on eval/qa_dev.jsonl under a 1 s median retrieval budget.
+RERANK_POOL = 5
 
 _WORD_RE = re.compile(r"[A-Za-z0-9]+")
 
@@ -219,14 +230,75 @@ async def hybrid_search(
     return [_to_chunk(row) for row in result]
 
 
+async def _rerank_candidates(
+    db: AsyncSession, question: str, query_embedding: list[float], pool: int
+) -> list[RetrievedChunk]:
+    """The union of the dense top `pool` and the BM25 top `pool`, in no particular order."""
+    words = _search_words(question)
+    if not words:
+        return await similarity_search(db, query_embedding, pool)
+
+    result = await db.execute(
+        text(
+            f"""
+            WITH {_BM25_CTES},
+            dense AS (
+                SELECT id FROM chunks ORDER BY embedding <=> :qvec LIMIT :pool
+            ),
+            candidates AS (
+                SELECT id FROM dense UNION SELECT id FROM lexical
+            )
+            SELECT c.id, c.document_id, c.content, c.heading_path, d.source_path,
+                   1 - (c.embedding <=> :qvec) AS score
+            FROM candidates k
+            JOIN chunks c ON c.id = k.id
+            JOIN documents d ON d.id = c.document_id
+            """
+        ),
+        {**_bm25_params(words), "pool": pool, "qvec": _vector_literal(query_embedding)},
+    )
+    return [_to_chunk(row) for row in result]
+
+
+async def rerank_search(
+    db: AsyncSession,
+    question: str,
+    query_embedding: list[float],
+    top_k: int,
+    reranker: "RerankerService",
+    pool: int = RERANK_POOL,
+) -> list[RetrievedChunk]:
+    """Re-score the union of the dense and BM25 candidates with a cross-encoder.
+
+    Unlike RRF, a candidate that only one list found is judged on its own text rather
+    than on how many lists agreed on it. `score` becomes the reranker's relevance
+    probability.
+    """
+    candidates = await _rerank_candidates(db, question, query_embedding, pool)
+    passages = [build_embedding_text(c.heading_path or "", c.content) for c in candidates]
+    # The model call is CPU-bound; a worker thread keeps the event loop free meanwhile.
+    scores = await asyncio.to_thread(reranker.score, question, passages)
+    for chunk, score in zip(candidates, scores, strict=True):
+        chunk.score = score
+    candidates.sort(key=lambda c: c.score, reverse=True)
+    return candidates[:top_k]
+
+
 async def retrieve(
     db: AsyncSession,
     question: str,
     query_embedding: list[float],
     top_k: int,
     mode: RetrievalMode,
+    *,
     lexical_weight: float = LEXICAL_WEIGHT,
+    reranker: "RerankerService | None" = None,
+    rerank_pool: int = RERANK_POOL,
 ) -> list[RetrievedChunk]:
+    if mode == "rerank":
+        if reranker is None:
+            raise ValueError("retrieval mode 'rerank' needs a reranker")
+        return await rerank_search(db, question, query_embedding, top_k, reranker, rerank_pool)
     if mode == "hybrid":
         return await hybrid_search(db, question, query_embedding, top_k, lexical_weight)
     return await similarity_search(db, query_embedding, top_k)

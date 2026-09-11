@@ -4,12 +4,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import Settings, get_settings
 from app.core.timing import Stopwatch
 from app.db.session import get_db
-from app.dependencies import get_current_user, get_embedder, get_generator
+from app.dependencies import get_current_user, get_embedder, get_generator, get_reranker
 from app.models.query_log import QueryLog
 from app.models.user import User
 from app.schemas.query import AskRequest, AskResponse, Citation, LatencyBreakdown
 from app.services.embedding import EmbeddingService
 from app.services.generation import GenerationService
+from app.services.reranking import RerankerService
 from app.services.retrieval import retrieve
 
 router = APIRouter(prefix="/query", tags=["query"])
@@ -22,6 +23,7 @@ async def ask(
     db: AsyncSession = Depends(get_db),
     embedder: EmbeddingService = Depends(get_embedder),
     generator: GenerationService = Depends(get_generator),
+    reranker: RerankerService | None = Depends(get_reranker),
     settings: Settings = Depends(get_settings),
 ) -> AskResponse:
     embed_sw = Stopwatch()
@@ -29,9 +31,14 @@ async def ask(
         query_embedding = embedder.embed_query(payload.question)
 
     retrieval_sw = Stopwatch()
-    with retrieval_sw.measure():
+    with retrieval_sw.measure():  # includes cross-encoder reranking in "rerank" mode
         retrieved = await retrieve(
-            db, payload.question, query_embedding, payload.top_k, settings.retrieval_mode
+            db,
+            payload.question,
+            query_embedding,
+            payload.top_k,
+            settings.retrieval_mode,
+            reranker=reranker,
         )
 
     generation_sw = Stopwatch()

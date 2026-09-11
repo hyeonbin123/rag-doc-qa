@@ -8,6 +8,7 @@ from app.db.session import get_db
 from app.models.user import User
 from app.services.embedding import EmbeddingService, get_embedding_service
 from app.services.generation import GenerationService, get_generation_service
+from app.services.reranking import RerankerService, get_reranker_service
 from app.services.security import InvalidTokenError, TokenType, decode_token
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
@@ -39,6 +40,13 @@ def get_embedder() -> EmbeddingService:
 
 def get_generator() -> GenerationService:
     return get_generation_service()
+
+
+def get_reranker(settings: Settings = Depends(get_settings)) -> RerankerService | None:
+    # Only load the cross-encoder when the configured mode actually uses it.
+    if settings.retrieval_mode != "rerank":
+        return None
+    return get_reranker_service()
 
 
 async def require_admin_token(

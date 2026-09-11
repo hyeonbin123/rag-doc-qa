@@ -5,7 +5,7 @@ The judge runs on whichever provider GENERATION_PROVIDER selects, so a fully
 local (free) eval run is possible.
 
 Usage:
-    python -m eval.run_answer_eval [--top-k 5] [--tag v1_baseline] [--mode dense|hybrid] [--skip-judge]
+    python -m eval.run_answer_eval [--top-k 5] [--tag v1_baseline] [--mode dense|hybrid|rerank] [--skip-judge]
 """
 
 from __future__ import annotations
@@ -22,6 +22,7 @@ from app.config import get_settings
 from app.db.session import async_session_maker
 from app.services.embedding import get_embedding_service
 from app.services.generation import get_generation_service
+from app.services.reranking import RerankerService, get_reranker_service
 from app.services.retrieval import RetrievalMode, retrieve
 from eval.common import EvalQuestion, load_dataset, write_report
 
@@ -124,9 +125,10 @@ async def evaluate_question(
     top_k: int,
     mode: RetrievalMode,
     skip_judge: bool,
+    reranker: RerankerService | None,
 ) -> dict:
     query_vector = embedder.embed_query(q.question)
-    retrieved = await retrieve(db, q.question, query_vector, top_k, mode)
+    retrieved = await retrieve(db, q.question, query_vector, top_k, mode, reranker=reranker)
     generation_result = await generator.answer(q.question, retrieved)
 
     coverage = keyword_coverage(generation_result.answer, q.must_include_keywords)
@@ -152,13 +154,16 @@ async def main(top_k: int, tag: str, mode: RetrievalMode | None, skip_judge: boo
     mode = mode or settings.retrieval_mode
     embedder = get_embedding_service()
     generator = get_generation_service()
+    reranker = get_reranker_service() if mode == "rerank" else None
     questions = load_dataset()
 
     results = []
     async with async_session_maker() as db:
         for q in questions:
             results.append(
-                await evaluate_question(db, embedder, generator, settings, q, top_k, mode, skip_judge)
+                await evaluate_question(
+                    db, embedder, generator, settings, q, top_k, mode, skip_judge, reranker
+                )
             )
 
     n = len(results)
@@ -229,6 +234,6 @@ if __name__ == "__main__":
     parser.add_argument("--top-k", type=int, default=5)
     parser.add_argument("--tag", default="run")
     parser.add_argument("--skip-judge", action="store_true", help="skip Claude-as-judge calls (fast, free)")
-    parser.add_argument("--mode", choices=["dense", "hybrid"], default=None)
+    parser.add_argument("--mode", choices=["dense", "hybrid", "rerank"], default=None)
     args = parser.parse_args()
     asyncio.run(main(args.top_k, args.tag, args.mode, args.skip_judge))
