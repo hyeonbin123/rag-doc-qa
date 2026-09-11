@@ -45,10 +45,10 @@
 
 ## 환경 메모
 - DB 컨테이너는 Docker Desktop이 재시작되면 내려갈 수 있음 → `docker compose up -d db`로 다시 올리면 됨. 데이터는 `pgdata` 볼륨에 남아 있음
-- **Docker Desktop이 시작하자마자 죽는 경우**: `docker-desktop` WSL 배포판이 Stopped로 남고 오류 창에 "Quit / Reset to factory defaults"가 뜸. 백엔드 로그(`%LOCALAPPDATA%\Docker\log\host\com.docker.backend.exe.log`)의 마지막 `cancelling with error` 줄에 `rename ...sock ...sock.stale: The file cannot be accessed by the system`이 있으면, 비정상 종료로 남은 소켓 파일 때문임. 소켓 파일은 하나씩 지우거나 이름을 바꿀 수 없으므로, Docker Desktop을 종료한 뒤 그 파일이 든 폴더(`%LOCALAPPDATA%\Docker\run`, `%LOCALAPPDATA%\docker-secrets-engine`)를 `.stale-<날짜>`로 이름을 바꾸고 재시작하면 됨. 비정상 종료가 한 번이라도 있었다면 다음 시작은 거의 확실히 이 오류로 실패하므로, 두 폴더를 함께 옮기면 재시작 한 번으로 뜸 (2026-09-11에 세 번 반복됨). **"Reset to factory defaults"는 볼륨(DB)을 지우므로 누르지 말 것**
+- **Docker는 `coding\start-docker.cmd`로 시작** (로그인할 때는 작업 스케줄러의 "Start Docker Desktop (coding)"이 같은 스크립트를 자동으로 실행함). 이 PC의 Docker Desktop 4.90은 종료할 때마다(정상 종료 포함) 지울 수 없는 AF_UNIX 소켓 파일(Error 1920)을 남기고, 다음 시작 때 이를 치우다 실패하면서 "Quit / Reset to factory defaults" 오류 창을 띄움. 스크립트는 시작 전에 소켓 폴더(`%LOCALAPPDATA%\Docker\run`, `%LOCALAPPDATA%\docker-secrets-engine`)를 `%LOCALAPPDATA%\Docker\stale-sockets\`로 옮김. Claude 도구에서는 Docker Desktop을 직접 실행하지 말고 `Start-ScheduledTask -TaskName "Start Docker Desktop (coding)"`으로 띄울 것 (이렇게 띄운 Docker는 Claude의 Job 바깥에서 실행되는 것을 확인함). **"Reset to factory defaults"는 볼륨(DB)을 지우므로 누르지 말 것**
 - 청커를 고치면 `CHUNKER_VERSION`을 올리고 재수집해야 새 청크 기준으로 측정됨
 
 ## TODO / 미완료 작업
 - 기본값인 dense에서 q017은 여전히 실패함. 개선 후보는 IDF가 있는 BM25(예: ParadeDB의 `pg_search` 확장), 또는 튜닝 전용 검증 질문셋을 따로 만든 뒤 어휘 쪽 가중치를 조정하는 것. CI가 생겼으니 DB 이미지 교체 같은 큰 변경도 회귀를 확인하면서 진행할 수 있음
 - Anthropic 경로는 코드만 있고 실제로 돌려 본 적 없음 (API 크레딧 없음). 크레딧을 충전하면 `GENERATION_PROVIDER=anthropic`으로 같은 흐름을 다시 검증
-- `%LOCALAPPDATA%` 아래의 `*.stale-20260911*` 폴더들은 Docker 동작과 무관함. 정리하려면 재부팅한 뒤 삭제를 시도해 볼 것 (안의 소켓 파일 때문에 여전히 지워지지 않을 수 있음)
+- `%LOCALAPPDATA%\Docker\stale-sockets\`에 옮겨 둔 소켓 폴더들은 Docker 동작과 무관함. 안의 파일은 0바이트라 용량 문제는 없고, 일반적인 방법으로는 지워지지 않음
