@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     ollama_base_url: str = "http://localhost:11434"
     ollama_model_name: str = "qwen2.5:7b-instruct"
     embedding_model_name: str = "BAAI/bge-small-en-v1.5"
+    retrieval_mode: Literal["dense", "hybrid"] = "dense"
     fastapi_docs_commit_sha: str = ""
     admin_ingest_token: str = "change-me-admin-token"
 

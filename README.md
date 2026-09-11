@@ -18,6 +18,7 @@ FastAPI 공식 문서를 대상으로 한 RAG(검색 증강 생성) 기반 문�
   - `ollama`(기본): 로컬 Qwen2.5-7B, 비용 0원
   - `anthropic`: Claude API, `tool_choice`로 인용 스키마 강제
 - **인증**: JWT(access/refresh)
+- **검색 모드**: `RETRIEVAL_MODE=dense`(기본) 또는 `hybrid`(dense + Postgres 전문 검색을 RRF로 결합). 하이브리드는 측정해 보니 평균이 더 나빠서 기본값으로 쓰지 않음 (아래 v4 참고)
 - **평가**: 검색 품질(Hit@k, MRR) + 답변 품질(키워드 커버리지, LLM 판정 충실도/정확도)
 
 ## 설계 근거 (자기소개서/면접용 요약)
@@ -43,6 +44,21 @@ FastAPI 공식 문서를 대상으로 한 RAG(검색 증강 생성) 기반 문�
 - **v3**: 회귀 원인은 정제 로직이 `<dfn title='..."cleanup code"...'>`의 title 속성까지 지운 것이었음. 질문에 나온 "cleanup code"가 바로 그 안에 있었음. 정의 텍스트를 "용어 (정의)" 형태로 보존해 q011을 복구했고 MRR은 0.933.
 - 청커를 바꾸면 수집 해시가 달라지도록 `CHUNKER_VERSION`을 해시에 포함함. 원문 해시만 쓰면 청커를 바꿔도 재수집 때 모든 문서가 "변경 없음"으로 스킵되어, 예전 청크로 측정하게 되기 때문.
 
+### 하이브리드 검색 실험 (v4, 기본값으로 채택하지 않음)
+
+q017처럼 dense 임베딩이 의미를 혼동하는 경우를 보완하려고, Postgres 전문 검색(생성 컬럼 `tsvector` + GIN 인덱스) 순위와 dense 순위를 RRF(Reciprocal Rank Fusion, k=60)로 합치는 모드를 추가하고 같은 30문항으로 비교함.
+
+| 모드 | Hit@3 | Hit@10 | MRR |
+|---|---|---|---|
+| dense (v3와 문항 단위까지 동일) | 0.97 | 0.97 | **0.933** |
+| hybrid | 0.97 | **1.00** | 0.898 |
+
+- **얻은 것**: q017이 top-10 밖에서 9위로 들어옴. 어휘 검색만 놓고 보면 settings.md가 **1위**였음.
+- **잃은 것**: q001(1위→2위), q009(1위→2위), q003(2위→3위). 두 문항 모두 어휘 검색 상위 5개에 정답 문서가 없었고, q009는 모든 기능을 언급하는 `release-notes.md`가 어휘 검색 1위였음.
+- **원인**: Postgres `ts_rank`에는 BM25의 IDF(역문서빈도)가 없어서 흔한 단어와 드문 단어를 같은 무게로 셈. "fastapi"는 청크 915개 중 524개(57%)에, "parameter"는 258개(28%)에 나오기 때문에, 질문 단어를 OR로 묶은 어휘 순위가 잡음이 되고, 가중치가 같은 RRF가 그 잡음 때문에 dense의 1위를 밀어냄.
+- **결정**: 처음 정한 기준(평균이 나아질 때만 기본값 변경)에 따라 dense를 유지하고, hybrid는 `RETRIEVAL_MODE=hybrid`로 켤 수 있게 남김. 이 30문항에 맞춰 가중치를 고르면 평가셋에 과적합되므로 튜닝하지 않음. 다음 후보는 IDF가 있는 BM25(예: ParadeDB의 `pg_search` 확장)와, 튜닝 전용으로 쓸 별도 검증 질문셋.
+- **구현 메모**: 질문 단어는 OR로 묶음. `plainto_tsquery`는 모든 단어를 AND로 묶어서 문장형 질문으로는 거의 아무것도 걸리지 않음. dense 후보는 40개로 제한함. pgvector HNSW 스캔은 한 번에 `hnsw.ef_search`(기본 40)개까지만 돌려주기 때문.
+
 ### 답변 품질 (v3, top_k=5)
 
 | 지표 | 값 |
@@ -57,7 +73,7 @@ FastAPI 공식 문서를 대상으로 한 RAG(검색 증강 생성) 기반 문�
 
 ### 알려진 한계
 
-- **q017 검색 실패**: "secrets like database credentials" 질문이 설정·환경변수 문서 대신 인증 문서(OAuth2, 비밀번호, JWT)로 끌려감. 마크업 정제로는 풀리지 않는, 소형 dense 임베딩의 의미 혼동이라서 BM25+dense 하이브리드 검색을 다음 과제로 둠. 평가셋을 통과시키려고 질문을 바꾸지 않고 실패 사례로 남겨 둠.
+- **q017 검색 실패 (기본값인 dense 기준)**: "secrets like database credentials" 질문이 설정·환경변수 문서 대신 인증 문서(OAuth2, 비밀번호, JWT)로 끌려감. 마크업 정제로는 풀리지 않는, 소형 dense 임베딩의 의미 혼동임. hybrid 모드에서는 9위까지 올라오지만 다른 문항에서 잃는 게 더 커서 기본값으로 쓰지 않음 (위 v4 참고). 평가셋을 통과시키려고 질문을 바꾸지 않고 실패 사례로 남겨 둠.
 - **LLM 판정의 오탐**: q017에서 모델은 검색 실패 후 "컨텍스트에 정보가 없다"고 올바르게 답했지만, 판정 모델은 이를 환각으로 표시함.
 - **키워드 커버리지는 거친 지표**: q030은 판정 정확도가 5점인데 답변에 `APIRouter`라는 이름이 없어서 커버리지는 0. 두 지표를 함께 봐야 함.
 
@@ -128,6 +144,9 @@ uv run python -m eval.run_answer_eval --tag v1_baseline
 uv run python -m eval.run_answer_eval --skip-judge --tag quick
 # (청커를 바꿨다면 CHUNKER_VERSION을 올리고 재수집한 뒤)
 uv run python -m eval.run_retrieval_eval --tag v2_tuned
+# dense와 hybrid 비교 (--mode를 생략하면 RETRIEVAL_MODE 설정을 따름)
+uv run python -m eval.run_retrieval_eval --mode dense --tag v4_dense
+uv run python -m eval.run_retrieval_eval --mode hybrid --tag v4_hybrid
 ```
 결과는 `eval/reports/`에 마크다운으로 남는다. 판정 LLM은 `GENERATION_PROVIDER` 설정을 그대로 따르므로, Ollama 설정이면 평가 전체가 무료로 돌아간다.
 

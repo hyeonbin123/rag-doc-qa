@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import Settings, get_settings
 from app.core.timing import Stopwatch
 from app.db.session import get_db
 from app.dependencies import get_current_user, get_embedder, get_generator
@@ -9,7 +10,7 @@ from app.models.user import User
 from app.schemas.query import AskRequest, AskResponse, Citation, LatencyBreakdown
 from app.services.embedding import EmbeddingService
 from app.services.generation import GenerationService
-from app.services.retrieval import similarity_search
+from app.services.retrieval import retrieve
 
 router = APIRouter(prefix="/query", tags=["query"])
 
@@ -21,6 +22,7 @@ async def ask(
     db: AsyncSession = Depends(get_db),
     embedder: EmbeddingService = Depends(get_embedder),
     generator: GenerationService = Depends(get_generator),
+    settings: Settings = Depends(get_settings),
 ) -> AskResponse:
     embed_sw = Stopwatch()
     with embed_sw.measure():
@@ -28,7 +30,9 @@ async def ask(
 
     retrieval_sw = Stopwatch()
     with retrieval_sw.measure():
-        retrieved = await similarity_search(db, query_embedding, payload.top_k)
+        retrieved = await retrieve(
+            db, payload.question, query_embedding, payload.top_k, settings.retrieval_mode
+        )
 
     generation_sw = Stopwatch()
     with generation_sw.measure():

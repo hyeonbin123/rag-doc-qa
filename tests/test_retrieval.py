@@ -2,7 +2,7 @@ import pytest
 
 from app.models.chunk import Chunk
 from app.models.document import Document
-from app.services.retrieval import similarity_search
+from app.services.retrieval import hybrid_search, similarity_search
 from tests.conftest import EMBEDDING_DIM
 
 
@@ -53,3 +53,35 @@ async def test_similarity_search_respects_top_k(db_session):
     results = await similarity_search(db_session, query_vector, top_k=2)
 
     assert len(results) <= 2
+
+
+@pytest.mark.asyncio
+async def test_hybrid_search_surfaces_lexical_match_that_dense_drops(db_session):
+    query_vector = [1.0] + [0.0] * (EMBEDDING_DIM - 1)
+    orthogonal = [0.0] * (EMBEDDING_DIM - 1) + [1.0]
+    await _seed_document_with_chunk(db_session, query_vector, "generic prose about nothing much")
+    await _seed_document_with_chunk(db_session, orthogonal, "load settings from environment variables")
+
+    dense = await similarity_search(db_session, query_vector, top_k=5)
+    assert all("environment" not in r.content for r in dense)  # cosine 0 falls under the floor
+
+    hybrid = await hybrid_search(db_session, "environment variables", query_vector, top_k=5)
+    assert "environment" in hybrid[0].content
+
+
+@pytest.mark.asyncio
+async def test_hybrid_search_with_only_stopwords_still_returns_dense_results(db_session):
+    vector = [1.0] + [0.0] * (EMBEDDING_DIM - 1)
+    await _seed_document_with_chunk(db_session, vector, "some content")
+
+    results = await hybrid_search(db_session, "how is it", vector, top_k=5)
+    assert [r.content for r in results] == ["some content"]
+
+
+@pytest.mark.asyncio
+async def test_hybrid_search_without_searchable_words_falls_back_to_dense(db_session):
+    vector = [1.0] + [0.0] * (EMBEDDING_DIM - 1)
+    await _seed_document_with_chunk(db_session, vector, "some content")
+
+    results = await hybrid_search(db_session, "?!", vector, top_k=5)
+    assert [r.content for r in results] == ["some content"]

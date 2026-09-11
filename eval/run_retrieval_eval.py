@@ -1,7 +1,7 @@
 """Retrieval-only evaluation: Hit@k and MRR against eval/qa_dataset.jsonl.
 
 Usage:
-    python -m eval.run_retrieval_eval [--top-k 10] [--tag v1_baseline]
+    python -m eval.run_retrieval_eval [--top-k 10] [--tag v1_baseline] [--mode dense|hybrid]
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ from datetime import UTC, datetime
 from app.config import get_settings
 from app.db.session import async_session_maker
 from app.services.embedding import get_embedding_service
-from app.services.retrieval import similarity_search
+from app.services.retrieval import RetrievalMode, retrieve
 from eval.common import EvalQuestion, load_dataset, write_report
 
 
@@ -28,9 +28,9 @@ def reciprocal_rank(ranked_paths: list[str], expected: list[str]) -> float:
     return 0.0
 
 
-async def evaluate_question(db, embedder, q: EvalQuestion, top_k: int) -> dict:
+async def evaluate_question(db, embedder, q: EvalQuestion, top_k: int, mode: RetrievalMode) -> dict:
     query_vector = embedder.embed_query(q.question)
-    retrieved = await similarity_search(db, query_vector, top_k=top_k)
+    retrieved = await retrieve(db, q.question, query_vector, top_k, mode)
     ranked_paths = [r.source_path for r in retrieved]
 
     return {
@@ -44,15 +44,16 @@ async def evaluate_question(db, embedder, q: EvalQuestion, top_k: int) -> dict:
     }
 
 
-async def main(top_k: int, tag: str) -> None:
+async def main(top_k: int, tag: str, mode: RetrievalMode | None) -> None:
     settings = get_settings()
+    mode = mode or settings.retrieval_mode
     embedder = get_embedding_service()
     questions = load_dataset()
 
     results = []
     async with async_session_maker() as db:
         for q in questions:
-            results.append(await evaluate_question(db, embedder, q, top_k))
+            results.append(await evaluate_question(db, embedder, q, top_k, mode))
 
     n = len(results)
     agg = {
@@ -68,6 +69,7 @@ async def main(top_k: int, tag: str) -> None:
         f"- date: {datetime.now(UTC).isoformat()}",
         f"- embedding model: {settings.embedding_model_name}",
         f"- top_k: {top_k}",
+        f"- retrieval mode: {mode}",
         f"- questions: {n}",
         "",
         "## Aggregate metrics",
@@ -99,5 +101,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--top-k", type=int, default=10)
     parser.add_argument("--tag", default="run")
+    parser.add_argument("--mode", choices=["dense", "hybrid"], default=None)
     args = parser.parse_args()
-    asyncio.run(main(args.top_k, args.tag))
+    asyncio.run(main(args.top_k, args.tag, args.mode))
