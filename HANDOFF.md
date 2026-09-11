@@ -25,7 +25,7 @@
   - 30문항 결과: dense MRR 0.933(v3와 문항 단위까지 동일하므로 리팩터링으로 인한 동작 변화 없음) vs hybrid 0.898, Hit@10은 0.97 → 1.00. q017은 9위까지 올라오지만 q001, q009, q003이 밀림
   - 원인: `ts_rank`에 IDF가 없어서 "fastapi"(청크의 57%), "parameter"(28%) 같은 흔한 단어가 어휘 순위를 흐림. q009는 `release-notes.md`가 어휘 검색 1위였음. q017에서는 어휘 검색이 settings.md를 1위로 찾았지만 RRF를 거치며 희석됨
   - 기본값은 dense로 유지. 30문항에 맞춘 가중치 튜닝은 평가셋 과적합이 되므로 하지 않음
-- **CI (5단계)**: `.github/workflows/ci.yml`. push와 PR마다 pgvector 서비스 컨테이너를 띄우고 `uv sync --frozen` → ruff → pytest (Python 3.11, `astral-sh/setup-uv@v10`, `actions/checkout@v7`). 서비스 컨테이너는 일부러 `ragdb`만 만들어서, 새로 클론한 환경처럼 테스트 DB가 없는 상태를 매번 검증하게 함
+- **CI (5단계)**: `.github/workflows/ci.yml`. push와 PR마다 pgvector 서비스 컨테이너를 띄우고 `uv sync --frozen` → ruff → pytest (Python 3.11, `astral-sh/setup-uv@v10.1.0`, `actions/checkout@v7`. setup-uv는 `v10` 같은 주 버전 태그를 만들지 않으므로 정확한 릴리스 태그로 고정해야 함. 첫 CI 실행은 이 때문에 Set up job 단계에서 실패했음). 서비스 컨테이너는 일부러 `ragdb`만 만들어서, 새로 클론한 환경처럼 테스트 DB가 없는 상태를 매번 검증하게 함
   - `tests/conftest.py`가 `ragdb_test` 데이터베이스와 `vector`/`pgcrypto` 확장이 없으면 직접 만들도록 수정. 기존 README 절차(`docker compose up -d db` → `uv run pytest`)는 새 클론에서 "database ragdb_test does not exist"로 모든 통합 테스트가 실패하는 문서 버그였음
   - README에 CI 배지 추가
 
