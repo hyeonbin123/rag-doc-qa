@@ -1,15 +1,17 @@
 """Test fixtures.
 
 Integration tests (test_auth.py, test_retrieval.py, test_query.py) need a
-running Postgres+pgvector instance reachable via TEST_DATABASE_URL (defaults
-to the docker-compose db on a separate "ragdb_test" database). Run
-`docker compose up -d db` before `pytest`.
+running Postgres+pgvector server reachable via TEST_DATABASE_URL (defaults to
+the docker-compose db). The "ragdb_test" database and the extensions the
+schema needs are created on first use.
 """
 
 import os
 
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import text
+from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.db.base import Base
@@ -56,8 +58,40 @@ class FakeGenerationService(GenerationService):
         )
 
 
+_test_database_ready = False
+
+
+async def _ensure_test_database() -> None:
+    """Create the test database and its extensions if missing.
+
+    docker compose only creates the app database, so without this a fresh clone
+    fails every integration test on "database ragdb_test does not exist".
+    """
+    global _test_database_ready
+    if _test_database_ready:
+        return
+
+    url = make_url(TEST_DATABASE_URL)
+    admin = create_async_engine(url.set(database="postgres"), isolation_level="AUTOCOMMIT")
+    async with admin.connect() as conn:
+        exists = await conn.scalar(
+            text("SELECT 1 FROM pg_database WHERE datname = :name"), {"name": url.database}
+        )
+        if not exists:
+            await conn.execute(text(f'CREATE DATABASE "{url.database}"'))
+    await admin.dispose()
+
+    engine = create_async_engine(url)
+    async with engine.begin() as conn:
+        await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+        await conn.execute(text("CREATE EXTENSION IF NOT EXISTS pgcrypto"))
+    await engine.dispose()
+    _test_database_ready = True
+
+
 @pytest_asyncio.fixture
 async def db_engine():
+    await _ensure_test_database()
     engine = create_async_engine(TEST_DATABASE_URL)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)

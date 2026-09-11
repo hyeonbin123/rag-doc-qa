@@ -1,5 +1,7 @@
 # rag-doc-qa
 
+[![CI](https://github.com/hyeonbin123/rag-doc-qa/actions/workflows/ci.yml/badge.svg)](https://github.com/hyeonbin123/rag-doc-qa/actions/workflows/ci.yml)
+
 FastAPI 공식 문서를 대상으로 한 RAG(검색 증강 생성) 기반 문서 QA API 서버.
 
 ## 아키텍처
@@ -133,7 +135,7 @@ uv run uvicorn app.main:app --reload
 docker compose up -d db
 uv run pytest
 ```
-`tests/conftest.py`가 `ragdb_test` 데이터베이스를 대상으로 스키마를 생성/정리한다. 임베딩·생성 서비스는 외부 API 호출 없이 결정론적 fake로 대체된다.
+`tests/conftest.py`는 `ragdb_test` 데이터베이스와 스키마에 필요한 확장(`vector`, `pgcrypto`)이 없으면 직접 만들고, 테스트마다 스키마를 생성·정리한다. 임베딩·생성 서비스는 외부 API를 부르지 않는 결정론적 fake로 대체된다. push와 PR마다 GitHub Actions가 pgvector 서비스 컨테이너를 띄워 같은 ruff + pytest를 실행한다 (`.github/workflows/ci.yml`).
 
 ## 평가
 
