@@ -140,6 +140,15 @@ curl -X POST localhost:8000/query/ask \
   -d '{"question": "How do I declare a path parameter in FastAPI?"}'
 ```
 
+### 5. 브라우저에서 직접 써 보기 (Swagger UI)
+1. `http://localhost:8000/docs`를 연다.
+2. `POST /auth/register` → **Try it out** → 이메일과 비밀번호를 넣고 **Execute**. 응답 코드가 201이면 가입 완료.
+3. 오른쪽 위 **Authorize** 버튼을 누르고, `username`에 이메일, `password`에 비밀번호를 넣어 로그인한다. 그다음 요청부터는 토큰이 자동으로 붙는다.
+4. `POST /query/ask` → **Try it out** → `{"question": "How do I add CORS to my FastAPI app?"}` → **Execute**. 응답에 답변(`answer`), 출처(`citations`), 단계별 지연(`latency_ms`)이 나온다.
+5. `GET /logs`에서 지금까지 한 질문과 검색 결과를 다시 볼 수 있다.
+
+로컬 Ollama로 답변을 생성하므로 한 번에 몇 초가 걸린다. 평가 평균은 약 4.6초였고, 서버를 막 띄운 직후에는 10~20초가 걸린 적도 있다.
+
 ## 로컬 개발 (Docker 없이 코드만 보는 경우)
 
 ```bash
@@ -179,4 +188,4 @@ uv run python -m eval.run_answer_eval --mode rerank --dataset eval/qa_test2.json
 
 ## 하지 않은 것 (의도적 스코프 제한)
 
-커스텀 프론트엔드, 멀티테넌트 RBAC, 수평 확장, 백그라운드 잡 큐, 스트리밍 응답, 임의 코퍼스 업로드, 임베딩 파인튜닝, 레이트리밋/캐싱 레이어, 이메일 인증/소셜 로그인. 이유는 각 항목이 "포트폴리오 프로젝트의 핵심 역량 증명"과 무관하거나 3~6주 스코프를 벗어나기 때문.
+커스텀 프론트엔드, 멀티테넌트 RBAC, 수평 확장, 백그라운드 잡 큐, 스트리밍 응답, 임의 코퍼스 업로드, 임베딩 파인튜닝, 레이트리밋/캐싱 레이어, 이메일 인증/소셜 로그인. 문서 QA의 검색·답변 품질이라는 이 프로젝트의 목표와 직접 관련이 없거나, 지금 서비스 규모에 비해 과한 구성이라 넣지 않음.
