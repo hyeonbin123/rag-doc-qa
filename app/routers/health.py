@@ -19,8 +19,16 @@ async def health(
     except Exception:
         db_status = "error"
 
+    generation_model = (
+        settings.ollama_model_name
+        if settings.generation_provider == "ollama"
+        else settings.claude_model_name
+    )
     return {
         "status": "ok" if db_status == "ok" else "degraded",
         "db": db_status,
         "embedding_model": settings.embedding_model_name,
+        "retrieval_mode": settings.retrieval_mode,
+        "generation_provider": settings.generation_provider,
+        "generation_model": generation_model,
     }

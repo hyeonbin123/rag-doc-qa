@@ -20,7 +20,12 @@ from app.services.security import (
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
-@router.post("/register", response_model=UserOut, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/register",
+    response_model=UserOut,
+    status_code=status.HTTP_201_CREATED,
+    responses={status.HTTP_409_CONFLICT: {"description": "Email already registered"}},
+)
 async def register(payload: UserRegister, db: AsyncSession = Depends(get_db)) -> User:
     existing = await db.scalar(select(User).where(User.email == payload.email))
     if existing is not None:

@@ -8,7 +8,7 @@ FastAPI 공식 문서(문서 155개, 청크 915개)에 질문하면 관련 문�
 
 | 항목 | 내용 |
 |---|---|
-| 기능 | JWT 로그인 → 질문 → 문서 검색 → 인용이 붙은 답변. 질문마다 검색 결과와 단계별 지연을 로그로 남김 |
+| 기능 | JWT 로그인 → 질문 → 문서 검색 → 인용이 붙은 답변. 질문마다 검색 결과와 단계별 지연을 로그로 남김. 브라우저에서 바로 써 볼 수 있는 채팅 화면 포함 |
 | 백엔드 | FastAPI(비동기), SQLAlchemy 2.0 + asyncpg, Alembic, PostgreSQL 16 + pgvector, Docker Compose, GitHub Actions CI |
 | AI | 로컬 임베딩 `BAAI/bge-small-en-v1.5`, 로컬 LLM Qwen2.5-7B(Ollama) 또는 Claude API, cross-encoder 재정렬 |
 | 검색 모드 | `dense` / `hybrid`(벡터 + SQL로 계산한 BM25, 가중 RRF) / `rerank`(cross-encoder 재채점). 기본값은 `dense` (아래 v7) |
@@ -116,7 +116,7 @@ cp .env.example .env
 ```bash
 docker compose up --build
 ```
-DB 헬스체크 통과 후 API가 마이그레이션(`alembic upgrade head`)을 자동 적용하고 `http://localhost:8000`에서 뜬다. Swagger UI: `http://localhost:8000/docs`.
+DB 헬스체크 통과 후 API가 마이그레이션(`alembic upgrade head`)을 자동 적용하고 `http://localhost:8000`에서 뜬다. 이 주소를 브라우저로 열면 채팅 화면이 나오고, `http://localhost:8000/docs`를 열면 Swagger UI가 나온다.
 
 `.env`는 호스트에서 실행하는 기준(`localhost`)으로 그대로 두면 된다. compose가 API 컨테이너의 `DATABASE_URL`은 `db` 서비스로, `OLLAMA_BASE_URL`은 `host.docker.internal:11434`(호스트에서 실행 중인 Ollama)로 덮어쓴다. 임베딩 모델과 재정렬 모델(`rerank` 모드용)은 빌드할 때 이미지에 넣어 두므로 실행 중에는 HuggingFace에 접속하지 않는다. torch는 CPU 빌드를 써서 이미지 크기는 약 2.35GB다.
 
@@ -140,7 +140,15 @@ curl -X POST localhost:8000/query/ask \
   -d '{"question": "How do I declare a path parameter in FastAPI?"}'
 ```
 
-### 5. 브라우저에서 직접 써 보기 (Swagger UI)
+### 5. 브라우저에서 직접 써 보기
+`http://localhost:8000`을 열면 채팅 화면이 나온다.
+- 이메일과 비밀번호로 계정을 만들고 영어로 질문하면, 답변 아래에 두 가지가 함께 나온다.
+  - 근거로 쓴 문서: 누르면 공식 문서 원문으로 이동한다
+  - 단계별로 걸린 시간
+- 로그인하면 최근 질문 10개를 불러온다.
+- 화면은 정적 HTML 한 장(`app/web/index.html`)이고, 아래 API를 그대로 호출한다.
+
+API를 직접 호출해 보려면 Swagger UI를 쓴다.
 1. `http://localhost:8000/docs`를 연다.
 2. `POST /auth/register` → **Try it out** → 이메일과 비밀번호를 넣고 **Execute**. 응답 코드가 201이면 가입 완료.
 3. 오른쪽 위 **Authorize** 버튼을 누르고, `username`에 이메일, `password`에 비밀번호를 넣어 로그인한다. 그다음 요청부터는 토큰이 자동으로 붙는다.
@@ -188,4 +196,4 @@ uv run python -m eval.run_answer_eval --mode rerank --dataset eval/qa_test2.json
 
 ## 하지 않은 것 (의도적 스코프 제한)
 
-커스텀 프론트엔드, 멀티테넌트 RBAC, 수평 확장, 백그라운드 잡 큐, 스트리밍 응답, 임의 코퍼스 업로드, 임베딩 파인튜닝, 레이트리밋/캐싱 레이어, 이메일 인증/소셜 로그인. 문서 QA의 검색·답변 품질이라는 이 프로젝트의 목표와 직접 관련이 없거나, 지금 서비스 규모에 비해 과한 구성이라 넣지 않음.
+빌드가 필요한 별도 프론트엔드 앱(체험용 채팅 화면은 정적 HTML 한 장으로 충분함), 멀티테넌트 RBAC, 수평 확장, 백그라운드 잡 큐, 스트리밍 응답, 임의 코퍼스 업로드, 임베딩 파인튜닝, 레이트리밋/캐싱 레이어, 이메일 인증/소셜 로그인. 문서 QA의 검색·답변 품질이라는 이 프로젝트의 목표와 직접 관련이 없거나, 지금 서비스 규모에 비해 과한 구성이라 넣지 않음.
