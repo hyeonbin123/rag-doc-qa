@@ -27,10 +27,11 @@ BM25_B = 0.75
 # from {0.25, 0.5, 0.75, 1.0} on eval/qa_dev.jsonl only, never on the test set.
 LEXICAL_WEIGHT = 0.75
 # Candidates taken from each of the dense and BM25 lists for the cross-encoder. Every
-# candidate costs one model forward pass at query time (about 60-80 ms each for
-# MiniLM-L6 on a desktop CPU), so this trades latency for recall. Picked from
-# {5, 10, 20} on eval/qa_dev.jsonl under a 1 s median retrieval budget.
-RERANK_POOL = 5
+# candidate costs one model forward pass at query time (on a desktop CPU, about 60 ms
+# each for the English MiniLM-L6 and 100 ms for the multilingual L12), so this trades
+# latency for recall. Picked per language on that language's tuning set under a 1 s
+# median retrieval budget: English from {5, 10, 20}, Korean from {3, 5, 8}.
+RERANK_POOLS: dict[Language, int] = {"en": 5, "ko": 3}
 
 _WORD_RE = re.compile(r"[A-Za-z0-9]+")
 
@@ -305,15 +306,16 @@ async def rerank_search(
     query_embedding: list[float],
     top_k: int,
     reranker: "RerankerService",
-    pool: int = RERANK_POOL,
+    pool: int | None = None,
     language: Language = "en",
 ) -> list[RetrievedChunk]:
     """Re-score the union of the dense and BM25 candidates with a cross-encoder.
 
     Unlike RRF, a candidate that only one list found is judged on its own text rather
     than on how many lists agreed on it. `score` becomes the reranker's relevance
-    probability.
+    probability. `pool` defaults to the language's RERANK_POOLS entry.
     """
+    pool = pool or RERANK_POOLS[language]
     candidates = await _rerank_candidates(db, question, query_embedding, pool, language)
     passages = [build_embedding_text(c.heading_path or "", c.content) for c in candidates]
     # The model call is CPU-bound; a worker thread keeps the event loop free meanwhile.
@@ -334,7 +336,7 @@ async def retrieve(
     language: Language | None = None,
     lexical_weight: float = LEXICAL_WEIGHT,
     reranker: "RerankerService | None" = None,
-    rerank_pool: int = RERANK_POOL,
+    rerank_pool: int | None = None,
 ) -> list[RetrievedChunk]:
     """Search the docs translation matching `language`, detected from the question if None."""
     language = language or detect_language(question)

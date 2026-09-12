@@ -26,7 +26,7 @@ async def ask(
     db: AsyncSession = Depends(get_db),
     embedder_for: Callable[[Language], EmbeddingService] = Depends(get_embedder),
     generator: GenerationService = Depends(get_generator),
-    reranker: RerankerService | None = Depends(get_reranker),
+    reranker_for: Callable[[Language], RerankerService] | None = Depends(get_reranker),
     settings: Settings = Depends(get_settings),
 ) -> AskResponse:
     language = (
@@ -45,7 +45,7 @@ async def ask(
             payload.top_k,
             settings.retrieval_mode,
             language=language,
-            reranker=reranker,
+            reranker=reranker_for(language) if reranker_for else None,
         )
 
     generation_sw = Stopwatch()

@@ -24,11 +24,17 @@ class Settings(BaseSettings):
     embedding_model_name_ko: str = "intfloat/multilingual-e5-small"
     retrieval_mode: Literal["dense", "hybrid", "rerank"] = "dense"
     reranker_model_name: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+    # The model above was trained on English only; on the Korean tuning set it ranked
+    # worse than no reranking at all, so Korean questions get a multilingual one.
+    reranker_model_name_ko: str = "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1"
     fastapi_docs_commit_sha: str = ""
     admin_ingest_token: str = "change-me-admin-token"
 
     def embedding_model_for(self, language: str) -> str:
         return self.embedding_model_name_ko if language == "ko" else self.embedding_model_name
+
+    def reranker_model_for(self, language: str) -> str:
+        return self.reranker_model_name_ko if language == "ko" else self.reranker_model_name
 
 
 @lru_cache

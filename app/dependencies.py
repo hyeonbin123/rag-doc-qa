@@ -46,11 +46,14 @@ def get_generator() -> GenerationService:
     return get_generation_service()
 
 
-def get_reranker(settings: Settings = Depends(get_settings)) -> RerankerService | None:
-    # Only load the cross-encoder when the configured mode actually uses it.
+def get_reranker(
+    settings: Settings = Depends(get_settings),
+) -> Callable[[Language], RerankerService] | None:
+    # Only load a cross-encoder when the configured mode actually uses it. Like the
+    # embedder, this is a per-language lookup.
     if settings.retrieval_mode != "rerank":
         return None
-    return get_reranker_service()
+    return get_reranker_service
 
 
 async def require_admin_token(

@@ -10,10 +10,10 @@ FastAPI 공식 문서(영어 원문 154개, 한국어 번역 123개, 청크 1,53
 |---|---|
 | 기능 | JWT 로그인 → 질문 → 문서 검색 → 인용이 붙은 답변. 질문마다 검색 결과와 단계별 지연을 로그로 남김. 한국어 질문은 한국어 번역 문서에서 찾아 한국어로 답함. 브라우저에서 바로 써 볼 수 있는 채팅 화면 포함 |
 | 백엔드 | FastAPI(비동기), SQLAlchemy 2.0 + asyncpg, Alembic, PostgreSQL 16 + pgvector, Docker Compose, GitHub Actions CI |
-| AI | 언어별 로컬 임베딩(영어 `BAAI/bge-small-en-v1.5`, 한국어 `intfloat/multilingual-e5-small`), 로컬 LLM Qwen2.5-7B(Ollama) 또는 Claude API, cross-encoder 재정렬 |
-| 검색 모드 | `dense` / `hybrid`(벡터 + SQL로 계산한 BM25, 가중 RRF) / `rerank`(cross-encoder 재채점). 기본값은 `dense` (아래 v7) |
-| 평가 | 질문셋 4개(영어 테스트 30, 튜닝용 32, 새 테스트 43문항, 한국어 테스트 43문항), Hit@k·MRR·검색 지연, LLM 판정 답변 정확도 |
-| 품질 관리 | pytest 40개(통합 테스트는 실제 Postgres + pgvector 사용), push마다 CI에서 ruff + pytest |
+| AI | 언어별 로컬 임베딩(영어 `BAAI/bge-small-en-v1.5`, 한국어 `intfloat/multilingual-e5-small`), 로컬 LLM Qwen2.5-7B(Ollama) 또는 Claude API, 언어별 cross-encoder 재정렬 |
+| 검색 모드 | `dense` / `hybrid`(벡터 + SQL로 계산한 BM25, 가중 RRF) / `rerank`(cross-encoder 재채점). 기본값은 `dense` (영어는 아래 v7, 한국어는 v9) |
+| 평가 | 질문셋 5개(영어: 테스트 30, 튜닝용 32, 새 테스트 43문항 / 한국어: 튜닝용 32, 테스트 43문항), Hit@k·MRR·검색 지연, LLM 판정 답변 정확도 |
+| 품질 관리 | pytest 43개(통합 테스트는 실제 Postgres + pgvector 사용), push마다 CI에서 ruff + pytest |
 | 응답 시간 | 약 4.6초 (대부분 로컬 LLM 생성 시간, RTX 2080 Ti) |
 
 ## 구조
@@ -28,7 +28,7 @@ flowchart LR
         Q["질문 + JWT"] --> LANG["질문 언어 판별<br/>한글이 있으면 ko"] --> EQ["같은 언어 모델로<br/>질문 임베딩"] --> MODE{"RETRIEVAL_MODE"}
         MODE -->|dense| D["벡터 검색"]
         MODE -->|hybrid| H["벡터 + BM25<br/>가중 RRF"]
-        MODE -->|rerank| R["벡터·BM25 후보를<br/>cross-encoder로 재채점"]
+        MODE -->|rerank| R["벡터·BM25 후보를<br/>언어별 cross-encoder로 재채점"]
         D --> GEN["LLM 답변 + 인용<br/>Ollama / Claude"]
         H --> GEN
         R --> GEN
@@ -76,6 +76,7 @@ flowchart LR
 | v6 | cross-encoder 재정렬 (지연 예산 1초 안에서 후보 수 선택) | 실패하던 q017 해결, 답변 정확도 4.73 → 4.87. 그러나 미리 정한 기준(MRR)에서 탈락 |
 | v7 | 문서를 보기 전에 쓴 새 테스트셋 43문항, 답변 정확도를 기준으로 재판정 | 재정렬이 Hit@5는 올렸지만(0.88 → 0.93) 답변 정확도는 동점(4.60). 동점이면 빠른 쪽을 남긴다는 규칙에 따라 기본값을 dense로 확정 |
 | v8 | 한국어 번역 문서와 한국어 질문 지원 (언어별 임베딩 모델과 언어별 벡터 인덱스) | 한국어 테스트셋 MRR 0.250 → 0.609, 답변 정확도 4.07/5 (같은 질문의 영어판은 4.60). 다국어 모델 하나로 통일하면 영어 테스트셋이 0.933 → 0.638로 떨어져서, 영어는 기존 모델을 유지함 (미리 정한 규칙과 다른 결정, 이유는 실험 기록에) |
+| v9 | 한국어 질문에 다국어 재정렬 모델 (한국어 튜닝용 셋 32문항을 새로 만들어 후보 수 선택) | 한국어 테스트셋 MRR 0.609 → 0.690으로 올랐지만 Hit@5가 0.77 → 0.72로 떨어져 미리 정한 조건에서 탈락. 한국어 기본값도 dense 유지. `rerank` 모드에서는 한국어 질문이 다국어 모델을 쓰도록 설정을 언어별로 나눔 (기존 영어 전용 모델은 한국어 튜닝용 셋에서 재정렬을 안 한 것보다도 낮았음) |
 
 각 단계의 가설, 절차, 문항 단위 분석은 [docs/experiments.md](docs/experiments.md)에, 리포트 원본은 `eval/reports/`에 있음.
 
@@ -86,7 +87,7 @@ flowchart LR
 - **인용을 스키마로 강제**: "인용 형식을 지켜라"라고 부탁하는 대신 JSON 스키마(Claude는 `tool_choice`, Ollama는 제약 디코딩)로 강제함. 로컬 7B 모델은 제약 디코딩 중 문자열 속 따옴표를 이스케이프하지 못해 코드가 든 답변이 잘렸음. 그래서 Ollama 경로만 답변(자유 텍스트)과 인용(숫자 목록)을 두 번에 나눠 호출함.
 - **측정 규칙을 먼저 정함**: 파라미터는 튜닝용 질문셋에서만 고르고, 테스트셋에는 고른 설정 하나만 돌림. 기본값을 바꾸는 조건도 측정 전에 정함. v5와 v6에서 결과가 기대와 달라도 규칙을 사후에 바꾸지 않았음.
 - **BM25를 SQL로**: 확장이나 통계 테이블 없이 GIN 인덱스로 문서 빈도를, `tsvector` 위치 정보로 단어 빈도를 계산함. 이 규모에서 질의 1회 약 40~50ms라 DB 이미지를 바꾸는 확장(ParadeDB)까지는 필요 없다고 판단함.
-- **재정렬의 비용 관리**: cross-encoder는 질문이 올 때마다 후보마다 모델을 돌려야 해서, CPU에서 후보 하나에 60~80ms가 듦. 품질을 재기 전에 검색 지연 예산(중앙값 1초)부터 정하고 그 안에서만 후보 수를 고름. 모델 호출은 스레드에서 실행해 이벤트 루프를 막지 않음.
+- **재정렬의 비용 관리**: cross-encoder는 질문이 올 때마다 후보마다 모델을 돌려야 해서, CPU에서 후보 하나에 영어 모델 약 60ms, 다국어 모델 약 100ms가 듦. 품질을 재기 전에 검색 지연 예산(중앙값 1초)부터 정하고 그 안에서만 후보 수를 고름. 모델과 후보 수는 언어마다 따로 둠(영어 목록당 5개, 한국어 3개). 모델 호출은 스레드에서 실행해 이벤트 루프를 막지 않음.
 - **청커 버전을 수집 해시에 포함**: 원문만 해시하면 청킹 로직을 바꿔도 재수집 때 모든 문서가 "변경 없음"으로 건너뛰어져, 예전 청크로 측정하게 되는 잠재 버그가 있었음. 같은 이유로 임베딩 모델 이름도 해시에 넣음.
 - **언어별 임베딩 모델과 인덱스**: 영어 모델은 한국어를 제대로 표현하지 못하고(한국어 테스트셋 MRR 0.250), 다국어 모델은 영어 성능이 크게 떨어짐(영어 테스트셋 0.933 → 0.638). 그래서 청크마다 언어를 저장하고 언어마다 다른 모델로 임베딩함. 두 모델의 벡터는 서로 다른 공간이라 섞어서 탐색하면 안 되므로, 언어별 부분(partial) HNSW 인덱스를 따로 둠. 질문은 한글이 있으면 한국어로 판별해 같은 언어의 모델과 인덱스만 씀.
 
@@ -94,10 +95,11 @@ flowchart LR
 
 - 두 검색 방식 모두 못 찾는 질문이 있음. "파일 다운로드"를 물으면 dense는 업로드 문서를 가져옴(t010). 사용자와 문서가 다른 용어를 쓰는 경우("필드" vs "쿼리 파라미터", t043)도 둘 다 실패함. 기존 테스트셋의 q017은 `rerank` 모드에서만 풀림.
 - 재정렬은 정답 문서를 상위 5개에 더 자주 넣지만, 로컬 7B 생성 모델은 컨텍스트 구성이 조금만 바뀌어도 답이 달라져서 답변 정확도 평균은 그대로였음 (v7).
-- 한국어는 기본값인 dense만 측정했음. hybrid의 키워드 검색은 영어 형태소 설정이라 한국어 질문에서는 영어 단어(API 이름)만 쓰고, rerank의 재정렬 모델은 영어 전용이라 한국어에는 맞지 않음.
+- 한국어의 `hybrid`는 측정하지 않았음. 키워드 검색이 영어 형태소 설정이라 한국어 질문에서는 영어 단어(API 이름)만 쓰기 때문. 한국어 `rerank`는 다국어 재정렬 모델로 측정했지만, 후보를 목록당 3개로 줄인 탓에 dense 5위 안에 있던 정답이 빠지는 문항이 생겨 기본값으로 쓰지 않음 (v9).
+- 한국어 튜닝용 셋은 영어 튜닝용 셋을 옮긴 것이라, 문서를 보면서 쓴 질문의 편향을 그대로 가짐. v9에서 이 셋은 후보를 줄였을 때의 위험을 잡아내지 못했음.
 - 한국어 번역은 영어 문서 155개 중 124개에만 있음. API 레퍼런스, 릴리스 노트 같은 페이지는 번역이 없어서, 그 내용을 한국어로 물으면 답을 찾지 못함.
 - 질문 언어는 한글이 한 글자라도 있으면 한국어로 판별함. API 요청에 `language`를 넣어 직접 지정할 수도 있음.
-- 로컬 Qwen2.5-7B는 한국어 답변에 가끔 일본어 단어를 섞음(예: "엔드ポイント"). 생성 모델의 한계라서 프롬프트로는 막지 않았음.
+- 로컬 Qwen2.5-7B는 한국어 답변에 가끔 일본어 단어(예: "엔드ポイント")나 중국어 문장을 섞음. 생성 모델의 한계라서 프롬프트로는 막지 않았음.
 - 질문셋이 30~43문항이라, 문항 하나가 순위 한 칸 바뀌면 MRR이 0.02 안팎 움직임. 방법 간 작은 차이는 가려내기 어려움.
 - 판정은 로컬 7B 모델이 하므로 오판이 있음. 예를 들어 검색 실패 후 "컨텍스트에 정보가 없다"는 올바른 거절 응답을 환각으로 표시한 적이 있음.
 - 키워드 커버리지는 거친 지표임. 판정 정확도가 5점인데 핵심 이름을 다르게 표현해 커버리지가 0인 문항이 있어서, 두 지표를 함께 봐야 함.
@@ -124,7 +126,7 @@ docker compose up --build
 ```
 DB 헬스체크 통과 후 API가 마이그레이션(`alembic upgrade head`)을 자동 적용하고 `http://localhost:8000`에서 뜬다. 이 주소를 브라우저로 열면 채팅 화면이 나오고, `http://localhost:8000/docs`를 열면 Swagger UI가 나온다.
 
-`.env`는 호스트에서 실행하는 기준(`localhost`)으로 그대로 두면 된다. compose가 API 컨테이너의 `DATABASE_URL`은 `db` 서비스로, `OLLAMA_BASE_URL`은 `host.docker.internal:11434`(호스트에서 실행 중인 Ollama)로 덮어쓴다. 임베딩 모델과 재정렬 모델(`rerank` 모드용)은 빌드할 때 이미지에 넣어 두므로 실행 중에는 HuggingFace에 접속하지 않는다. torch는 CPU 빌드를 써서 이미지 크기는 약 2.35GB다.
+`.env`는 호스트에서 실행하는 기준(`localhost`)으로 그대로 두면 된다. compose가 API 컨테이너의 `DATABASE_URL`은 `db` 서비스로, `OLLAMA_BASE_URL`은 `host.docker.internal:11434`(호스트에서 실행 중인 Ollama)로 덮어쓴다. 임베딩 모델(언어별 2개)과 재정렬 모델(`rerank` 모드용, 언어별 2개)은 빌드할 때 이미지에 넣어 두므로 실행 중에는 HuggingFace에 접속하지 않는다. torch는 CPU 빌드를 쓰고, 모델 네 개가 들어 있어 이미지 크기는 약 4.0GB다.
 
 ### 3. 문서 수집 (최초 1회)
 ```bash
@@ -191,11 +193,12 @@ uv run python -m eval.run_retrieval_eval --tag v2_tuned
 # 검색 모드 비교 (--mode를 생략하면 RETRIEVAL_MODE 설정을 따름)
 uv run python -m eval.run_retrieval_eval --mode dense --tag v4_dense
 uv run python -m eval.run_retrieval_eval --mode hybrid --tag v4_hybrid
-# 파라미터 튜닝은 검증셋으로만 한다 (--dataset 기본값은 테스트셋인 eval/qa_dataset.jsonl)
+# 파라미터 튜닝은 튜닝용 셋으로만 한다 (영어 eval/qa_dev.jsonl, 한국어 eval/qa_dev_ko.jsonl. --dataset 기본값은 테스트셋인 eval/qa_dataset.jsonl)
 uv run python -m eval.run_retrieval_eval --mode hybrid --dataset eval/qa_dev.jsonl --lexical-weight 0.5 --tag dev_w050
-# rerank: 목록당 후보 수 기본값은 검증셋에서 고른 5 (--rerank-pool로 변경). 리포트에 검색 지연 p50/p95도 기록됨
+# rerank: 재정렬 모델과 목록당 후보 수는 질문 언어를 따름 (영어 5개, 한국어 3개. --reranker-model, --rerank-pool로 모든 질문에 덮어쓸 수 있음). 리포트에 검색 지연 p50/p95도 기록됨
 uv run python -m eval.run_retrieval_eval --mode rerank --dataset eval/qa_dev.jsonl --tag dev_rerank
-# 두 평가 모두 --dataset으로 질문셋을 고른다 (v7은 eval/qa_test2.jsonl)
+uv run python -m eval.run_retrieval_eval --mode rerank --dataset eval/qa_dev_ko.jsonl --tag dev_ko_rerank
+# 두 평가 모두 --dataset으로 질문셋을 고른다 (v7은 eval/qa_test2.jsonl, 한국어는 eval/qa_test2_ko.jsonl)
 uv run python -m eval.run_answer_eval --mode rerank --dataset eval/qa_test2.jsonl --tag v7_rerank
 ```
 결과는 `eval/reports/`에 마크다운으로 남는다. 판정 LLM은 `GENERATION_PROVIDER` 설정을 그대로 따르므로, Ollama 설정이면 평가 전체가 무료로 돌아간다.

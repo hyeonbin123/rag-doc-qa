@@ -42,6 +42,12 @@ def test_each_language_has_its_own_embedding_model():
     assert settings.embedding_model_for("ko") == settings.embedding_model_name_ko
 
 
+def test_each_language_has_its_own_reranker_model():
+    settings = get_settings()
+    assert settings.reranker_model_for("en") == settings.reranker_model_name
+    assert settings.reranker_model_for("ko") == settings.reranker_model_name_ko
+
+
 def test_only_korean_questions_get_a_language_rule_in_the_prompt():
     # The English prompt must stay byte-for-byte the original: a general language
     # rule made the local model answer English questions in Korean.

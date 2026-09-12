@@ -12,10 +12,10 @@ COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project
 
 # Bake the models in before copying source, so code edits don't re-download them. The
-# cross-encoder is only used with RETRIEVAL_MODE=rerank, but HF_HUB_OFFLINE below means
-# it could not be fetched at runtime either.
+# cross-encoders are only used with RETRIEVAL_MODE=rerank, but HF_HUB_OFFLINE below
+# means they could not be fetched at runtime either.
 RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('BAAI/bge-small-en-v1.5'); SentenceTransformer('intfloat/multilingual-e5-small')"
-RUN python -c "from sentence_transformers import CrossEncoder; CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')"
+RUN python -c "from sentence_transformers import CrossEncoder; CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2'); CrossEncoder('cross-encoder/mmarco-mMiniLMv2-L12-H384-v1')"
 # The model is cached above; without this, every startup still round-trips to the Hub.
 ENV HF_HUB_OFFLINE=1
 

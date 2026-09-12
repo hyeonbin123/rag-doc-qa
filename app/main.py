@@ -15,10 +15,11 @@ from app.services.reranking import get_reranker_service
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     configure_logging()
-    for language in SUPPORTED_LANGUAGES:
-        get_embedding_service(language)  # load each language's embedding model once at startup
-    if get_settings().retrieval_mode == "rerank":
-        get_reranker_service()
+    rerank = get_settings().retrieval_mode == "rerank"
+    for language in SUPPORTED_LANGUAGES:  # load each language's models once at startup
+        get_embedding_service(language)
+        if rerank:
+            get_reranker_service(language)
     yield
 
 

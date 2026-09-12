@@ -5,7 +5,9 @@ Usage:
         [--mode dense|hybrid|rerank] [--dataset eval/qa_dev.jsonl]
         [--lexical-weight 0.75] [--rerank-pool 10] [--reranker-model NAME]
 
-Tune on eval/qa_dev.jsonl; eval/qa_dataset.jsonl is the held-out test set.
+Tune on the tuning sets (eval/qa_dev.jsonl, eval/qa_dev_ko.jsonl); the other sets are
+held out for testing. In rerank mode the model and pool follow each question's
+language; --reranker-model and --rerank-pool override them for every question.
 """
 
 from __future__ import annotations
@@ -14,15 +16,16 @@ import argparse
 import asyncio
 import statistics
 import time
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
 from app.config import get_settings
 from app.db.session import async_session_maker
 from app.services.embedding import get_embedding_service
-from app.services.language import detect_language
-from app.services.reranking import RerankerService
-from app.services.retrieval import LEXICAL_WEIGHT, RERANK_POOL, retrieve
+from app.services.language import Language, detect_language
+from app.services.reranking import RerankerService, get_reranker_service
+from app.services.retrieval import LEXICAL_WEIGHT, RERANK_POOLS, retrieve
 from eval.common import DATASET_PATH, EvalQuestion, load_dataset, write_report
 
 
@@ -37,10 +40,23 @@ def reciprocal_rank(ranked_paths: list[str], expected: list[str]) -> float:
     return 0.0
 
 
+def reranker_lookup(model_override: str | None) -> Callable[[Language], RerankerService]:
+    if model_override is None:
+        return get_reranker_service  # the configured model for each question's language
+    fixed = RerankerService(model_override)
+    return lambda language: fixed
+
+
 async def evaluate_question(
-    db, embedder, q: EvalQuestion, args: argparse.Namespace, reranker: RerankerService | None
+    db,
+    embedder,
+    q: EvalQuestion,
+    args: argparse.Namespace,
+    reranker_for: Callable[[Language], RerankerService] | None,
 ) -> dict:
-    query_vector = embedder(detect_language(q.question)).embed_query(q.question)
+    language = detect_language(q.question)
+    query_vector = embedder(language).embed_query(q.question)
+    reranker = reranker_for(language) if reranker_for else None
     # Timed after the embedding so every mode is measured on the same work: the DB
     # queries, plus the cross-encoder in rerank mode.
     start = time.perf_counter()
@@ -50,6 +66,7 @@ async def evaluate_question(
         query_vector,
         args.top_k,
         args.mode,
+        language=language,
         lexical_weight=args.lexical_weight,
         reranker=reranker,
         rerank_pool=args.rerank_pool,
@@ -74,17 +91,18 @@ async def main(args: argparse.Namespace) -> None:
     args.mode = args.mode or settings.retrieval_mode
     embedder = get_embedding_service  # per-language lookup, called with each question's language
     questions = load_dataset(args.dataset)
+    languages = sorted({detect_language(q.question) for q in questions})
 
-    reranker = None
+    reranker_for = None
     if args.mode == "rerank":
-        args.reranker_model = args.reranker_model or settings.reranker_model_name
-        reranker = RerankerService(args.reranker_model)
-        reranker.score("warm-up", ["warm-up"])  # keep one-off setup cost out of the timings
+        reranker_for = reranker_lookup(args.reranker_model)
+        for language in languages:  # keep one-off setup cost out of the timings
+            reranker_for(language).score("warm-up", ["warm-up"])
 
     results = []
     async with async_session_maker() as db:
         for q in questions:
-            results.append(await evaluate_question(db, embedder, q, args, reranker))
+            results.append(await evaluate_question(db, embedder, q, args, reranker_for))
 
     n = len(results)
     latencies = [r["latency_ms"] for r in results]
@@ -109,9 +127,10 @@ async def main(args: argparse.Namespace) -> None:
     if args.mode == "hybrid":
         lines.append(f"- lexical: BM25, RRF weight {args.lexical_weight}")
     if args.mode == "rerank":
-        lines.append(
-            f"- reranker: {args.reranker_model}, top {args.rerank_pool} of each of dense and BM25"
-        )
+        for language in languages:
+            model = args.reranker_model or settings.reranker_model_for(language)
+            pool = args.rerank_pool or RERANK_POOLS[language]
+            lines.append(f"- reranker ({language}): {model}, top {pool} of each of dense and BM25")
     lines += [
         f"- dataset: {args.dataset.name}",
         f"- questions: {n}",
@@ -150,6 +169,10 @@ if __name__ == "__main__":
     parser.add_argument("--mode", choices=["dense", "hybrid", "rerank"], default=None)
     parser.add_argument("--dataset", type=Path, default=DATASET_PATH)
     parser.add_argument("--lexical-weight", type=float, default=LEXICAL_WEIGHT)
-    parser.add_argument("--rerank-pool", type=int, default=RERANK_POOL)
-    parser.add_argument("--reranker-model", default=None, help="defaults to RERANKER_MODEL_NAME")
+    parser.add_argument(
+        "--rerank-pool", type=int, default=None, help="defaults to RERANK_POOLS[language]"
+    )
+    parser.add_argument(
+        "--reranker-model", default=None, help="defaults to the language's RERANKER_MODEL_NAME"
+    )
     asyncio.run(main(parser.parse_args()))

@@ -15,6 +15,7 @@ import torch
 from sentence_transformers import CrossEncoder
 
 from app.config import get_settings
+from app.services.language import Language
 
 MAX_LENGTH = 512
 BATCH_SIZE = 16
@@ -41,5 +42,10 @@ class RerankerService:
 
 
 @lru_cache
-def get_reranker_service() -> RerankerService:
-    return RerankerService(get_settings().reranker_model_name)
+def _load(model_name: str) -> RerankerService:
+    return RerankerService(model_name)
+
+
+def get_reranker_service(language: Language = "en") -> RerankerService:
+    """The cross-encoder for questions in `language`, loaded once per model."""
+    return _load(get_settings().reranker_model_for(language))

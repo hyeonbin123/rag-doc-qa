@@ -162,12 +162,14 @@ async def main(
     mode = mode or settings.retrieval_mode
     embedder = get_embedding_service  # per-language lookup, called with each question's language
     generator = get_generation_service()
-    reranker = get_reranker_service() if mode == "rerank" else None
     questions = load_dataset(dataset)
 
     results = []
     async with async_session_maker() as db:
         for q in questions:
+            reranker = None
+            if mode == "rerank":  # like the embedder, chosen by the question's language
+                reranker = get_reranker_service(detect_language(q.question))
             results.append(
                 await evaluate_question(
                     db, embedder, generator, settings, q, top_k, mode, skip_judge, reranker

@@ -4,6 +4,7 @@ from app.models.chunk import Chunk
 from app.models.document import Document
 from app.services.reranking import RerankerService
 from app.services.retrieval import (
+    RERANK_POOLS,
     hybrid_search,
     lexical_search,
     rerank_search,
@@ -18,8 +19,10 @@ class KeywordReranker(RerankerService):
 
     def __init__(self, keyword: str) -> None:  # intentionally skip loading a real model
         self.keyword = keyword
+        self.last_candidate_count = 0
 
     def score(self, question: str, passages: list[str]) -> list[float]:
+        self.last_candidate_count = len(passages)
         return [1.0 if self.keyword in p else 0.0 for p in passages]
 
 
@@ -155,6 +158,23 @@ async def test_rerank_search_respects_top_k(db_session):
         db_session, "content", query_vector, top_k=2, reranker=KeywordReranker("content")
     )
     assert len(results) == 2
+
+
+@pytest.mark.asyncio
+async def test_rerank_pool_defaults_to_the_questions_language(db_session):
+    for i in range(8):
+        vector = [1.0, 0.1 * i] + [0.0] * (EMBEDDING_DIM - 2)
+        await _seed_document_with_chunk(db_session, vector, f"{i} english chunk", "en")
+        await _seed_document_with_chunk(db_session, vector, f"{i} 한국어 청크", "ko")
+
+    # Neither question has [A-Za-z0-9] words, so the dense list is the only source of
+    # candidates and its length is exactly the pool.
+    query_vector = [1.0] + [0.0] * (EMBEDDING_DIM - 1)
+    reranker = KeywordReranker("chunk")
+    await rerank_search(db_session, "?!", query_vector, 10, reranker, language="en")
+    assert reranker.last_candidate_count == RERANK_POOLS["en"]
+    await rerank_search(db_session, "청크를 찾아 주세요", query_vector, 10, reranker, language="ko")
+    assert reranker.last_candidate_count == RERANK_POOLS["ko"]
 
 
 @pytest.mark.asyncio
