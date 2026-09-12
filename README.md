@@ -133,7 +133,7 @@ DB 헬스체크 통과 후 API가 마이그레이션(`alembic upgrade head`)을 
 ```bash
 docker compose exec api python -m scripts.ingest_fastapi_docs
 ```
-FastAPI 공식 문서를 가져와 청킹·임베딩 후 DB에 적재한다. 대상은 GitHub `tiangolo/fastapi`의 영어 원문(`docs/en/docs/`)과 한국어 번역(`docs/ko/docs/`)이고, 언어마다 정해진 임베딩 모델을 쓴다(`--languages en`처럼 일부 언어만 적재할 수도 있음). 재실행해도 내용이 바뀐 문서만 다시 처리한다(content hash 기반 idempotent). 해시에 청커 버전(`CHUNKER_VERSION`)과 임베딩 모델 이름이 들어 있어서, 청킹 로직이나 임베딩 모델을 바꾸면 해당 문서가 자동으로 다시 처리된다. 바뀐 문서가 있으면 적재 후 `VACUUM (ANALYZE)`를 실행해, 지워진 이전 청크가 벡터 검색 품질을 떨어뜨리지 않게 한다. 컨테이너 안에서는 `uv run` 대신 `python -m`으로 실행한다. `uv run`은 실행할 때마다 dev 의존성까지 설치하려고 하기 때문이다.
+FastAPI 공식 문서를 가져와 청킹·임베딩 후 DB에 적재한다. 처음 적재는 CPU로 임베딩해서 약 5분 걸린다(데스크톱 CPU 기준, 문서 277개·청크 1,535개). 대상은 GitHub `tiangolo/fastapi`의 영어 원문(`docs/en/docs/`)과 한국어 번역(`docs/ko/docs/`)이고, 언어마다 정해진 임베딩 모델을 쓴다(`--languages en`처럼 일부 언어만 적재할 수도 있음). 재실행해도 내용이 바뀐 문서만 다시 처리한다(content hash 기반 idempotent). 해시에 청커 버전(`CHUNKER_VERSION`)과 임베딩 모델 이름이 들어 있어서, 청킹 로직이나 임베딩 모델을 바꾸면 해당 문서가 자동으로 다시 처리된다. 바뀐 문서가 있으면 적재 후 `VACUUM (ANALYZE)`를 실행해, 지워진 이전 청크가 벡터 검색 품질을 떨어뜨리지 않게 한다. 컨테이너 안에서는 `uv run` 대신 `python -m`으로 실행한다. `uv run`은 실행할 때마다 dev 의존성까지 설치하려고 하기 때문이다.
 
 ### 4. 데모 사용자 생성 및 질문
 ```bash
