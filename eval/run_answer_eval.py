@@ -2,11 +2,12 @@
 faithfulness and correctness, against eval/qa_dataset.jsonl.
 
 The judge runs on whichever provider GENERATION_PROVIDER selects, so a fully
-local (free) eval run is possible.
+local (free) eval run is possible. --judge-model pins the judge to one model, so
+runs that compare generation models are all scored by the same judge.
 
 Usage:
     python -m eval.run_answer_eval [--top-k 5] [--tag v1_baseline] [--mode dense|hybrid|rerank] [--skip-judge]
-                                   [--dataset eval/qa_test2.jsonl]
+                                   [--dataset eval/qa_test2.jsonl] [--judge-model qwen2.5:7b-instruct]
 """
 
 from __future__ import annotations
@@ -14,6 +15,9 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import re
+import statistics
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -28,6 +32,11 @@ from app.services.language import detect_language
 from app.services.reranking import RerankerService, get_reranker_service
 from app.services.retrieval import RetrievalMode, retrieve
 from eval.common import DATASET_PATH, EvalQuestion, load_dataset, write_report
+
+# Kana (U+3040-U+30FF) and Han (U+4E00-U+9FFF) characters. The docs never use them, so
+# in an answer they mean the model slipped into Japanese or Chinese (seen in Korean
+# answers from the 7B model).
+KANA_HAN_RE = re.compile(r"[぀-ヿ一-鿿]")
 
 JUDGE_SCHEMA = {
     "type": "object",
@@ -77,10 +86,10 @@ def _build_judge_prompt(question: str, context: str, answer: str, reference: str
     )
 
 
-async def judge_with_anthropic(settings, prompt: str) -> dict:
+async def judge_with_anthropic(settings, prompt: str, model: str) -> dict:
     client = AsyncAnthropic(api_key=settings.anthropic_api_key)
     response = await client.messages.create(
-        model=settings.claude_model_name,
+        model=model,
         max_tokens=256,
         tools=[JUDGE_TOOL],
         tool_choice={"type": "tool", "name": "score_answer"},
@@ -90,9 +99,9 @@ async def judge_with_anthropic(settings, prompt: str) -> dict:
     return tool_use.input
 
 
-async def judge_with_ollama(settings, prompt: str) -> dict:
+async def judge_with_ollama(settings, prompt: str, model: str) -> dict:
     payload = {
-        "model": settings.ollama_model_name,
+        "model": model,
         "messages": [{"role": "user", "content": prompt}],
         "format": JUDGE_SCHEMA,
         "stream": False,
@@ -105,12 +114,14 @@ async def judge_with_ollama(settings, prompt: str) -> dict:
     return json.loads(data["message"]["content"])
 
 
-async def judge_answer(settings, question: str, context: str, answer: str, reference: str) -> dict:
+async def judge_answer(
+    settings, question: str, context: str, answer: str, reference: str, judge_model: str
+) -> dict:
     prompt = _build_judge_prompt(question, context, answer, reference)
     if settings.generation_provider == "ollama":
-        result = await judge_with_ollama(settings, prompt)
+        result = await judge_with_ollama(settings, prompt, judge_model)
     else:
-        result = await judge_with_anthropic(settings, prompt)
+        result = await judge_with_anthropic(settings, prompt, judge_model)
 
     # An out-of-range score would silently skew every average, so fail loudly instead.
     for key in ("faithfulness_score", "correctness_score"):
@@ -119,15 +130,13 @@ async def judge_answer(settings, question: str, context: str, answer: str, refer
     return result
 
 
-async def evaluate_question(
+async def generate_answer(
     db,
     embedder,
     generator,
-    settings,
     q: EvalQuestion,
     top_k: int,
     mode: RetrievalMode,
-    skip_judge: bool,
     reranker: RerankerService | None,
 ) -> dict:
     language = detect_language(q.question)
@@ -135,34 +144,40 @@ async def evaluate_question(
     retrieved = await retrieve(
         db, q.question, query_vector, top_k, mode, language=language, reranker=reranker
     )
+    start = time.perf_counter()
     generation_result = await generator.answer(q.question, retrieved, language=language)
-
-    coverage = keyword_coverage(generation_result.answer, q.must_include_keywords)
-
-    judge_result = {"faithfulness_score": None, "hallucinated": None, "correctness_score": None}
-    if not skip_judge and retrieved:
-        context = "\n\n".join(r.content for r in retrieved)
-        judge_result = await judge_answer(
-            settings, q.question, context, generation_result.answer, q.reference_answer
-        )
+    generation_ms = (time.perf_counter() - start) * 1000
 
     return {
         "id": q.id,
         "question": q.question,
         "answer": generation_result.answer,
-        "keyword_coverage": coverage,
-        **judge_result,
+        "keyword_coverage": keyword_coverage(generation_result.answer, q.must_include_keywords),
+        "generation_ms": generation_ms,
+        "kana_han": bool(KANA_HAN_RE.search(generation_result.answer)),
+        "context": "\n\n".join(r.content for r in retrieved),
     }
 
 
 async def main(
-    top_k: int, tag: str, mode: RetrievalMode | None, skip_judge: bool, dataset: Path
+    top_k: int,
+    tag: str,
+    mode: RetrievalMode | None,
+    skip_judge: bool,
+    dataset: Path,
+    judge_model: str | None,
 ) -> None:
     settings = get_settings()
     mode = mode or settings.retrieval_mode
     embedder = get_embedding_service  # per-language lookup, called with each question's language
     generator = get_generation_service()
     questions = load_dataset(dataset)
+    model_in_use = (
+        settings.ollama_model_name
+        if settings.generation_provider == "ollama"
+        else settings.claude_model_name
+    )
+    judge_model = judge_model or model_in_use
 
     results = []
     async with async_session_maker() as db:
@@ -171,10 +186,20 @@ async def main(
             if mode == "rerank":  # like the embedder, chosen by the question's language
                 reranker = get_reranker_service(detect_language(q.question))
             results.append(
-                await evaluate_question(
-                    db, embedder, generator, settings, q, top_k, mode, skip_judge, reranker
-                )
+                await generate_answer(db, embedder, generator, q, top_k, mode, reranker)
             )
+
+    # Judge only after every answer exists. With a judge model other than the generator,
+    # interleaving the two would make Ollama swap models on every question, and the
+    # reload time would land in the generation timings.
+    for q, r in zip(questions, results, strict=True):
+        context = r.pop("context")
+        judge_result = {"faithfulness_score": None, "hallucinated": None, "correctness_score": None}
+        if not skip_judge and context:
+            judge_result = await judge_answer(
+                settings, q.question, context, r["answer"], q.reference_answer, judge_model
+            )
+        r.update(judge_result)
 
     n = len(results)
     avg_coverage = sum(r["keyword_coverage"] for r in results) / n
@@ -182,18 +207,14 @@ async def main(
     avg_faithfulness = sum(r["faithfulness_score"] for r in scored) / len(scored) if scored else None
     avg_correctness = sum(r["correctness_score"] for r in scored) / len(scored) if scored else None
     hallucinated_count = sum(1 for r in scored if r["hallucinated"])
+    generation_p50 = statistics.median(r["generation_ms"] for r in results)
+    kana_han_count = sum(1 for r in results if r["kana_han"])
 
     faithfulness_str = "n/a" if avg_faithfulness is None else f"{avg_faithfulness:.2f}"
     correctness_str = "n/a" if avg_correctness is None else f"{avg_correctness:.2f}"
     metrics_row = (
         f"| {avg_coverage:.2f} | {faithfulness_str} | {correctness_str} "
-        f"| {hallucinated_count}/{len(scored)} |"
-    )
-
-    model_in_use = (
-        settings.ollama_model_name
-        if settings.generation_provider == "ollama"
-        else settings.claude_model_name
+        f"| {hallucinated_count}/{len(scored)} | {generation_p50:.0f} | {kana_han_count}/{n} |"
     )
 
     lines = [
@@ -202,25 +223,29 @@ async def main(
         f"- date: {datetime.now(UTC).isoformat()}",
         f"- provider: {settings.generation_provider}",
         f"- model: {model_in_use}",
+        f"- judge model: {judge_model}",
         f"- top_k: {top_k}",
         f"- retrieval mode: {mode}",
         f"- dataset: {dataset.name}",
         f"- questions: {n}",
         f"- judge skipped: {skip_judge}",
+        "- generation time: both generation calls (answer + citations), this machine's GPU",
         "",
         "## Aggregate metrics",
         "",
-        "| Avg keyword coverage | Avg faithfulness (1-5) | Avg correctness (1-5) | Hallucinated |",
-        "|---|---|---|---|",
+        "| Avg keyword coverage | Avg faithfulness (1-5) | Avg correctness (1-5) | Hallucinated "
+        "| Generation p50 (ms) | Answers with kana/han |",
+        "|---|---|---|---|---|---|",
         metrics_row,
         "",
         "## Per-question",
         "",
-        "| id | coverage | faithfulness | correctness | hallucinated |",
-        "|---|---|---|---|---|",
+        "| id | coverage | faithfulness | correctness | hallucinated | generation ms | kana/han |",
+        "|---|---|---|---|---|---|---|",
         *(
             f"| {r['id']} | {r['keyword_coverage']:.2f} | {r['faithfulness_score']} "
-            f"| {r['correctness_score']} | {r['hallucinated']} |"
+            f"| {r['correctness_score']} | {r['hallucinated']} | {r['generation_ms']:.0f} "
+            f"| {r['kana_han']} |"
             for r in results
         ),
         "",
@@ -247,5 +272,10 @@ if __name__ == "__main__":
     parser.add_argument("--skip-judge", action="store_true", help="skip Claude-as-judge calls (fast, free)")
     parser.add_argument("--mode", choices=["dense", "hybrid", "rerank"], default=None)
     parser.add_argument("--dataset", type=Path, default=DATASET_PATH)
+    parser.add_argument(
+        "--judge-model", default=None, help="defaults to the generation model in use"
+    )
     args = parser.parse_args()
-    asyncio.run(main(args.top_k, args.tag, args.mode, args.skip_judge, args.dataset))
+    asyncio.run(
+        main(args.top_k, args.tag, args.mode, args.skip_judge, args.dataset, args.judge_model)
+    )
