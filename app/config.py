@@ -27,6 +27,9 @@ class Settings(BaseSettings):
     # The model above was trained on English only; on the Korean tuning set it ranked
     # worse than no reranking at all, so Korean questions get a multilingual one.
     reranker_model_name_ko: str = "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1"
+    # Worker threads for CPU-bound model calls (embeddings, the cross-encoder). 6 was
+    # measured against 1 on a 12-core desktop; see app/services/inference.py.
+    model_threads: int = 6
     fastapi_docs_commit_sha: str = ""
     admin_ingest_token: str = "change-me-admin-token"
 

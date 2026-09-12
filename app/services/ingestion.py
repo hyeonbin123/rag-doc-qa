@@ -26,6 +26,7 @@ from app.services.chunking import (
     strip_heading_anchor,
 )
 from app.services.embedding import EmbeddingService
+from app.services.inference import run_model
 from app.services.language import SUPPORTED_LANGUAGES
 
 GITHUB_API = "https://api.github.com"
@@ -189,7 +190,9 @@ async def run_ingestion(
             embedding_texts = [
                 build_embedding_text(c.heading_path, c.content) for c in chunk_results
             ]
-            embeddings = embedder.embed_passages(embedding_texts)
+            # Minutes of CPU work over a full ingest. The admin endpoint runs this inside
+            # the API process, so it goes to the model thread and the server keeps answering.
+            embeddings = await run_model(embedder.embed_passages, embedding_texts)
 
             paired = zip(chunk_results, embeddings, strict=True)
             for idx, (chunk_result, embedding) in enumerate(paired):

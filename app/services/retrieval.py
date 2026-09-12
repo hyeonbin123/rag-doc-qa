@@ -1,4 +1,3 @@
-import asyncio
 import re
 import uuid
 from dataclasses import dataclass
@@ -8,6 +7,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.services.chunking import build_embedding_text
+from app.services.inference import run_model
 from app.services.language import SUPPORTED_LANGUAGES, Language, detect_language
 
 if TYPE_CHECKING:
@@ -318,8 +318,8 @@ async def rerank_search(
     pool = pool or RERANK_POOLS[language]
     candidates = await _rerank_candidates(db, question, query_embedding, pool, language)
     passages = [build_embedding_text(c.heading_path or "", c.content) for c in candidates]
-    # The model call is CPU-bound; a worker thread keeps the event loop free meanwhile.
-    scores = await asyncio.to_thread(reranker.score, question, passages)
+    # The model call is CPU-bound; the model thread keeps the event loop free meanwhile.
+    scores = await run_model(reranker.score, question, passages)
     for chunk, score in zip(candidates, scores, strict=True):
         chunk.score = score
     candidates.sort(key=lambda c: c.score, reverse=True)

@@ -12,6 +12,7 @@ from app.models.user import User
 from app.schemas.query import AskRequest, AskResponse, Citation, LatencyBreakdown
 from app.services.embedding import EmbeddingService
 from app.services.generation import GenerationService
+from app.services.inference import run_model
 from app.services.language import Language, detect_language
 from app.services.reranking import RerankerService
 from app.services.retrieval import retrieve
@@ -34,7 +35,8 @@ async def ask(
     )
     embed_sw = Stopwatch()
     with embed_sw.measure():
-        query_embedding = embedder_for(language).embed_query(payload.question)
+        # CPU-bound model call: queued on the model thread so other requests keep moving.
+        query_embedding = await run_model(embedder_for(language).embed_query, payload.question)
 
     retrieval_sw = Stopwatch()
     with retrieval_sw.measure():  # includes cross-encoder reranking in "rerank" mode
