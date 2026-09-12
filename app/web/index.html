@@ -207,10 +207,10 @@
   <div class="dock-inner">
     <form class="ask" id="ask-form" hidden>
       <label class="sr-only" for="question">질문</label>
-      <textarea id="question" rows="1" placeholder="How do I add CORS to my FastAPI app?"></textarea>
+      <textarea id="question" rows="1" placeholder="예: 존재하지 않는 항목을 요청하면 404 오류를 어떻게 반환하나요?"></textarea>
       <button class="primary" id="ask-button" type="submit">질문하기</button>
     </form>
-    <p class="hint" id="ask-hint" hidden>문서가 영어라 질문도 영어로 해 주세요. Enter로 보내고 Shift+Enter로 줄을 바꿔요.</p>
+    <p class="hint" id="ask-hint" hidden>한국어로 물으면 한국어 번역 문서에서, 영어로 물으면 영어 원문에서 찾아 답해요. Enter로 보내고 Shift+Enter로 줄을 바꿔요.</p>
 
     <form class="login" id="login-form">
       <input id="email" type="email" placeholder="이메일" autocomplete="username" aria-label="이메일" required>
@@ -229,11 +229,12 @@
   const scroller = $('scroller');
   const questionBox = $('question');
   const TOKEN_KEY = 'ragdoc.token';
-  const DOCS_PREFIX = /^docs\/en\/docs\//;
+  const DOCS_PREFIX = /^docs\/([a-z-]+)\/docs\//;
   const MODES = { dense: 'dense(벡터 검색)', hybrid: 'hybrid(벡터 + 키워드)', rerank: 'rerank(재정렬)' };
+  const stampFormat = new Intl.DateTimeFormat('ko-KR', { month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' });
   const EXAMPLES = [
-    "How do I return a 404 error when an item doesn't exist?",
-    'How do I upload several files in one request?',
+    '존재하지 않는 항목을 요청하면 404 오류를 어떻게 반환하나요?',
+    '한 번의 요청으로 여러 파일을 업로드하려면 어떻게 하나요?',
     "What's the difference between def and async def for an endpoint?",
   ];
 
@@ -332,10 +333,21 @@
     return parts.join('');
   }
 
+  function docLanguage(sourcePath) {
+    const match = sourcePath.match(DOCS_PREFIX);
+    return match ? match[1] : 'en';
+  }
+
   function docUrl(sourcePath) {
+    const language = docLanguage(sourcePath);
     let page = sourcePath.replace(DOCS_PREFIX, '');
     page = page.endsWith('index.md') ? page.slice(0, -'index.md'.length) : page.replace(/\.md$/, '/');
-    return 'https://fastapi.tiangolo.com/' + page;
+    return 'https://fastapi.tiangolo.com/' + (language === 'en' ? '' : language + '/') + page;
+  }
+
+  function docLabel(sourcePath) {
+    const origin = docLanguage(sourcePath) === 'en' ? '영어 원문' : '한국어 번역';
+    return origin + ', ' + sourcePath.replace(DOCS_PREFIX, '');
   }
 
   function renderSources(citations) {
@@ -354,7 +366,7 @@
       const title = c.heading_path
         ? c.heading_path.replace(/`/g, '').split(' > ').join(' › ')
         : c.source_path.replace(DOCS_PREFIX, '').replace(/\.md$/, '');
-      link.append(el('span', 'crumb', title), el('span', 'path', c.source_path.replace(DOCS_PREFIX, '')));
+      link.append(el('span', 'crumb', title), el('span', 'path', docLabel(c.source_path)));
       const item = el('li');
       item.appendChild(link);
       list.appendChild(item);
@@ -409,6 +421,22 @@
     log.appendChild(el('div', 'msg-user', text));
   }
 
+  function historyNodes(item) {
+    const bot = el('div', 'msg-bot');
+    const d = item.detail;
+    renderResult(bot, {
+      answer: item.answer,
+      citations: d ? d.retrieved_chunks.filter((c) => c.cited) : [],
+      latency_ms: d && d.generation_latency_ms != null ? {
+        embedding: d.embedding_latency_ms || 0,
+        retrieval: d.retrieval_latency_ms || 0,
+        generation: d.generation_latency_ms || 0,
+        total: item.total_latency_ms || 0,
+      } : null,
+    });
+    return [el('div', 'stamp', stampFormat.format(new Date(item.created_at))), el('div', 'msg-user', item.question), bot];
+  }
+
   function scrollToEnd() {
     scroller.scrollTop = scroller.scrollHeight;
   }
@@ -416,7 +444,7 @@
   function renderWelcome() {
     const wrap = el('div', 'msg-bot');
     const box = el('div', 'answer');
-    box.appendChild(el('p', null, 'FastAPI 공식 문서 155개에서 관련 내용을 찾아, 찾은 내용만으로 답해요. 답변 아래에 근거로 쓴 문서가 나오고, 누르면 원문으로 이동해요.'));
+    box.appendChild(el('p', null, 'FastAPI 공식 문서(영어 원문 154개, 한국어 번역 123개)에서 질문과 같은 언어의 문서를 찾아, 찾은 내용만으로 답해요. 답변 아래에 근거로 쓴 문서가 나오고, 누르면 원문으로 이동해요.'));
     box.appendChild(el('p', null, '이런 질문부터 해 보세요.'));
     const examples = el('div', 'examples');
     for (const q of EXAMPLES) {
@@ -497,31 +525,15 @@
     } catch (err) {
       items = [];
     }
-    log.replaceChildren();
     if (!items.length) {
-      renderWelcome();
+      if (!log.children.length) renderWelcome();
       return;
     }
     const details = await Promise.all(items.map((item) => api('/logs/' + item.id).catch(() => null)));
-    const formatter = new Intl.DateTimeFormat('ko-KR', { month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' });
     items.forEach((item, i) => { item.detail = details[i]; });
-    for (const item of items.reverse()) {
-      log.appendChild(el('div', 'stamp', formatter.format(new Date(item.created_at))));
-      addUser(item.question);
-      const wrap = el('div', 'msg-bot');
-      const d = item.detail;
-      renderResult(wrap, {
-        answer: item.answer,
-        citations: d ? d.retrieved_chunks.filter((c) => c.cited) : [],
-        latency_ms: d && d.generation_latency_ms != null ? {
-          embedding: d.embedding_latency_ms || 0,
-          retrieval: d.retrieval_latency_ms || 0,
-          generation: d.generation_latency_ms || 0,
-          total: item.total_latency_ms || 0,
-        } : null,
-      });
-      log.appendChild(wrap);
-    }
+    // Prepend instead of replacing: a question sent while the history was still
+    // loading is already on screen and must stay below it.
+    log.prepend(...items.reverse().flatMap(historyNodes));
     scrollToEnd();
   }
 
@@ -531,6 +543,7 @@
     $('ask-form').hidden = false;
     $('ask-hint').hidden = false;
     $('who').hidden = false;
+    log.replaceChildren();
     try {
       const me = await api('/auth/me');
       $('who-email').textContent = me.email;
@@ -626,8 +639,10 @@
     ask(questionBox.value);
   });
   questionBox.addEventListener('keydown', (e) => {
-    // isComposing: don't send while a Korean IME syllable is still being composed.
-    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+    // While a Korean IME is still composing a syllable, Enter only confirms it. Browsers
+    // flag that with isComposing, and some (Safari) only with keyCode 229.
+    if (e.isComposing || e.keyCode === 229) return;
+    if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       ask(questionBox.value);
     }

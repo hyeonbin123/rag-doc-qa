@@ -10,10 +10,11 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import time
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 import httpx
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.chunk import Chunk
@@ -25,12 +26,35 @@ from app.services.chunking import (
     strip_heading_anchor,
 )
 from app.services.embedding import EmbeddingService
+from app.services.language import SUPPORTED_LANGUAGES
 
 GITHUB_API = "https://api.github.com"
 RAW_BASE = "https://raw.githubusercontent.com"
 REPO = "tiangolo/fastapi"
-DOCS_PREFIX = "docs/en/docs/"
+DOC_LANGUAGES: tuple[str, ...] = SUPPORTED_LANGUAGES
+# Site furniture rather than documentation: the notice MkDocs puts on AI-assisted
+# translations.
+SKIPPED_PAGES = {"translation-banner.md"}
 MAX_CONCURRENT_FETCHES = 8
+
+
+def docs_prefix(language: str) -> str:
+    return f"docs/{language}/docs/"
+
+
+def select_doc_paths(tree: list[dict], languages: Sequence[str]) -> list[tuple[str, str]]:
+    """(path, language) for every Markdown page of the requested translations."""
+    selected = []
+    for item in tree:
+        path = item["path"]
+        if item["type"] != "blob" or not path.endswith(".md"):
+            continue
+        for language in languages:
+            prefix = docs_prefix(language)
+            if path.startswith(prefix) and path[len(prefix):] not in SKIPPED_PAGES:
+                selected.append((path, language))
+                break
+    return selected
 
 
 async def resolve_commit_sha(client: httpx.AsyncClient, commit_sha: str | None = None) -> str:
@@ -41,17 +65,12 @@ async def resolve_commit_sha(client: httpx.AsyncClient, commit_sha: str | None =
     return resp.json()["sha"]
 
 
-async def list_doc_paths(client: httpx.AsyncClient, sha: str) -> list[str]:
+async def list_doc_paths(
+    client: httpx.AsyncClient, sha: str, languages: Sequence[str]
+) -> list[tuple[str, str]]:
     resp = await client.get(f"{GITHUB_API}/repos/{REPO}/git/trees/{sha}", params={"recursive": "1"})
     resp.raise_for_status()
-    tree = resp.json()["tree"]
-    return [
-        item["path"]
-        for item in tree
-        if item["type"] == "blob"
-        and item["path"].startswith(DOCS_PREFIX)
-        and item["path"].endswith(".md")
-    ]
+    return select_doc_paths(resp.json()["tree"], languages)
 
 
 async def fetch_raw_file(client: httpx.AsyncClient, sha: str, path: str) -> str:
@@ -68,6 +87,20 @@ def extract_title(raw_text: str, fallback: str) -> str:
     return fallback
 
 
+async def _vacuum_chunks(db: AsyncSession) -> None:
+    """Clear the rows that replaced chunks leave behind.
+
+    A changed doc has its chunks deleted and reinserted. Until vacuum removes the dead
+    rows, HNSW scans still walk them and spend their ef_search budget on rows they
+    then discard. That is the likeliest cause of an English dev-set hit that went
+    missing right after a bulk re-ingest and came back once autovacuum had run.
+    VACUUM can't run inside a transaction, hence the autocommit connection.
+    """
+    async with db.bind.connect() as conn:
+        conn = await conn.execution_options(isolation_level="AUTOCOMMIT")
+        await conn.execute(text("VACUUM (ANALYZE) chunks"))
+
+
 @dataclass
 class IngestOutcome:
     documents_processed: int
@@ -80,10 +113,11 @@ class IngestOutcome:
 
 async def run_ingestion(
     db: AsyncSession,
-    embedder: EmbeddingService,
+    embedder_for: Callable[[str], EmbeddingService],
     commit_sha: str | None = None,
     limit: int | None = None,
     dry_run: bool = False,
+    languages: Sequence[str] = DOC_LANGUAGES,
 ) -> IngestOutcome:
     start = time.perf_counter()
     documents_processed = 0
@@ -95,22 +129,26 @@ async def run_ingestion(
         timeout=30.0, headers={"User-Agent": "rag-doc-qa-ingest"}, follow_redirects=True
     ) as client:
         sha = await resolve_commit_sha(client, commit_sha)
-        paths = await list_doc_paths(client, sha)
+        paths = await list_doc_paths(client, sha, languages)
         if limit:
             paths = paths[:limit]
 
         semaphore = asyncio.Semaphore(MAX_CONCURRENT_FETCHES)
 
-        async def fetch(path: str) -> tuple[str, str]:
+        async def fetch(path: str, language: str) -> tuple[str, str, str]:
             async with semaphore:
-                return path, await fetch_raw_file(client, sha, path)
+                return path, language, await fetch_raw_file(client, sha, path)
 
-        results = await asyncio.gather(*(fetch(p) for p in paths))
+        results = await asyncio.gather(*(fetch(p, lang) for p, lang in paths))
 
-    for path, raw_text in results:
-        # The chunker version is part of the key: otherwise a chunking change would leave
-        # every unchanged doc "skipped" and silently keep its stale chunks.
-        content_hash = hashlib.sha256(f"chunker-v{CHUNKER_VERSION}\n{raw_text}".encode()).hexdigest()
+    for path, language, raw_text in results:
+        embedder = embedder_for(language)
+        # The chunker version and the embedding model are part of the key: otherwise
+        # changing either would leave every unchanged doc "skipped" and silently keep
+        # its stale chunks, or vectors from a different model.
+        content_hash = hashlib.sha256(
+            f"chunker-v{CHUNKER_VERSION}\nembedding-{embedder.model_name}\n{raw_text}".encode()
+        ).hexdigest()
 
         existing = await db.scalar(select(Document).where(Document.source_path == path))
 
@@ -163,6 +201,7 @@ async def run_ingestion(
                         content=chunk_result.content,
                         token_count=chunk_result.token_count,
                         embedding=embedding,
+                        language=language,
                     )
                 )
 
@@ -170,6 +209,8 @@ async def run_ingestion(
 
     if not dry_run:
         await db.commit()
+        if documents_processed:
+            await _vacuum_chunks(db)
 
     elapsed_ms = int((time.perf_counter() - start) * 1000)
     return IngestOutcome(

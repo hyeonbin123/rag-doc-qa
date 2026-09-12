@@ -19,6 +19,7 @@ import httpx
 from anthropic import AsyncAnthropic
 
 from app.config import get_settings
+from app.services.language import Language
 from app.services.retrieval import RetrievedChunk
 
 BASE_RULES = (
@@ -37,6 +38,18 @@ ANTHROPIC_SYSTEM_PROMPT = BASE_RULES + (
 OLLAMA_ANSWER_PROMPT = BASE_RULES + (
     "3. Reply with the answer text only — no JSON, no preamble.\n"
 )
+
+# Added only for Korean questions. A general "answer in the question's language" rule
+# (that mentioned Korean as the example) made the local 7B model answer English
+# questions in Korean too, dropping English answer correctness from 4.60 to 4.19.
+KOREAN_ANSWER_RULE = (
+    "4. Write the answer in Korean. Keep code, API names and identifiers exactly as they "
+    "appear in the passages.\n"
+)
+
+
+def system_prompt_for(prompt: str, language: Language) -> str:
+    return prompt + KOREAN_ANSWER_RULE if language == "ko" else prompt
 
 OLLAMA_CITATION_PROMPT = (
     "Given a question, numbered context passages, and an answer that was written from them, "
@@ -113,7 +126,9 @@ def _build_user_message(question: str, chunks: list[RetrievedChunk]) -> str:
 
 class GenerationService(ABC):
     @abstractmethod
-    async def answer(self, question: str, chunks: list[RetrievedChunk]) -> GenerationResult: ...
+    async def answer(
+        self, question: str, chunks: list[RetrievedChunk], language: Language = "en"
+    ) -> GenerationResult: ...
 
 
 class AnthropicGenerationService(GenerationService):
@@ -121,11 +136,13 @@ class AnthropicGenerationService(GenerationService):
         self._client = AsyncAnthropic(api_key=api_key)
         self._model_name = model_name
 
-    async def answer(self, question: str, chunks: list[RetrievedChunk]) -> GenerationResult:
+    async def answer(
+        self, question: str, chunks: list[RetrievedChunk], language: Language = "en"
+    ) -> GenerationResult:
         response = await self._client.messages.create(
             model=self._model_name,
             max_tokens=1024,
-            system=ANTHROPIC_SYSTEM_PROMPT,
+            system=system_prompt_for(ANTHROPIC_SYSTEM_PROMPT, language),
             tools=[CITE_ANSWER_TOOL],
             tool_choice={"type": "tool", "name": "cite_answer"},
             messages=[{"role": "user", "content": _build_user_message(question, chunks)}],
@@ -181,12 +198,14 @@ class OllamaGenerationService(GenerationService):
             response.raise_for_status()
             return response.json()
 
-    async def answer(self, question: str, chunks: list[RetrievedChunk]) -> GenerationResult:
+    async def answer(
+        self, question: str, chunks: list[RetrievedChunk], language: Language = "en"
+    ) -> GenerationResult:
         context_block = _build_context_block(chunks)
 
         answer_data = await self._chat(
             [
-                {"role": "system", "content": OLLAMA_ANSWER_PROMPT},
+                {"role": "system", "content": system_prompt_for(OLLAMA_ANSWER_PROMPT, language)},
                 {"role": "user", "content": _build_user_message(question, chunks)},
             ],
             response_schema=None,

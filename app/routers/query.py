@@ -1,3 +1,5 @@
+from collections.abc import Callable
+
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -10,6 +12,7 @@ from app.models.user import User
 from app.schemas.query import AskRequest, AskResponse, Citation, LatencyBreakdown
 from app.services.embedding import EmbeddingService
 from app.services.generation import GenerationService
+from app.services.language import Language, detect_language
 from app.services.reranking import RerankerService
 from app.services.retrieval import retrieve
 
@@ -21,14 +24,17 @@ async def ask(
     payload: AskRequest,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-    embedder: EmbeddingService = Depends(get_embedder),
+    embedder_for: Callable[[Language], EmbeddingService] = Depends(get_embedder),
     generator: GenerationService = Depends(get_generator),
     reranker: RerankerService | None = Depends(get_reranker),
     settings: Settings = Depends(get_settings),
 ) -> AskResponse:
+    language = (
+        detect_language(payload.question) if payload.language == "auto" else payload.language
+    )
     embed_sw = Stopwatch()
     with embed_sw.measure():
-        query_embedding = embedder.embed_query(payload.question)
+        query_embedding = embedder_for(language).embed_query(payload.question)
 
     retrieval_sw = Stopwatch()
     with retrieval_sw.measure():  # includes cross-encoder reranking in "rerank" mode
@@ -38,12 +44,13 @@ async def ask(
             query_embedding,
             payload.top_k,
             settings.retrieval_mode,
+            language=language,
             reranker=reranker,
         )
 
     generation_sw = Stopwatch()
     with generation_sw.measure():
-        generation_result = await generator.answer(payload.question, retrieved)
+        generation_result = await generator.answer(payload.question, retrieved, language=language)
 
     total_ms = embed_sw.elapsed_ms + retrieval_sw.elapsed_ms + generation_sw.elapsed_ms
 

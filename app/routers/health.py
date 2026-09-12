@@ -28,6 +28,7 @@ async def health(
         "status": "ok" if db_status == "ok" else "degraded",
         "db": db_status,
         "embedding_model": settings.embedding_model_name,
+        "embedding_model_ko": settings.embedding_model_name_ko,
         "retrieval_mode": settings.retrieval_mode,
         "generation_provider": settings.generation_provider,
         "generation_model": generation_model,

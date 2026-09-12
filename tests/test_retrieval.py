@@ -23,9 +23,11 @@ class KeywordReranker(RerankerService):
         return [1.0 if self.keyword in p else 0.0 for p in passages]
 
 
-async def _seed_document_with_chunk(db_session, embedding: list[float], content: str):
+async def _seed_document_with_chunk(
+    db_session, embedding: list[float], content: str, language: str = "en"
+):
     document = Document(
-        source_path=f"docs/en/docs/{content[:10]}.md",
+        source_path=f"docs/{language}/docs/{content[:10]}.md",
         title="Test Doc",
         source_commit_sha="deadbeef",
         content_hash="hash-" + content[:10],
@@ -40,6 +42,7 @@ async def _seed_document_with_chunk(db_session, embedding: list[float], content:
         content=content,
         token_count=10,
         embedding=embedding,
+        language=language,
     )
     db_session.add(chunk)
     await db_session.commit()
@@ -152,6 +155,28 @@ async def test_rerank_search_respects_top_k(db_session):
         db_session, "content", query_vector, top_k=2, reranker=KeywordReranker("content")
     )
     assert len(results) == 2
+
+
+@pytest.mark.asyncio
+async def test_retrieve_only_searches_the_question_language(db_session):
+    vector = [1.0] + [0.0] * (EMBEDDING_DIM - 1)
+    await _seed_document_with_chunk(db_session, vector, "english chunk about errors", "en")
+    await _seed_document_with_chunk(db_session, vector, "한국어 오류 처리 청크", "ko")
+
+    ko = await retrieve(db_session, "오류는 어떻게 처리하나요?", vector, 5, "dense")
+    en = await retrieve(db_session, "How are errors handled?", vector, 5, "dense")
+    forced = await retrieve(db_session, "HTTPException", vector, 5, "hybrid", language="ko")
+
+    assert [r.content for r in ko] == ["한국어 오류 처리 청크"]
+    assert [r.content for r in en] == ["english chunk about errors"]
+    assert [r.content for r in forced] == ["한국어 오류 처리 청크"]
+
+
+@pytest.mark.asyncio
+async def test_unsupported_language_is_rejected_before_reaching_sql(db_session):
+    vector = [1.0] + [0.0] * (EMBEDDING_DIM - 1)
+    with pytest.raises(ValueError):
+        await similarity_search(db_session, vector, 5, "xx'; DROP TABLE chunks; --")
 
 
 @pytest.mark.asyncio

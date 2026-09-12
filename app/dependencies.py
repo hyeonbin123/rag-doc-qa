@@ -1,3 +1,4 @@
+from collections.abc import Callable
 
 from fastapi import Depends, Header, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
@@ -8,6 +9,7 @@ from app.db.session import get_db
 from app.models.user import User
 from app.services.embedding import EmbeddingService, get_embedding_service
 from app.services.generation import GenerationService, get_generation_service
+from app.services.language import Language
 from app.services.reranking import RerankerService, get_reranker_service
 from app.services.security import InvalidTokenError, TokenType, decode_token
 
@@ -34,8 +36,10 @@ async def get_current_user(
     return user
 
 
-def get_embedder() -> EmbeddingService:
-    return get_embedding_service()
+def get_embedder() -> Callable[[Language], EmbeddingService]:
+    # Returns the per-language lookup rather than one model: the question's language
+    # decides which model embeds it.
+    return get_embedding_service
 
 
 def get_generator() -> GenerationService:

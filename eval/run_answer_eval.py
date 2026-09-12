@@ -24,6 +24,7 @@ from app.config import get_settings
 from app.db.session import async_session_maker
 from app.services.embedding import get_embedding_service
 from app.services.generation import get_generation_service
+from app.services.language import detect_language
 from app.services.reranking import RerankerService, get_reranker_service
 from app.services.retrieval import RetrievalMode, retrieve
 from eval.common import DATASET_PATH, EvalQuestion, load_dataset, write_report
@@ -129,9 +130,12 @@ async def evaluate_question(
     skip_judge: bool,
     reranker: RerankerService | None,
 ) -> dict:
-    query_vector = embedder.embed_query(q.question)
-    retrieved = await retrieve(db, q.question, query_vector, top_k, mode, reranker=reranker)
-    generation_result = await generator.answer(q.question, retrieved)
+    language = detect_language(q.question)
+    query_vector = embedder(language).embed_query(q.question)
+    retrieved = await retrieve(
+        db, q.question, query_vector, top_k, mode, language=language, reranker=reranker
+    )
+    generation_result = await generator.answer(q.question, retrieved, language=language)
 
     coverage = keyword_coverage(generation_result.answer, q.must_include_keywords)
 
@@ -156,7 +160,7 @@ async def main(
 ) -> None:
     settings = get_settings()
     mode = mode or settings.retrieval_mode
-    embedder = get_embedding_service()
+    embedder = get_embedding_service  # per-language lookup, called with each question's language
     generator = get_generation_service()
     reranker = get_reranker_service() if mode == "rerank" else None
     questions = load_dataset(dataset)

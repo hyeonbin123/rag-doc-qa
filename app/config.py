@@ -19,10 +19,16 @@ class Settings(BaseSettings):
     ollama_base_url: str = "http://localhost:11434"
     ollama_model_name: str = "qwen2.5:7b-instruct"
     embedding_model_name: str = "BAAI/bge-small-en-v1.5"
+    # Korean docs and questions need a multilingual model; English keeps the English
+    # one because the multilingual model scored far lower on the English test sets.
+    embedding_model_name_ko: str = "intfloat/multilingual-e5-small"
     retrieval_mode: Literal["dense", "hybrid", "rerank"] = "dense"
     reranker_model_name: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
     fastapi_docs_commit_sha: str = ""
     admin_ingest_token: str = "change-me-admin-token"
+
+    def embedding_model_for(self, language: str) -> str:
+        return self.embedding_model_name_ko if language == "ko" else self.embedding_model_name
 
 
 @lru_cache

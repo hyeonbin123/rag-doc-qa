@@ -42,6 +42,9 @@ class Chunk(Base):
     heading_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     token_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    # Which docs translation the chunk comes from ("en", "ko"); retrieval searches one
+    # language at a time. Kept on chunks so the vector and BM25 queries need no join.
+    language: Mapped[str] = mapped_column(String(8), nullable=False, server_default="en")
     embedding: Mapped[list[float]] = mapped_column(Vector(EMBEDDING_DIM), nullable=False)
     # Postgres keeps this in sync with heading_path + content; the app never writes it.
     content_tsv: Mapped[str] = mapped_column(

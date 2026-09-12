@@ -33,7 +33,7 @@ class FakeEmbeddingService(EmbeddingService):
     """Deterministic, dependency-free stand-in for the real sentence-transformer model."""
 
     def __init__(self) -> None:  # intentionally skip the real __init__/model load
-        pass
+        self.model_name = "fake-embedding"
 
     def _fake_vector(self, text: str) -> list[float]:
         seed = sum(text.encode("utf-8")) or 1
@@ -47,7 +47,7 @@ class FakeEmbeddingService(EmbeddingService):
 
 
 class FakeGenerationService(GenerationService):
-    async def answer(self, question, chunks):
+    async def answer(self, question, chunks, language="en"):
         cited = list(range(1, len(chunks) + 1))
         return GenerationResult(
             answer=f"Fake answer for: {question}",
@@ -114,7 +114,7 @@ async def client(db_session):
         yield db_session
 
     app.dependency_overrides[get_db] = override_get_db
-    app.dependency_overrides[get_embedder] = lambda: FakeEmbeddingService()
+    app.dependency_overrides[get_embedder] = lambda: lambda language="en": FakeEmbeddingService()
     app.dependency_overrides[get_generator] = lambda: FakeGenerationService()
 
     transport = ASGITransport(app=app)

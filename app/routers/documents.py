@@ -1,3 +1,5 @@
+from collections.abc import Callable
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -9,6 +11,7 @@ from app.models.document import Document
 from app.schemas.document import DocumentOut, IngestRequest, IngestResult
 from app.services.embedding import EmbeddingService
 from app.services.ingestion import run_ingestion
+from app.services.language import Language
 
 router = APIRouter(tags=["documents"])
 
@@ -21,11 +24,11 @@ router = APIRouter(tags=["documents"])
 async def ingest_documents(
     payload: IngestRequest,
     db: AsyncSession = Depends(get_db),
-    embedder: EmbeddingService = Depends(get_embedder),
+    embedder_for: Callable[[Language], EmbeddingService] = Depends(get_embedder),
 ) -> IngestResult:
     outcome = await run_ingestion(
         db,
-        embedder,
+        embedder_for,
         commit_sha=payload.commit_sha,
         limit=payload.limit,
         dry_run=payload.dry_run,

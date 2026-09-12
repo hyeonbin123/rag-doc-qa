@@ -20,6 +20,7 @@ from pathlib import Path
 from app.config import get_settings
 from app.db.session import async_session_maker
 from app.services.embedding import get_embedding_service
+from app.services.language import detect_language
 from app.services.reranking import RerankerService
 from app.services.retrieval import LEXICAL_WEIGHT, RERANK_POOL, retrieve
 from eval.common import DATASET_PATH, EvalQuestion, load_dataset, write_report
@@ -39,7 +40,7 @@ def reciprocal_rank(ranked_paths: list[str], expected: list[str]) -> float:
 async def evaluate_question(
     db, embedder, q: EvalQuestion, args: argparse.Namespace, reranker: RerankerService | None
 ) -> dict:
-    query_vector = embedder.embed_query(q.question)
+    query_vector = embedder(detect_language(q.question)).embed_query(q.question)
     # Timed after the embedding so every mode is measured on the same work: the DB
     # queries, plus the cross-encoder in rerank mode.
     start = time.perf_counter()
@@ -71,7 +72,7 @@ async def evaluate_question(
 async def main(args: argparse.Namespace) -> None:
     settings = get_settings()
     args.mode = args.mode or settings.retrieval_mode
-    embedder = get_embedding_service()
+    embedder = get_embedding_service  # per-language lookup, called with each question's language
     questions = load_dataset(args.dataset)
 
     reranker = None
@@ -100,7 +101,8 @@ async def main(args: argparse.Namespace) -> None:
         f"# Retrieval eval report ({args.tag})",
         "",
         f"- date: {datetime.now(UTC).isoformat()}",
-        f"- embedding model: {settings.embedding_model_name}",
+        f"- embedding models: en {settings.embedding_model_name}, ko {settings.embedding_model_name_ko}",
+        f"- database: {settings.database_url.rsplit('/', 1)[-1]}",
         f"- top_k: {args.top_k}",
         f"- retrieval mode: {args.mode}",
     ]
