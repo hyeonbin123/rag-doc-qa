@@ -1,12 +1,23 @@
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field, field_validator
+
+from app.services.security import MAX_PASSWORD_BYTES
+
+MIN_PASSWORD_LENGTH = 8
 
 
 class UserRegister(BaseModel):
     email: EmailStr
-    password: str
+    password: str = Field(min_length=MIN_PASSWORD_LENGTH)
+
+    @field_validator("password")
+    @classmethod
+    def password_fits_bcrypt(cls, value: str) -> str:
+        if len(value.encode("utf-8")) > MAX_PASSWORD_BYTES:
+            raise ValueError(f"password must be at most {MAX_PASSWORD_BYTES} bytes in UTF-8")
+        return value
 
 
 class UserOut(BaseModel):

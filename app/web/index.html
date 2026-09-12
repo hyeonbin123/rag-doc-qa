@@ -262,11 +262,16 @@
     }
     if (!res.ok) {
       let detail = '';
+      let fields = [];
       try {
         const body = await res.json();
         if (typeof body.detail === 'string') detail = body.detail;
+        // A 422 lists each rejected field; its last loc entry is the field name.
+        if (Array.isArray(body.detail)) fields = body.detail.map((d) => (d.loc || []).at(-1));
       } catch (e) { /* non-JSON error body */ }
-      throw new ApiError(res.status, detail);
+      const err = new ApiError(res.status, detail);
+      err.fields = fields;
+      throw err;
     }
     return res.json();
   }
@@ -276,7 +281,11 @@
     if (context === 'login' && err.status === 401) return '이메일이나 비밀번호가 맞지 않아요.';
     if (context === 'register' && err.status === 409) return '이미 가입된 이메일이에요. 로그인을 눌러 주세요.';
     if (err.status === 422) {
-      return context === 'ask' ? '질문은 2000자 이내로 입력해 주세요.' : '이메일 형식을 확인해 주세요.';
+      if (context === 'ask') return '질문은 2000자 이내로 입력해 주세요.';
+      if ((err.fields || []).includes('password')) {
+        return '비밀번호는 8자 이상, 72바이트(한글은 24자) 이하로 정해 주세요.';
+      }
+      return '이메일 형식을 확인해 주세요.';
     }
     if (context === 'ask' && err.status >= 500) {
       return `답변을 만들지 못했어요 (HTTP ${err.status}). Ollama가 켜져 있는지 확인한 뒤 다시 보내 주세요.`;
