@@ -6,6 +6,7 @@ local (free) eval run is possible.
 
 Usage:
     python -m eval.run_answer_eval [--top-k 5] [--tag v1_baseline] [--mode dense|hybrid|rerank] [--skip-judge]
+                                   [--dataset eval/qa_test2.jsonl]
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ import argparse
 import asyncio
 import json
 from datetime import UTC, datetime
+from pathlib import Path
 
 import httpx
 from anthropic import AsyncAnthropic
@@ -24,7 +26,7 @@ from app.services.embedding import get_embedding_service
 from app.services.generation import get_generation_service
 from app.services.reranking import RerankerService, get_reranker_service
 from app.services.retrieval import RetrievalMode, retrieve
-from eval.common import EvalQuestion, load_dataset, write_report
+from eval.common import DATASET_PATH, EvalQuestion, load_dataset, write_report
 
 JUDGE_SCHEMA = {
     "type": "object",
@@ -149,13 +151,15 @@ async def evaluate_question(
     }
 
 
-async def main(top_k: int, tag: str, mode: RetrievalMode | None, skip_judge: bool) -> None:
+async def main(
+    top_k: int, tag: str, mode: RetrievalMode | None, skip_judge: bool, dataset: Path
+) -> None:
     settings = get_settings()
     mode = mode or settings.retrieval_mode
     embedder = get_embedding_service()
     generator = get_generation_service()
     reranker = get_reranker_service() if mode == "rerank" else None
-    questions = load_dataset()
+    questions = load_dataset(dataset)
 
     results = []
     async with async_session_maker() as db:
@@ -194,6 +198,7 @@ async def main(top_k: int, tag: str, mode: RetrievalMode | None, skip_judge: boo
         f"- model: {model_in_use}",
         f"- top_k: {top_k}",
         f"- retrieval mode: {mode}",
+        f"- dataset: {dataset.name}",
         f"- questions: {n}",
         f"- judge skipped: {skip_judge}",
         "",
@@ -235,5 +240,6 @@ if __name__ == "__main__":
     parser.add_argument("--tag", default="run")
     parser.add_argument("--skip-judge", action="store_true", help="skip Claude-as-judge calls (fast, free)")
     parser.add_argument("--mode", choices=["dense", "hybrid", "rerank"], default=None)
+    parser.add_argument("--dataset", type=Path, default=DATASET_PATH)
     args = parser.parse_args()
-    asyncio.run(main(args.top_k, args.tag, args.mode, args.skip_judge))
+    asyncio.run(main(args.top_k, args.tag, args.mode, args.skip_judge, args.dataset))

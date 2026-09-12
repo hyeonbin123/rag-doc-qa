@@ -1,0 +1,64 @@
+# Retrieval eval report (v7_test2_rerank_p05)
+
+- date: 2026-09-12T05:45:37.341008+00:00
+- embedding model: BAAI/bge-small-en-v1.5
+- top_k: 10
+- retrieval mode: rerank
+- reranker: cross-encoder/ms-marco-MiniLM-L-6-v2, top 5 of each of dense and BM25
+- dataset: qa_test2.jsonl
+- questions: 43
+- latency: retrieval only (after the query embedding), this machine's CPU
+
+## Aggregate metrics
+
+| Hit@3 | Hit@5 | Hit@10 | MRR | latency p50 (ms) | latency p95 (ms) |
+|---|---|---|---|---|---|
+| 0.91 | 0.93 | 0.95 | 0.811 | 562 | 721 |
+
+## Per-question
+
+| id | hit@3 | hit@5 | hit@10 | RR | ms | question |
+|---|---|---|---|---|---|---|
+| t001 | False | True | True | 0.20 | 781 | My React app on localhost:3000 gets blocked when it calls my API on port 8000. How do I fix it? |
+| t002 | True | True | True | 1.00 | 562 | How do I return a 404 error when the item someone asks for doesn't exist? |
+| t003 | True | True | True | 1.00 | 525 | How can I load config values from a .env file? |
+| t004 | True | True | True | 0.50 | 596 | How do I give a field in my request JSON a default value so clients can leave it out? |
+| t005 | True | True | True | 1.00 | 587 | How do I accept several values for the same query parameter, like ?tag=a&tag=b? |
+| t006 | True | True | True | 0.50 | 651 | How do I protect an endpoint so only logged-in users can call it? |
+| t007 | True | True | True | 1.00 | 406 | How should I hash user passwords before saving them? |
+| t008 | True | True | True | 0.50 | 585 | How can I log how long every request takes? |
+| t009 | True | True | True | 1.00 | 507 | How can I stream a large file to the client instead of loading it all into memory? |
+| t010 | False | False | False | 0.00 | 670 | How do I let the user download a file from an endpoint? |
+| t011 | True | True | True | 0.50 | 532 | How do I redirect a request to another URL? |
+| t012 | True | True | True | 1.00 | 544 | How do I add a description and a version number to my API docs? |
+| t013 | True | True | True | 1.00 | 668 | How can I group my endpoints into sections in the docs page? |
+| t014 | True | True | True | 0.50 | 676 | How do I get the client's IP address inside an endpoint? |
+| t015 | False | False | True | 0.17 | 706 | How do I check that an email field in the request really is an email address? |
+| t016 | True | True | True | 1.00 | 433 | How do I connect to a SQL database and create the tables when the app starts? |
+| t017 | True | True | True | 1.00 | 406 | How do I write a test for my WebSocket endpoint? |
+| t018 | True | True | True | 0.50 | 470 | How do I let users log in with a username and password and get back a token? |
+| t019 | True | True | True | 0.50 | 544 | How do I make the login tokens expire after some time? |
+| t020 | True | True | True | 1.00 | 406 | How do I upload several files in one request? |
+| t021 | True | True | True | 1.00 | 417 | How do I receive a file and some form fields in the same request? |
+| t022 | True | True | True | 1.00 | 611 | How do I make a query parameter required? |
+| t023 | True | True | True | 1.00 | 678 | How do I restrict a path parameter to a fixed set of allowed values? |
+| t024 | True | True | True | 1.00 | 589 | How do I leave fields that were never set out of the JSON response? |
+| t025 | True | True | True | 1.00 | 408 | Should I run Gunicorn with several Uvicorn workers inside each container when I deploy to Kubernetes? |
+| t026 | True | True | True | 1.00 | 472 | What's the difference between declaring my endpoint with def and with async def? |
+| t027 | True | True | True | 1.00 | 447 | How do I catch my own exception type everywhere and turn it into a custom JSON error? |
+| t028 | True | True | True | 1.00 | 464 | How do I change the error response FastAPI sends when the request data is invalid? |
+| t029 | True | True | True | 1.00 | 538 | How do I put all the routes of one module under a prefix like /api/v1? |
+| t030 | True | True | True | 1.00 | 687 | How do I push updates to the browser in real time over one open HTTP connection? |
+| t031 | True | True | True | 1.00 | 580 | Can I use Python dataclasses instead of Pydantic models? |
+| t032 | True | True | True | 1.00 | 462 | How do I check a string query parameter against a regular expression? |
+| t033 | True | True | True | 1.00 | 595 | How do I accept a JSON body whose keys I don't know in advance? |
+| t034 | True | True | True | 1.00 | 725 | How do I run a dependency for every endpoint in one router but not the whole app? |
+| t035 | True | True | True | 0.50 | 679 | How do I return plain text instead of JSON? |
+| t036 | True | True | True | 1.00 | 590 | My header is called X-Token. How do I read it when Python names can't contain a hyphen? |
+| t037 | True | True | True | 1.00 | 613 | How do type hints like list[str] or str | None work in Python? |
+| t038 | True | True | True | 1.00 | 606 | How do I add a custom logo to the generated OpenAPI docs? |
+| t039 | True | True | True | 1.00 | 361 | How do I upgrade my app from Pydantic v1 to v2? |
+| t040 | True | True | True | 0.50 | 529 | How do I send a custom header along with an error response? |
+| t041 | True | True | True | 1.00 | 526 | How do I serve a React single-page app build from my FastAPI app? |
+| t042 | True | True | True | 1.00 | 463 | How do I stream a list of JSON objects one line at a time? |
+| t043 | False | False | False | 0.00 | 673 | How do I add a field that the client sends but that should never be shown in the docs? |

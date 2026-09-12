@@ -2,152 +2,100 @@
 
 [![CI](https://github.com/hyeonbin123/rag-doc-qa/actions/workflows/ci.yml/badge.svg)](https://github.com/hyeonbin123/rag-doc-qa/actions/workflows/ci.yml)
 
-FastAPI 공식 문서를 대상으로 한 RAG(검색 증강 생성) 기반 문서 QA API 서버.
+FastAPI 공식 문서(문서 155개, 청크 915개)에 질문하면 관련 문서를 찾아 **출처가 붙은 답변**을 돌려주는 RAG(검색 증강 생성) API 서버. 검색 방식을 바꿀 때마다 질문셋으로 측정했고, 기본값은 측정 전에 정한 규칙을 통과할 때만 바꿈.
 
-## 아키텍처
+## 한눈에 보기
 
-```
-사용자 질문
-   │
-   ▼
-[JWT 인증] ──▶ [로컬 임베딩(BGE-small)] ──▶ [pgvector 코사인 검색] ──▶ [LLM 답변 생성 + 인용] ──▶ [query_logs 기록]
-```
-
-- **백엔드**: FastAPI (Python 3.11, 비동기)
-- **저장소**: PostgreSQL 16 + pgvector — 관계형 데이터와 벡터 인덱스를 하나의 DB로 처리 (별도 벡터DB 없음)
-- **임베딩**: `BAAI/bge-small-en-v1.5` (로컬 실행, API 비용 없음)
-- **답변 생성**: 프로바이더 교체 가능 (`GENERATION_PROVIDER`)
-  - `ollama`(기본): 로컬 Qwen2.5-7B, 비용 0원
-  - `anthropic`: Claude API, `tool_choice`로 인용 스키마 강제
-- **인증**: JWT(access/refresh)
-- **검색 모드**: `RETRIEVAL_MODE`로 고름.
-  - `dense`(기본)
-  - `hybrid`: dense 순위와, Postgres `tsvector`로 SQL에서 계산한 BM25 순위를 가중 RRF로 결합
-  - `rerank`: dense와 BM25 후보를 cross-encoder로 다시 채점
-
-  두 모드 모두 튜닝용 검증셋에서는 dense를 앞섰지만, 미리 정한 기준인 테스트셋 MRR에서는 dense보다 낮아 기본값으로 쓰지 않음. 테스트셋 답변 품질은 rerank가 더 좋았음 (아래 v4~v6 참고)
-- **평가**: 검색 품질(Hit@k, MRR) + 답변 품질(키워드 커버리지, LLM 판정 충실도/정확도)
-
-## 설계 근거 (자기소개서/면접용 요약)
-
-- **로컬 임베딩 vs API 임베딩**: 코퍼스가 고정되어 있고 데모를 무한정 반복 실행해야 하므로, 비용과 외부 의존성이 없는 로컬 오픈소스 모델을 선택. 대신 BGE 모델의 쿼리/패시지 비대칭 프리픽스를 정확히 구현해야 검색 품질이 나온다는 트레이드오프가 있음.
-- **별도 벡터DB 대신 pgvector**: 코퍼스 규모(문서 155개, 청크 약 900개)에서는 관계형 데이터와 벡터를 한 DB에서 처리하는 것이 운영 복잡도 대비 이득이 큼. HNSW 인덱스는 IVFFlat과 달리 list 수 튜닝이 필요 없어 이 규모에 적합.
-- **인용을 스키마로 강제**: 프롬프트로 "인용 형식을 지켜라"고 요청하는 대신 스키마를 강제해 파싱 실패 가능성을 구조적으로 제거. Anthropic은 `tool_choice`, Ollama는 `format`(JSON 스키마 제약 디코딩)으로 같은 보장을 얻음.
-- **프로바이더별 호출 구조 차이**: 로컬 7B 모델은 JSON 스키마 제약 디코딩 상태에서 문자열 값 안의 따옴표를 제대로 이스케이프하지 못해, 코드가 포함된 답변이 첫 `"`에서 잘리는 문제가 있었음. 그래서 Ollama 경로만 **답변 생성(자유 텍스트)과 인용 추출(숫자만 담긴 스키마)을 2회 호출로 분리**함. Claude는 tool 입력 이스케이프가 안정적이라 1회 호출을 유지.
-- **평가 하네스**: 변경할 때마다 전/후를 측정해 `eval/reports/`에 커밋. 실패한 문항은 무엇이 대신 검색됐는지까지 확인한 뒤 다음 수정 방향을 정함. v5부터는 파라미터를 튜닝 전용 검증셋(32문항)에서만 고르고, 테스트셋(30문항)에는 고른 설정 하나만 돌림. 테스트셋을 보면서 고르면 그 셋에 맞춘 튜닝이 되기 때문 (아래 측정 결과 참고).
-- **재정렬(cross-encoder) 비용 관리**: 임베딩 모델(bi-encoder)은 질문과 문서를 따로 인코딩하므로 문서 쪽을 미리 색인해 둘 수 있음. 반면 cross-encoder는 질문과 후보를 함께 읽기 때문에 질문이 올 때마다 후보 하나당 모델을 한 번씩 돌려야 함. 이 PC의 CPU에서는 후보 하나에 약 60~80ms가 걸림. 그래서 품질을 재기 전에 "검색 단계 지연 중앙값 1초 이하"라는 예산부터 정하고, 후보 수는 그 안에서만 골랐음. bge-reranker-base는 후보 40개에 약 20초가 걸려 이 예산에서 제외함.
-
-## 측정 결과 (2026-09-11, 테스트셋 30문항, v5부터 튜닝용 검증셋 32문항 추가)
-
-### 검색 품질 개선 과정
-
-| 버전 | 변경 | Hit@3 | Hit@10 | MRR |
-|---|---|---|---|---|
-| v1 | 기본 청커 | 0.93 | 0.97 | 0.828 |
-| v2 | MkDocs 마크업 정제 (헤딩 앵커 ID, 코드 include 지시문, admonition, HTML 태그) | 0.97 | 0.97 | 0.911 |
-| v3 | v2 + `<dfn>`/`<abbr>` 정의 텍스트 보존 | 0.97 | 0.97 | **0.933** |
-
-- **진단**: 실패한 문항의 상위 10개 유사도가 0.72~0.76의 좁은 구간에 몰려 있었음. 이 구간에서는 모든 헤딩에 붙은 `{ #anchor-id }`(제목이 임베딩에 두 번 들어감)나 실제 코드 없이 경로만 있는 include 지시문 같은 마크업 노이즈가 순위를 좌우함.
-- **v2**: 마크업 정제로 MRR 0.828 → 0.911. 백그라운드 작업 질문(q006)이 6위에서 1위로 올라감. 대신 q011은 1위에서 3위로 **회귀**.
-- **v3**: 회귀 원인은 정제 로직이 `<dfn title='..."cleanup code"...'>`의 title 속성까지 지운 것이었음. 질문에 나온 "cleanup code"가 바로 그 안에 있었음. 정의 텍스트를 "용어 (정의)" 형태로 보존해 q011을 복구했고 MRR은 0.933.
-- 청커를 바꾸면 수집 해시가 달라지도록 `CHUNKER_VERSION`을 해시에 포함함. 원문 해시만 쓰면 청커를 바꿔도 재수집 때 모든 문서가 "변경 없음"으로 스킵되어, 예전 청크로 측정하게 되기 때문.
-
-### 하이브리드 검색 실험 (v4, 기본값으로 채택하지 않음)
-
-q017처럼 dense 임베딩이 의미를 혼동하는 경우를 보완하려고, Postgres 전문 검색(생성 컬럼 `tsvector` + GIN 인덱스) 순위와 dense 순위를 RRF(Reciprocal Rank Fusion, k=60)로 합치는 모드를 추가하고 같은 30문항으로 비교함.
-
-| 모드 | Hit@3 | Hit@10 | MRR |
-|---|---|---|---|
-| dense (v3와 문항 단위까지 동일) | 0.97 | 0.97 | **0.933** |
-| hybrid | 0.97 | **1.00** | 0.898 |
-
-- **얻은 것**: q017이 top-10 밖에서 9위로 들어옴. 어휘 검색만 놓고 보면 settings.md가 **1위**였음.
-- **잃은 것**: q001(1위→2위), q009(1위→2위), q003(2위→3위). 두 문항 모두 어휘 검색 상위 5개에 정답 문서가 없었고, q009는 모든 기능을 언급하는 `release-notes.md`가 어휘 검색 1위였음.
-- **원인**: Postgres `ts_rank`에는 BM25의 IDF(역문서빈도)가 없어서 흔한 단어와 드문 단어를 같은 무게로 셈. "fastapi"는 청크 915개 중 524개(57%)에, "parameter"는 258개(28%)에 나오기 때문에, 질문 단어를 OR로 묶은 어휘 순위가 잡음이 되고, 가중치가 같은 RRF가 그 잡음 때문에 dense의 1위를 밀어냄.
-- **결정**: 처음 정한 기준(평균이 나아질 때만 기본값 변경)에 따라 dense를 유지하고, hybrid는 `RETRIEVAL_MODE=hybrid`로 켤 수 있게 남김. 이 30문항에 맞춰 가중치를 고르면 평가셋에 과적합되므로 튜닝하지 않음. 다음 후보는 IDF가 있는 BM25(예: ParadeDB의 `pg_search` 확장)와, 튜닝 전용으로 쓸 별도 검증 질문셋.
-- **구현 메모**: 질문 단어는 OR로 묶음. `plainto_tsquery`는 모든 단어를 AND로 묶어서 문장형 질문으로는 거의 아무것도 걸리지 않음. dense 후보는 40개로 제한함. pgvector HNSW 스캔은 한 번에 `hnsw.ef_search`(기본 40)개까지만 돌려주기 때문.
-
-### BM25 + 검증셋 분리 (v5, 기본값으로 채택하지 않음)
-
-v4에서 hybrid가 진 원인으로 `ts_rank`에 IDF가 없다는 점을 지목했으므로, 어휘 순위를 BM25로 바꾸고, 튜닝에 쓰는 질문과 평가에 쓰는 질문을 나눠 다시 측정함.
-
-- **검증셋 분리**: 튜닝 전용 `eval/qa_dev.jsonl` 32문항을 새로 작성하고, 기존 30문항(`qa_dataset.jsonl`)은 테스트셋으로만 씀. 검증셋은 테스트셋이 정답으로 쓰는 문서를 주 정답으로 삼지 않음(보조 정답으로 settings.md, metadata.md 두 개만 겹침). 정답 경로가 DB에 있는지, 기대 키워드가 정답 문서에 실제로 있는지는 스크립트로 확인함.
-- **BM25를 SQL로 구현** (`app/services/retrieval.py`): 확장이나 통계 테이블을 추가하지 않음. 질문 어휘소별 문서 빈도(df)는 GIN 인덱스로 세고, 청크 안 빈도(tf)는 `tsvector`의 위치 개수에서, 길이는 `token_count`에서 가져옴 (k1=1.2, b=0.75 기본값, 튜닝하지 않음). ParadeDB `pg_search`는 DB 이미지를 바꿔야 하는데, 이 규모(청크 915개, 어휘 검색 1회 약 40~50ms)에서는 SQL로 충분하다고 판단함. 드문 단어가 반복된 흔한 단어보다 높게 평가되는지는 단위 테스트로 고정함.
-- **절차 (측정 전에 정함)**: RRF에서 BM25 목록의 가중치(dense 목록은 1)만 {0.25, 0.5, 0.75, 1.0} 중 검증셋 MRR로 고르고, 고른 설정 하나만 테스트셋에 한 번 돌림. 기본값은 검증셋과 테스트셋 **모두**에서 dense보다 나을 때만 바꿈.
-
-| 설정 | 검증셋 MRR (32문항) | 테스트셋 MRR (30문항) |
-|---|---|---|
-| dense | 0.858 | **0.933** |
-| hybrid, ts_rank (v4) | **0.953** | 0.898 |
-| hybrid, BM25 가중치 0.25 / 0.5 / 1.0 | 0.884 / 0.906 / 0.922 | 돌리지 않음 |
-| hybrid, BM25 가중치 0.75 (검증셋에서 선택) | **0.953** | 0.894 |
-
-- **결과**: hybrid는 검증셋에서 dense보다 0.095 높았지만 테스트셋에서는 0.039 낮음. 규칙대로 기본값은 dense를 유지하고, hybrid 모드의 어휘 순위를 BM25(가중치 0.75)로 바꿔 opt-in으로 남김.
-- **BM25 자체는 의도대로 동작함**: q017의 BM25 순위에서 settings.md가 1위, environment-variables.md가 2위임 (IDF: secret·credential 3.90, fastapi 0.56). q009는 v4에서 2위였던 header-params.md가 1위로 돌아옴.
-- **그런데 q017은 최종 결과에서 top-10 밖으로 밀림**: settings.md는 dense 상위 40개에 한 번도 들지 않아서 RRF 점수가 0.75/61 ≈ 0.012에 그침. 반면 두 목록 모두에 걸린 인증 문서 청크는 1/(60+순위)를 두 번 받음(예: 1/65 + 0.75/70 ≈ 0.026). RRF는 두 목록이 모두 적당히 올린 결과를 한 목록만 1위로 올린 결과보다 높게 치는 구조임. q001은 BM25에서 "hint"(IDF 3.66)가 드문 단어라 python-types.md가 1~3위를 차지했고, 최종 순위는 1위에서 3위로 내려감.
-- **해석**: 문항 하나가 1위에서 2위로 내려가면 MRR이 약 0.016 바뀜. 가중치별 곡선이 단조롭지 않고(0.884 → 0.906 → 0.953 → 0.922) 두 셋이 반대 방향을 가리키는 것으로 보아, 30문항 규모로는 dense와 hybrid의 차이를 가려내기 어려움. 두 셋을 합친 62문항 평균은 hybrid(약 0.92)가 dense(약 0.89)보다 높지만, 결과를 본 뒤 규칙을 바꾸면 검증셋을 따로 만든 의미가 없어지므로 기본값은 그대로 둠. 두 셋 모두 문서를 읽으면서 작성해서 질문과 본문의 단어가 겹치기 쉽고, 이 편향은 어휘 검색 쪽에 유리하게 작용할 수 있음.
-- **다음 후보**: 두 목록의 후보를 합친 뒤 cross-encoder로 재정렬(reranker)하면, 한 목록에만 있는 정답(q017)을 순위 합산 없이 질문과 직접 비교해 판단할 수 있음. 결론을 내리려면 새 질문으로 테스트셋 자체도 키워야 함.
-
-### Cross-encoder 재정렬 (v6, 기본값으로 채택하지 않음, 답변 품질은 개선)
-
-v5에서 q017의 정답이 BM25 순위로는 1위인데 RRF 구조 때문에 밀리는 것을 확인했음. 그래서 `RETRIEVAL_MODE=rerank`를 추가함. 두 목록의 후보를 합친 뒤, cross-encoder(`cross-encoder/ms-marco-MiniLM-L-6-v2`)가 질문과 후보 본문을 함께 읽고 다시 채점함 (`app/services/reranking.py`, `rerank_search`). 모델 호출은 CPU를 오래 쓰므로 스레드에서 실행해 이벤트 루프를 막지 않음.
-
-**측정 전에 정한 절차**
-- **지연 예산**: 검색 단계 지연 중앙값 1초 이하 (전체 응답 약 4.6초의 약 20%). 후보 40개 기준 CPU 측정값은 MiniLM-L6 약 3.3초, MiniLM-L12 약 6.5초, bge-reranker-base 약 20초였음. 그래서 모델은 MiniLM-L6으로 고정함
-- **튜닝**: 각 목록에서 가져올 후보 수만 {5, 10, 20} 중에서, 예산 안에 드는 설정끼리 검증셋 MRR로 고름. 테스트셋에는 고른 설정 하나만 돌림
-- **기본값 변경 조건**: 검증셋과 테스트셋 모두에서 MRR이 dense보다 높고, 지연이 예산 안일 것
-
-검증셋 (32문항):
-
-| 설정 | MRR | 지연 p50 | 지연 p95 |
-|---|---|---|---|
-| dense | 0.858 | 10ms | 52ms |
-| rerank, 목록당 5개 | **0.969** | 627ms | 911ms |
-| rerank, 목록당 10개 | 0.953 | 1383ms (예산 초과) | 1786ms |
-| rerank, 목록당 20개 | 0.945 | 2700ms (예산 초과) | 3480ms |
-
-테스트셋 (30문항, 목록당 5개로 1회만 실행):
-
-| 설정 | Hit@3 | Hit@10 | MRR | 지연 p50 |
-|---|---|---|---|---|
-| dense | 0.97 | 0.97 | **0.933** | 9ms |
-| rerank | **1.00** | **1.00** | 0.889 | 620ms |
-
-- **결과**: 테스트셋 MRR이 dense보다 낮으므로(0.889 < 0.933) 규칙대로 기본값은 dense를 유지함. rerank는 설정으로 켤 수 있게 남김.
-- **얻은 것**: q017이 top-10 밖에서 1위로 올라옴. 테스트셋 30문항 모두 정답 문서가 3위 안에 들어옴(Hit@3 0.97 → 1.00).
-- **잃은 것**: dense에서 1위였던 q001·q013은 3위로, q009는 2위로 내려감. 정답 문서는 여전히 3위 안에 있지만 1위가 아니게 되어 MRR이 떨어짐.
-
-**답변 품질 (참고용, 결정에는 쓰지 않음)**
-
-LLM은 top-5를 모두 읽으므로, 정답이 몇 위인지보다 top-5 안에 들었는지가 더 중요할 수 있음. 그래서 같은 날 같은 모델로 두 모드 모두 답변 평가를 돌림. dense 결과는 집계가 v3 리포트와 소수점까지 같아서, 아래 차이를 실행할 때마다 생기는 편차로 보기는 어려움.
-
-| 지표 | dense | rerank |
-|---|---|---|
-| 키워드 커버리지 | 0.93 | **1.00** |
-| 충실도 (1-5) | 4.17 | **4.27** |
-| 정확도 (1-5) | 4.73 | **4.87** |
-| 판정 모델이 환각으로 표시 | 1/30 | **0/30** |
-
-- 충실도·정확도의 합계 차이는 q017 한 문항의 변화와 크기가 같음 (충실도 1 → 4, 정확도 1 → 5). 순위가 내려간 q001·q009·q013은 두 모드의 점수가 같음 (커버리지 1.00, 충실도 4, 정확도 5).
-- **해석**: 검색 순위(MRR)로 보면 dense가, RAG 전체 결과(정답 문서가 top-5에 드는지, 답변 품질)로 보면 rerank가 나음. 차이는 사실상 q017 한 문항에서 나오고, 비용은 검색 지연 약 +0.6초임. 기준을 답변 품질로 바꾸려면 이 결과를 보고 바꿀 게 아니라, 새로 만든 테스트셋에서 미리 정한 기준으로 다시 확인해야 함.
-
-### 답변 품질 (v3, top_k=5)
-
-| 지표 | 값 |
+| 항목 | 내용 |
 |---|---|
-| 키워드 커버리지 | 0.93 |
-| 충실도 (1-5, LLM 판정) | 4.17 |
-| 정확도 (1-5, LLM 판정) | 4.73 |
-| 판정 모델이 환각으로 표시 | 1 / 30 (아래 한계 참고: 해당 건은 올바른 거절 응답) |
-| 평균 응답 시간 | 약 4.6초 (임베딩 44ms + 검색 30ms + 생성 4.5s) |
+| 기능 | JWT 로그인 → 질문 → 문서 검색 → 인용이 붙은 답변. 질문마다 검색 결과와 단계별 지연을 로그로 남김 |
+| 백엔드 | FastAPI(비동기), SQLAlchemy 2.0 + asyncpg, Alembic, PostgreSQL 16 + pgvector, Docker Compose, GitHub Actions CI |
+| AI | 로컬 임베딩 `BAAI/bge-small-en-v1.5`, 로컬 LLM Qwen2.5-7B(Ollama) 또는 Claude API, cross-encoder 재정렬 |
+| 검색 모드 | `dense` / `hybrid`(벡터 + SQL로 계산한 BM25, 가중 RRF) / `rerank`(cross-encoder 재채점). 기본값은 `dense` (아래 v7) |
+| 평가 | 질문셋 3개(테스트 30, 튜닝용 32, 새 테스트 43문항), Hit@k·MRR·검색 지연, LLM 판정 답변 정확도 |
+| 품질 관리 | pytest 29개(통합 테스트는 실제 Postgres + pgvector 사용), push마다 CI에서 ruff + pytest |
+| 응답 시간 | 약 4.6초 (대부분 로컬 LLM 생성 시간, RTX 2080 Ti) |
 
-생성·판정 모델: 로컬 Qwen2.5-7B-Instruct (RTX 2080 Ti, 약 85 tok/s). 판정 점수는 JSON 스키마의 `minimum`/`maximum`으로 1~5 범위를 강제하고, 범위를 벗어나면 평가를 실패시킴. 범위를 설명에만 적어 뒀을 때 판정 모델이 10점 척도로 넘어가 평균이 9점대로 나온 적이 있음.
+## 구조
 
-### 알려진 한계
+```mermaid
+flowchart LR
+    subgraph ingest["수집 (변경된 문서만 다시 처리)"]
+        GH["GitHub<br/>FastAPI 문서"] --> CL["마크다운 정제<br/>청킹"] --> EP["임베딩<br/>BGE-small"]
+    end
+    EP --> PG[("PostgreSQL 16<br/>pgvector HNSW<br/>tsvector GIN")]
+    subgraph ask["POST /query/ask"]
+        Q["질문 + JWT"] --> EQ["질문 임베딩"] --> MODE{"RETRIEVAL_MODE"}
+        MODE -->|dense| D["벡터 검색"]
+        MODE -->|hybrid| H["벡터 + BM25<br/>가중 RRF"]
+        MODE -->|rerank| R["벡터·BM25 후보를<br/>cross-encoder로 재채점"]
+        D --> GEN["LLM 답변 + 인용<br/>Ollama / Claude"]
+        H --> GEN
+        R --> GEN
+        GEN --> LOG["query_logs<br/>검색 결과·단계별 지연"]
+    end
+    PG --> D
+    PG --> H
+    PG --> R
+```
 
-- **q017 검색 실패**: "secrets like database credentials" 질문이 설정·환경변수 문서 대신 인증 문서(OAuth2, 비밀번호, JWT)로 끌려감. 마크업 정제로는 풀리지 않는, 소형 dense 임베딩의 의미 혼동이고, settings.md는 dense 상위 40개에 들지 않음. BM25 순위만 보면 settings.md가 1위지만, RRF로 합치면 두 목록에 모두 걸린 인증 문서에 밀려 hybrid에서도 top-10 밖임 (위 v5 참고). `rerank` 모드에서는 cross-encoder가 1위로 올림 (위 v6 참고). 평가셋을 통과시키려고 질문을 바꾸지 않음.
-- **LLM 판정의 오탐**: q017에서 모델은 검색 실패 후 "컨텍스트에 정보가 없다"고 올바르게 답했지만, 판정 모델은 이를 환각으로 표시함.
-- **키워드 커버리지는 거친 지표**: q030은 판정 정확도가 5점인데 답변에 `APIRouter`라는 이름이 없어서 커버리지는 0. 두 지표를 함께 봐야 함.
+## 응답 예시
+
+로컬에서 서버를 띄워 `POST /query/ask`로 실제로 보낸 질문과 응답 (기본값 dense, 로컬 Qwen2.5-7B, 2026-09-12).
+
+**질문**: How do I return a 404 error when the item someone asks for doesn't exist?
+
+**답변** (받은 그대로):
+
+> To return a 404 error when the item someone asks for doesn't exist, you can raise an `HTTPException` with a status code of 404 and an appropriate detail message. For example:
+>
+> ```python
+> from fastapi import HTTPException
+>
+> @app.get("/items/{item_id}")
+> def read_item(item_id: int):
+>     item = get_item(item_id)
+>     if item is None:
+>         raise HTTPException(status_code=404, detail="Item not found")
+>     return item
+> ```
+>
+> In this example, if `get_item(item_id)` returns `None`, the `HTTPException` is raised, resulting in a 404 response with the detail "Item not found".
+
+**인용**: `docs/en/docs/tutorial/handling-errors.md` › Handling Errors (코사인 유사도 0.697)
+
+**지연**: 임베딩 33ms, 검색 25ms, 생성 10,252ms. 생성은 답변과 인용 추출을 두 번에 나눠 호출함. 응답 본문에는 이 밖에 `chunk_id`, `document_id`, `query_log_id`가 들어 있어서, 로그 API로 이 요청의 검색 결과 전체를 다시 볼 수 있음.
+
+## 핵심 결과
+
+| 단계 | 한 일 | 결과 |
+|---|---|---|
+| v1 → v3 | 문서 마크업 노이즈 정제 (헤딩 앵커, include 지시문, HTML) | MRR 0.828 → 0.933 |
+| v4 | 하이브리드 검색 (Postgres `ts_rank` + RRF) | 테스트셋 MRR 0.898 < 0.933, 채택 안 함. 원인은 `ts_rank`에 IDF가 없는 것 |
+| v5 | BM25를 SQL로 구현, 튜닝용 질문셋 분리 | 튜닝용 셋에선 앞서고 테스트셋에선 뒤짐(0.894). 30문항으로는 차이를 가리기 어렵다고 판단 |
+| v6 | cross-encoder 재정렬 (지연 예산 1초 안에서 후보 수 선택) | 실패하던 q017 해결, 답변 정확도 4.73 → 4.87. 그러나 미리 정한 기준(MRR)에서 탈락 |
+| v7 | 문서를 보기 전에 쓴 새 테스트셋 43문항, 답변 정확도를 기준으로 재판정 | 재정렬이 Hit@5는 올렸지만(0.88 → 0.93) 답변 정확도는 동점(4.60). 동점이면 빠른 쪽을 남긴다는 규칙에 따라 기본값을 dense로 확정 |
+
+각 단계의 가설, 절차, 문항 단위 분석은 [docs/experiments.md](docs/experiments.md)에, 리포트 원본은 `eval/reports/`에 있음.
+
+## 설계 판단
+
+- **별도 벡터DB 대신 pgvector**: 이 규모에서는 관계형 데이터와 벡터를 한 DB에서 다루는 쪽이 운영 부담이 적음. HNSW는 IVFFlat과 달리 list 수 튜닝이 필요 없음. 전문 검색 컬럼(`tsvector`)도 같은 테이블의 생성 컬럼이라 수집 코드가 따로 신경 쓸 필요가 없음.
+- **로컬 모델**: 데모를 비용 없이 반복할 수 있게 임베딩과 LLM을 로컬에서 돌림. BGE 모델은 질문에만 지시문 프리픽스를 붙여야 제 성능이 나오므로, 질문용과 문서용 임베딩 함수를 분리해 호출하는 쪽에서 헷갈릴 수 없게 함.
+- **인용을 스키마로 강제**: "인용 형식을 지켜라"라고 부탁하는 대신 JSON 스키마(Claude는 `tool_choice`, Ollama는 제약 디코딩)로 강제함. 로컬 7B 모델은 제약 디코딩 중 문자열 속 따옴표를 이스케이프하지 못해 코드가 든 답변이 잘렸음. 그래서 Ollama 경로만 답변(자유 텍스트)과 인용(숫자 목록)을 두 번에 나눠 호출함.
+- **측정 규칙을 먼저 정함**: 파라미터는 튜닝용 질문셋에서만 고르고, 테스트셋에는 고른 설정 하나만 돌림. 기본값을 바꾸는 조건도 측정 전에 정함. v5와 v6에서 결과가 기대와 달라도 규칙을 사후에 바꾸지 않았음.
+- **BM25를 SQL로**: 확장이나 통계 테이블 없이 GIN 인덱스로 문서 빈도를, `tsvector` 위치 정보로 단어 빈도를 계산함. 이 규모에서 질의 1회 약 40~50ms라 DB 이미지를 바꾸는 확장(ParadeDB)까지는 필요 없다고 판단함.
+- **재정렬의 비용 관리**: cross-encoder는 질문이 올 때마다 후보마다 모델을 돌려야 해서, CPU에서 후보 하나에 60~80ms가 듦. 품질을 재기 전에 검색 지연 예산(중앙값 1초)부터 정하고 그 안에서만 후보 수를 고름. 모델 호출은 스레드에서 실행해 이벤트 루프를 막지 않음.
+- **청커 버전을 수집 해시에 포함**: 원문만 해시하면 청킹 로직을 바꿔도 재수집 때 모든 문서가 "변경 없음"으로 건너뛰어져, 예전 청크로 측정하게 되는 잠재 버그가 있었음.
+
+## 알려진 한계
+
+- 두 검색 방식 모두 못 찾는 질문이 있음. "파일 다운로드"를 물으면 dense는 업로드 문서를 가져옴(t010). 사용자와 문서가 다른 용어를 쓰는 경우("필드" vs "쿼리 파라미터", t043)도 둘 다 실패함. 기존 테스트셋의 q017은 `rerank` 모드에서만 풀림.
+- 재정렬은 정답 문서를 상위 5개에 더 자주 넣지만, 로컬 7B 생성 모델은 컨텍스트 구성이 조금만 바뀌어도 답이 달라져서 답변 정확도 평균은 그대로였음 (v7).
+- 질문셋이 30~43문항이라, 문항 하나가 순위 한 칸 바뀌면 MRR이 0.02 안팎 움직임. 방법 간 작은 차이는 가려내기 어려움.
+- 판정은 로컬 7B 모델이 하므로 오판이 있음. 예를 들어 검색 실패 후 "컨텍스트에 정보가 없다"는 올바른 거절 응답을 환각으로 표시한 적이 있음.
+- 키워드 커버리지는 거친 지표임. 판정 정확도가 5점인데 핵심 이름을 다르게 표현해 커버리지가 0인 문항이 있어서, 두 지표를 함께 봐야 함.
+- Claude API 경로는 코드와 단위 테스트만 있고, 실제 API로는 돌려 보지 않았음(크레딧 없음).
 
 ## 로컬 실행
 
@@ -162,6 +110,7 @@ LLM은 top-5를 모두 읽으므로, 정답이 몇 위인지보다 top-5 안에 
 cp .env.example .env
 # .env를 열어 ANTHROPIC_API_KEY 등을 채운다
 ```
+호스트의 5432 포트를 쓸 수 없으면 `.env`의 `POSTGRES_HOST_PORT`와 `DATABASE_URL`의 포트를 같이 바꾼다(테스트용 `TEST_DATABASE_URL`도 마찬가지). 로컬에 Postgres가 이미 떠 있는 경우도 있지만, Windows에서는 Hyper-V/WSL이 부팅할 때 이 포트를 예약 범위에 넣는 경우도 있다(`netsh interface ipv4 show excludedportrange protocol=tcp`로 확인).
 
 ### 2. 전체 스택 실행
 ```bash
@@ -205,7 +154,7 @@ uv run uvicorn app.main:app --reload
 docker compose up -d db
 uv run pytest
 ```
-`tests/conftest.py`는 `ragdb_test` 데이터베이스와 스키마에 필요한 확장(`vector`, `pgcrypto`)이 없으면 직접 만들고, 테스트마다 스키마를 생성·정리한다. 임베딩·생성 서비스는 외부 API를 부르지 않는 결정론적 fake로 대체된다. push와 PR마다 GitHub Actions가 pgvector 서비스 컨테이너를 띄워 같은 ruff + pytest를 실행한다 (`.github/workflows/ci.yml`).
+`tests/conftest.py`는 `ragdb_test` 데이터베이스와 스키마에 필요한 확장(`vector`, `pgcrypto`)이 없으면 직접 만들고, 테스트마다 스키마를 생성·정리한다. 임베딩·생성·재정렬 모델은 외부 API를 부르지 않는 결정론적 fake로 대체된다. push와 PR마다 GitHub Actions가 pgvector 서비스 컨테이너를 띄워 같은 ruff + pytest를 실행한다 (`.github/workflows/ci.yml`).
 
 ## 평가
 
@@ -216,14 +165,15 @@ uv run python -m eval.run_answer_eval --tag v1_baseline
 uv run python -m eval.run_answer_eval --skip-judge --tag quick
 # (청커를 바꿨다면 CHUNKER_VERSION을 올리고 재수집한 뒤)
 uv run python -m eval.run_retrieval_eval --tag v2_tuned
-# dense와 hybrid 비교 (--mode를 생략하면 RETRIEVAL_MODE 설정을 따름)
+# 검색 모드 비교 (--mode를 생략하면 RETRIEVAL_MODE 설정을 따름)
 uv run python -m eval.run_retrieval_eval --mode dense --tag v4_dense
 uv run python -m eval.run_retrieval_eval --mode hybrid --tag v4_hybrid
 # 파라미터 튜닝은 검증셋으로만 한다 (--dataset 기본값은 테스트셋인 eval/qa_dataset.jsonl)
 uv run python -m eval.run_retrieval_eval --mode hybrid --dataset eval/qa_dev.jsonl --lexical-weight 0.5 --tag dev_w050
 # rerank: 목록당 후보 수 기본값은 검증셋에서 고른 5 (--rerank-pool로 변경). 리포트에 검색 지연 p50/p95도 기록됨
 uv run python -m eval.run_retrieval_eval --mode rerank --dataset eval/qa_dev.jsonl --tag dev_rerank
-uv run python -m eval.run_answer_eval --mode rerank --tag rerank
+# 두 평가 모두 --dataset으로 질문셋을 고른다 (v7은 eval/qa_test2.jsonl)
+uv run python -m eval.run_answer_eval --mode rerank --dataset eval/qa_test2.jsonl --tag v7_rerank
 ```
 결과는 `eval/reports/`에 마크다운으로 남는다. 판정 LLM은 `GENERATION_PROVIDER` 설정을 그대로 따르므로, Ollama 설정이면 평가 전체가 무료로 돌아간다.
 

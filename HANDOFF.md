@@ -8,71 +8,55 @@
 - 5단계: GitHub Actions CI(ruff + pytest) 추가
 - 6단계: 어휘 순위를 BM25로 바꾸고 튜닝 전용 검증셋을 분리해 다시 측정. 미리 정한 규칙(검증셋과 테스트셋 모두에서 dense보다 나아야 함)을 통과하지 못해 기본값은 여전히 dense
 - 7단계: cross-encoder 재정렬(`RETRIEVAL_MODE=rerank`) 추가. q017을 1위로 끌어올리고 답변 품질도 좋아졌지만, 미리 정한 기준인 테스트셋 MRR에서 dense보다 낮아 기본값은 dense 유지
+- 8단계: 문서를 보기 전에 쓴 새 테스트셋(43문항)에서 답변 정확도를 기준으로 재판정. 동점(4.60)이라 기본값을 dense로 확정. README를 채용 담당자가 빨리 볼 수 있게 재구성하고 실험 기록은 `docs/experiments.md`로 분리
 
 ## Done
 - FastAPI 앱(auth/documents/query/logs/health), SQLAlchemy 모델 4종, Alembic 마이그레이션(pgvector + HNSW), 수집 파이프라인, 평가 하네스
 - 생성 프로바이더 추상화: `GENERATION_PROVIDER=ollama`(기본, 로컬 Qwen2.5-7B) / `anthropic`. Ollama 경로는 답변(자유 텍스트)과 인용(숫자 스키마)을 2회 호출로 나눔. 7B 모델이 제약 디코딩 중 문자열 안의 따옴표를 이스케이프하지 못해 코드가 든 답변이 잘렸기 때문
 - GitHub 공개 저장소: https://github.com/hyeonbin123/rag-doc-qa
 - **평가셋 5 → 30문항** (`eval/qa_dataset.jsonl`): 실제 수집된 코퍼스 내용을 보고 작성했고, 참조하는 `expected_source_paths`가 모두 DB에 있는지 확인함
-- **검색 개선 v1 → v2 → v3** (30문항 기준 MRR 0.828 → 0.911 → 0.933)
-  - v2: `clean_markdown()` 추가. MkDocs 헤딩 앵커 `{ #id }`, 코드 include 지시문 `{* ... *}`, admonition 구분자, HTML 태그를 제거함 (코드 펜스와 인라인 코드는 그대로 둠)
-  - v3: v2가 `<dfn title="...">`의 정의 텍스트까지 지워서 q011이 회귀함 → `<dfn>`/`<abbr>`는 "용어 (정의)" 형태로 보존
-- **잠재 버그 수정**: 수집 해시가 원문만 보고 있어서, 청커를 바꿔도 모든 문서가 "변경 없음"으로 스킵됐음 → `CHUNKER_VERSION`을 해시에 포함 (`app/services/ingestion.py`)
-- **평가 버그 수정**: 판정 점수 범위가 설명 문구에만 있어서 로컬 판정 모델이 10점 척도로 넘어감(평균 9.17) → 스키마에 `minimum`/`maximum` 추가, 범위를 벗어나면 `ValueError`로 평가를 실패시킴, 리포트에 문항별 표 추가 (`eval/run_answer_eval.py`). 무효 측정이었던 v2 답변 리포트는 삭제함
-- **Docker 전체 스택 (3단계)**:
-  - `.dockerignore` 추가. 없으면 `COPY . .`가 Windows `.venv`로 컨테이너의 Linux venv를 덮어쓰고, `.env`(API 키)가 이미지에 들어감
-  - compose에서 api 컨테이너의 `DATABASE_URL`을 `db`로, `OLLAMA_BASE_URL`을 `host.docker.internal:11434`로 덮어씀. 이 PC에서는 Ollama를 127.0.0.1에 바인딩한 그대로도 컨테이너에서 접근됨(HTTP 200 확인)
-  - torch를 PyTorch CPU 인덱스로 고정. `tool.uv.sources`는 전이 의존성에는 적용되지 않아 `torch`를 직접 의존성으로 추가해야 했음 → lock에서 nvidia 패키지 15개와 triton 제거
-  - Dockerfile: 모델 다운로드를 소스 복사 앞으로 옮김, `HF_HUB_OFFLINE=1` 추가, 효과가 없던 `--extra-index-url` 제거
-  - README의 컨테이너 명령을 `uv run`에서 `python -m`으로 변경 (컨테이너 안에서 `uv run`을 쓰면 dev 의존성을 설치함)
-- **하이브리드 검색 실험 (4단계)**:
-  - `chunks.content_tsv`: Postgres가 관리하는 생성 컬럼(`to_tsvector('english', heading_path || content)`) + GIN 인덱스 (마이그레이션 0002). DB가 계산하므로 수집 코드는 바꾸지 않음
-  - `hybrid_search` / `retrieve()` (`app/services/retrieval.py`), `RETRIEVAL_MODE` 설정(기본 `dense`), API와 두 평가 스크립트의 `--mode` 옵션
-  - 30문항 결과: dense MRR 0.933 vs hybrid 0.898. 원인으로 본 것: `ts_rank`에 IDF가 없어서 "fastapi"(청크의 57%) 같은 흔한 단어가 어휘 순위를 흐림
-- **CI (5단계)**: `.github/workflows/ci.yml`. push와 PR마다 pgvector 서비스 컨테이너를 띄우고 `uv sync --frozen` → ruff → pytest (Python 3.11, `astral-sh/setup-uv@v10.1.0`, `actions/checkout@v7`. setup-uv는 `v10` 같은 주 버전 태그를 만들지 않으므로 정확한 릴리스 태그로 고정해야 함). 서비스 컨테이너는 일부러 `ragdb`만 만들어서, 새로 클론한 환경처럼 테스트 DB가 없는 상태를 매번 검증하게 함
-  - `tests/conftest.py`가 `ragdb_test` 데이터베이스와 `vector`/`pgcrypto` 확장이 없으면 직접 만들도록 수정
-- **BM25 + 검증셋 분리 (6단계)**:
-  - `eval/qa_dev.jsonl` 32문항 신규 작성 (튜닝 전용). 테스트셋이 정답으로 쓰는 문서를 주 정답으로 삼지 않음. 경로와 키워드는 `work/check_dev_set.py`로 DB와 대조함 (work/는 gitignore)
-  - `hybrid_search`의 어휘 순위를 `ts_rank`에서 SQL로 계산하는 BM25로 교체. df는 GIN 인덱스로, tf는 tsvector 위치 개수로, 길이는 `token_count`로 계산 (k1=1.2, b=0.75). 스키마 변경 없음. `lexical_search()`로 BM25 순위만 따로 볼 수 있음
-  - RRF 가중치 `LEXICAL_WEIGHT = 0.75` (검증셋에서 {0.25, 0.5, 0.75, 1.0} 중 선택)
-  - 결과: 검증셋 MRR dense 0.858 / BM25 hybrid 0.953, 테스트셋 dense 0.933 / BM25 hybrid 0.894 → 기본값 dense 유지
-- **Cross-encoder 재정렬 (7단계)**:
-  - `app/services/reranking.py`: `RerankerService`(sentence-transformers `CrossEncoder`, 점수는 sigmoid로 0~1). `get_reranker_service()`는 `RERANKER_MODEL_NAME`(기본 `cross-encoder/ms-marco-MiniLM-L-6-v2`)을 씀
-  - `rerank_search()` (`app/services/retrieval.py`): dense 상위 N개와 BM25 상위 N개의 합집합을 재정렬. 모델 호출은 `asyncio.to_thread`로 실행. `RERANK_POOL = 5` (검증셋에서 {5, 10, 20} 중 지연 예산 1초 안에서 선택)
-  - `RETRIEVAL_MODE=rerank`일 때만 모델을 불러옴 (`get_reranker` 의존성, lifespan에서 미리 로드). API의 retrieval 지연에 재정렬 시간이 포함됨
-  - 평가: `run_retrieval_eval.py`에 `--mode rerank`, `--rerank-pool`, `--reranker-model`, 검색 지연 p50/p95 기록 추가. `run_answer_eval.py`에 `--mode rerank` 추가
-  - Dockerfile에서 재정렬 모델도 이미지에 넣음 (이미지 2.35GB). 컨테이너에서 오프라인(`HF_HUB_OFFLINE=1`)으로 로드되는 것 확인
-  - 결과: 테스트셋 MRR dense 0.933 / rerank 0.889 (Hit@3 0.97 → 1.00), 답변 품질은 rerank가 나음 (커버리지 1.00, 충실도 4.27, 정확도 4.87, 환각 0/30 vs dense 0.93 / 4.17 / 4.73 / 1/30). 자세한 분석은 README v6 절
+- **검색 개선 v1 → v2 → v3** (30문항 기준 MRR 0.828 → 0.911 → 0.933): `clean_markdown()`으로 MkDocs 마크업 노이즈 제거, `<dfn>`/`<abbr>` 정의 텍스트는 보존
+- **잠재 버그 수정**: 수집 해시에 `CHUNKER_VERSION` 포함 (`app/services/ingestion.py`). 원문만 해시하면 청커를 바꿔도 모든 문서가 "변경 없음"으로 스킵됐음
+- **평가 버그 수정**: 판정 점수 범위를 JSON 스키마의 `minimum`/`maximum`으로 강제하고 범위를 벗어나면 `ValueError` (`eval/run_answer_eval.py`)
+- **Docker 전체 스택 (3단계)**: `.dockerignore`, compose의 `DATABASE_URL`/`OLLAMA_BASE_URL` 덮어쓰기, torch CPU 인덱스 고정(직접 의존성으로 선언해야 `tool.uv.sources`가 적용됨), 모델을 이미지에 미리 넣고 `HF_HUB_OFFLINE=1`
+- **하이브리드 검색 (4단계)**: `chunks.content_tsv` 생성 컬럼 + GIN 인덱스 (마이그레이션 0002), `RETRIEVAL_MODE` 설정
+- **CI (5단계)**: `.github/workflows/ci.yml`. pgvector 서비스 컨테이너, `uv sync --frozen` → ruff → pytest. `astral-sh/setup-uv@v10.1.0`처럼 정확한 릴리스 태그로 고정해야 함(주 버전 태그 없음). `tests/conftest.py`가 테스트 DB와 확장을 직접 만듦
+- **BM25 + 검증셋 분리 (6단계)**: `eval/qa_dev.jsonl` 32문항(튜닝 전용), SQL로 계산하는 BM25(`lexical_search`), RRF 가중치 `LEXICAL_WEIGHT = 0.75`
+- **Cross-encoder 재정렬 (7단계)**: `app/services/reranking.py`, `rerank_search()` (dense·BM25 각 상위 5개의 합집합 재정렬, `RERANK_POOL = 5`, `asyncio.to_thread`), `RETRIEVAL_MODE=rerank`일 때만 모델 로드, 평가 스크립트에 검색 지연 p50/p95 기록, Dockerfile에 재정렬 모델 포함(이미지 2.35GB)
+- **새 테스트셋 재판정 (8단계)**:
+  - `eval/qa_test2.jsonl` 43문항. 사용자 입장에서 질문 44개를 먼저 쓰고(`eval/qa_test2_draft.md`), 정답 문서는 그다음에 DB에서 검색해 찾음(`work/locate_answers.py`). 코퍼스에 설명이 없는 1문항만 제외, 질문 문구는 바꾸지 않음. 경로·키워드는 `work/check_dev_set.py eval/qa_test2.jsonl`로 대조
+  - 판단 규칙을 측정 전에 정함: 주 지표는 답변 정확도, 보조 조건은 Hit@5가 dense보다 낮지 않을 것, 동점이면 dense
+  - 결과: Hit@5 dense 0.88 / rerank 0.93, 답변 정확도 둘 다 4.60(43문항 합계 198점 동점) → 기본값 dense 확정. 문항별로는 rerank에서 8개가 오르고(+10점) 7개가 내림(−10점). 분석은 `docs/experiments.md` v7 절
+  - `eval/run_answer_eval.py`에 `--dataset` 옵션 추가
+  - README 재구성: 한눈에 보기 표, mermaid 구조도, 실제 응답 예시, 단계별 핵심 결과, 설계 판단, 알려진 한계. v1~v7 상세 기록은 `docs/experiments.md`로 옮김
+  - `docker-compose.yml`의 DB 호스트 포트를 `${POSTGRES_HOST_PORT:-5432}`로 바꿔 설정 가능하게 함 (`.env.example`, README에 설명)
 
 ## Files touched
-- 2단계: `app/services/chunking.py`, `app/services/ingestion.py`, `eval/qa_dataset.jsonl`, `eval/run_answer_eval.py`, `eval/reports/*`, `tests/test_chunking.py`, `README.md`
-- 3단계: `.dockerignore`, `Dockerfile`, `docker-compose.yml`, `pyproject.toml`, `uv.lock`, `README.md`
-- 4단계: `alembic/versions/0002_chunks_fulltext.py`, `app/models/chunk.py`, `app/services/retrieval.py`, `app/config.py`, `app/routers/query.py`, `eval/run_retrieval_eval.py`, `eval/run_answer_eval.py`, `tests/test_retrieval.py`, `.env.example`, `README.md`, `eval/reports/retrieval_eval_v4_*`
-- 5단계: `.github/workflows/ci.yml`, `tests/conftest.py`, `README.md`
+- 2~5단계: `app/services/chunking.py`, `app/services/ingestion.py`, `eval/*`, `tests/*`, `.dockerignore`, `Dockerfile`, `docker-compose.yml`, `pyproject.toml`, `uv.lock`, `alembic/versions/0002_chunks_fulltext.py`, `app/models/chunk.py`, `app/services/retrieval.py`, `app/config.py`, `app/routers/query.py`, `.github/workflows/ci.yml`, `README.md`
 - 6단계: `app/services/retrieval.py`, `eval/qa_dev.jsonl`, `eval/run_retrieval_eval.py`, `tests/test_retrieval.py`, `.env.example`, `README.md`, `eval/reports/retrieval_eval_v5_*`
 - 7단계: `app/services/reranking.py`(신규), `app/services/retrieval.py`, `app/config.py`, `app/dependencies.py`, `app/main.py`, `app/routers/query.py`, `eval/run_retrieval_eval.py`, `eval/run_answer_eval.py`, `tests/test_retrieval.py`, `Dockerfile`, `.env.example`, `README.md`, `eval/reports/*_v6_*`
+- 8단계: `eval/qa_test2.jsonl`(신규), `eval/qa_test2_draft.md`(신규), `docs/experiments.md`(신규), `eval/run_answer_eval.py`, `docker-compose.yml`, `.env.example`, `README.md`, `HANDOFF.md`, `eval/reports/*_v7_*`
 
 ## Test results
-- `ruff check .` 통과, `pytest` 29개 통과 (7단계에서 재정렬 테스트 3개 추가: dense·BM25 후보 합집합을 재정렬 점수 순으로 돌려주는지, top_k를 지키는지, 재정렬 모델 없이 rerank 모드를 부르면 오류가 나는지)
-- 새 클론 조건 재현(5단계): `ragdb_test`를 삭제한 상태에서 pytest 통과. 원격 CI 결과는 README 배지 또는 GitHub Actions 탭에서 확인
-- `docker compose build api` 성공, 컨테이너에서 재정렬 모델 오프라인 로드 확인 (7단계)
-- 7단계 리포트 (`eval/reports/`):
-  - 검증셋: `retrieval_eval_v6_dev_dense_*` (MRR 0.858, p50 10ms), `v6_dev_rerank_p05/p10/p20_*` (0.969 / 0.953 / 0.945, p50 627 / 1383 / 2700ms)
-  - 테스트셋: `retrieval_eval_v6_test_dense_*` (MRR 0.933), `v6_test_rerank_p05_*` (Hit@3 1.00, Hit@10 1.00, MRR 0.889, p50 620ms)
-  - 답변 품질(테스트셋): `answer_eval_v6_dense_rerun_*` (v3와 집계 동일), `answer_eval_v6_rerank_p05_*`
-- 6단계 리포트: 검증셋 `retrieval_eval_v5_dev_*`, 테스트셋 `retrieval_eval_v5_test_bm25_w075_*` (MRR 0.894)
-- 클린 클론(`git clone` 후 `.env.example`만 복사): README 절차 그대로 빌드 → 빈 DB에 수집 155문서/915청크 → 데모 사용자 생성 → 로그인 → 인용이 붙은 답변 (3단계에서 확인. 7단계 이후 클린 클론 전체 재검증은 하지 않음, 이미지 빌드와 모델 로드만 확인)
+- `ruff check .` 통과, `pytest` 29개 통과 (8단계에서 DB를 호스트 포트 55432로 띄운 상태로 실행)
+- 8단계 리포트 (`eval/reports/`): `retrieval_eval_v7_test2_dense_*`, `retrieval_eval_v7_test2_rerank_p05_*`, `answer_eval_v7_test2_dense_*`, `answer_eval_v7_test2_rerank_*`
+- 7단계 리포트: `retrieval_eval_v6_*`, `answer_eval_v6_*` / 6단계: `retrieval_eval_v5_*`
+- `docker compose config`: `POSTGRES_HOST_PORT`가 없으면 5432, 지정하면 그 포트로 게시되는 것 확인
+- README 응답 예시: 로컬에서 `uvicorn`을 띄우고 README 4단계 방식으로 만든 로컬 데모 계정(`readme-demo@example.com`)으로 로그인해 실제로 받은 응답. 응답 전체는 `query_logs`에도 남아 있음
+- 7단계: `docker compose build api` 성공, 컨테이너에서 재정렬 모델 오프라인 로드 확인. 클린 클론 전체 재검증은 3단계가 마지막
 
 ## 환경 메모
-- DB 컨테이너는 Docker Desktop이 재시작되면 내려갈 수 있음 → `docker compose up -d db`로 다시 올리면 됨. 데이터는 `pgdata` 볼륨에 남아 있음
-- **Docker는 `coding\start-docker.cmd`로 시작** (로그인할 때는 작업 스케줄러의 "Start Docker Desktop (coding)"이 같은 스크립트를 자동으로 실행함). 이 PC의 Docker Desktop 4.90은 종료할 때마다(정상 종료 포함) 지울 수 없는 AF_UNIX 소켓 파일(Error 1920)을 남기고, 다음 시작 때 이를 치우다 실패하면서 "Quit / Reset to factory defaults" 오류 창을 띄움. 스크립트는 시작 전에 소켓 폴더(`%LOCALAPPDATA%\Docker\run`, `%LOCALAPPDATA%\docker-secrets-engine`)를 `%LOCALAPPDATA%\Docker\stale-sockets\`로 옮김. Claude 도구에서는 Docker Desktop을 직접 실행하지 말고 `Start-ScheduledTask -TaskName "Start Docker Desktop (coding)"`으로 띄울 것 (이렇게 띄운 Docker는 Claude의 Job 바깥에서 실행되는 것을 확인함). **"Reset to factory defaults"는 볼륨(DB)을 지우므로 누르지 말 것**
+- **DB 포트**: 2026-09-12 재부팅 뒤 Windows(Hyper-V/WSL)가 TCP 5432~5631을 예약해서 DB가 5432에 바인딩하지 못했음. 이때는 셸에서 `$env:POSTGRES_HOST_PORT='55432'`로 `docker compose up -d db`를 하고, 명령마다 `$env:DATABASE_URL='postgresql+asyncpg://raguser:ragpass@localhost:55432/ragdb'`, `$env:TEST_DATABASE_URL='...:55432/ragdb_test'`를 설정해서 실행함 (`.env`는 수정하지 않음). 예약 범위는 부팅마다 바뀔 수 있으니 `netsh interface ipv4 show excludedportrange protocol=tcp`로 먼저 확인. 5432를 영구히 쓰려면 관리자 권한으로 예약을 풀고 5432를 제외 목록에 넣어야 하는데, 이는 사용자가 결정할 시스템 설정 변경임
+- **Docker는 `coding\start-docker.cmd`로 시작** (로그인할 때는 작업 스케줄러의 "Start Docker Desktop (coding)"이 같은 스크립트를 자동 실행하며, 2026-09-12 재부팅에서 정상 동작 확인). 이 PC의 Docker Desktop 4.90은 종료할 때마다 지울 수 없는 AF_UNIX 소켓 파일을 남기고 다음 시작 때 실패하므로, 스크립트가 소켓 폴더를 `%LOCALAPPDATA%\Docker\stale-sockets\`로 옮긴 뒤 시작함. Claude 도구에서는 Docker Desktop을 직접 실행하지 말고 `Start-ScheduledTask -TaskName "Start Docker Desktop (coding)"`을 쓸 것. **"Reset to factory defaults"는 볼륨(DB)을 지우므로 누르지 말 것**
 - 청커를 고치면 `CHUNKER_VERSION`을 올리고 재수집해야 새 청크 기준으로 측정됨
-- 검색 파라미터를 바꿀 때는 `--dataset eval/qa_dev.jsonl`로만 비교하고, 테스트셋(`qa_dataset.jsonl`)은 최종 설정 하나에만 돌릴 것
-- 지연 시간을 잴 때는 평가를 동시에 여러 개 돌리지 말 것 (CPU를 나눠 써서 재정렬 지연이 부풀려짐)
+- 검색 파라미터는 `--dataset eval/qa_dev.jsonl`로만 비교하고, 테스트셋(`qa_dataset.jsonl`, `qa_test2.jsonl`)은 최종 설정에만 돌릴 것
+- 지연 시간을 잴 때는 평가를 동시에 여러 개 돌리지 말 것 (CPU를 나눠 써서 재정렬 지연이 부풀려짐). 답변 평가도 Ollama 요청이 섞이지 않게 하나씩 돌림
 - torch는 CPU 빌드라 이 PC의 RTX 2080 Ti를 쓰지 않음. 재정렬이 느린 주된 이유
+- 로컬 DB의 `demo@example.com` 계정은 예전에 다른 비밀번호로 만들어져 README 절차의 비밀번호로는 로그인되지 않음
 
 ## TODO / 미완료 작업
-- **기본값 결정 보류**: 검색 순위(MRR) 기준으로는 dense, RAG 전체 결과(Hit@k, 답변 품질) 기준으로는 rerank가 나음. 기준을 답변 품질로 바꾸려면, 문서를 보지 않고 사용자 입장에서 먼저 쓴 새 테스트셋에서 미리 정한 기준으로 다시 확인할 것 (현재 두 셋은 문서를 보며 작성해서 질문과 본문의 어휘가 겹치기 쉬운 편향이 있음)
-- 30문항 규모로는 방법 간 차이를 가려내기 어려움 (문항 하나가 순위 1칸 바뀌면 MRR 약 0.016)
+- **자기소개서 문구 초안** (다음 단계): 백엔드용, 데이터·AI용 두 버전. README "설계 판단"과 "핵심 결과"가 근거 자료
+- 답변 정확도를 더 올리려면 검색보다 생성 쪽이 먼저임 (v7 해석): 더 큰 생성 모델, 또는 판정을 여러 번 해서 평균을 내 판정 흔들림 줄이기
+- t030처럼 정답 문서를 둘 이상 인정하면서 참고 답안은 하나만 쓴 문항은 판정이 불공정할 수 있음. 새 질문셋을 만들 때는 인정하는 답마다 참고 답안에 반영할 것
 - Anthropic 경로는 코드만 있고 실제로 돌려 본 적 없음 (API 크레딧 없음). 크레딧을 충전하면 `GENERATION_PROVIDER=anthropic`으로 같은 흐름을 다시 검증
 - `%LOCALAPPDATA%\Docker\stale-sockets\`에 옮겨 둔 소켓 폴더들은 Docker 동작과 무관함. 안의 파일은 0바이트라 용량 문제는 없고, 일반적인 방법으로는 지워지지 않음
