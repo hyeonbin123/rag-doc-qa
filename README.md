@@ -39,6 +39,14 @@ flowchart LR
     PG --> R
 ```
 
+## 화면
+
+브라우저 채팅 화면(`http://localhost:8000`). 영어 질문은 영어 원문에서, 한국어 질문은 한국어 번역 문서에서 찾아 답하고, 답변 아래에 근거 문서와 단계별로 걸린 시간을 보여 줌. 첫 질문의 15.8초는 서버를 다시 띄운 직후라 모델을 불러오는 시간이 포함된 값임.
+
+| 영어 질문 | 한국어 질문 |
+|---|---|
+| ![영어 질문에 CORSMiddleware 설정 코드로 답하고, 영어 원문 cors.md의 두 절을 근거로 보여 주는 화면](docs/images/chat-en.jpg) | ![한국어 질문에 HTTPException 코드로 답하고, 한국어 번역 handling-errors.md를 근거로 보여 주는 화면](docs/images/chat-ko.jpg) |
+
 ## 응답 예시
 
 로컬에서 서버를 띄워 `POST /query/ask`로 실제로 보낸 질문과 응답 (기본값 dense, 로컬 Qwen2.5-7B, 2026-09-12).
