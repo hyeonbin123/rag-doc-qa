@@ -50,6 +50,11 @@ async def ask(
             reranker=reranker_for(language) if reranker_for else None,
         )
 
+    # End the read transaction so the pooled connection isn't held while the LLM
+    # generates (seconds per question, queued in Ollama). Commit rather than rollback:
+    # rollback expires current_user, and reloading it later would need async IO.
+    await db.commit()
+
     generation_sw = Stopwatch()
     with generation_sw.measure():
         generation_result = await generator.answer(payload.question, retrieved, language=language)

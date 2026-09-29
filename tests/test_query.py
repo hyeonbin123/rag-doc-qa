@@ -1,8 +1,24 @@
 import pytest
 
+from app.dependencies import get_generator
+from app.main import app
 from app.models.chunk import Chunk
 from app.models.document import Document
-from tests.conftest import FakeEmbeddingService
+from tests.conftest import FakeEmbeddingService, FakeGenerationService
+
+
+class TransactionProbeGenerator(FakeGenerationService):
+    """Records whether the request's DB session still holds a connection while generating."""
+
+    def __init__(self, session) -> None:
+        self.session = session
+        self.in_transaction: bool | None = None
+        self.connections_checked_out: int | None = None
+
+    async def answer(self, question, chunks, language="en"):
+        self.in_transaction = self.session.in_transaction()
+        self.connections_checked_out = self.session.bind.pool.checkedout()
+        return await super().answer(question, chunks, language)
 
 
 @pytest.mark.asyncio
@@ -57,3 +73,20 @@ async def test_ask_persists_query_log(authed_client, db_session):
     log_resp = await authed_client.get(f"/logs/{log_id}")
     assert log_resp.status_code == 200
     assert log_resp.json()["question"] == "What is FastAPI?"
+
+
+@pytest.mark.asyncio
+async def test_ask_releases_db_connection_during_generation(authed_client, db_session):
+    # Generation takes seconds and Ollama answers one request at a time, so a question
+    # that kept its pooled connection through it would starve every other endpoint.
+    probe = TransactionProbeGenerator(db_session)
+    app.dependency_overrides[get_generator] = lambda: probe
+
+    resp = await authed_client.post("/query/ask", json={"question": "What is FastAPI?"})
+
+    assert resp.status_code == 200
+    assert probe.in_transaction is False
+    assert probe.connections_checked_out == 0
+    # The query log is still written afterwards, in its own short transaction.
+    log_resp = await authed_client.get(f"/logs/{resp.json()['query_log_id']}")
+    assert log_resp.status_code == 200
