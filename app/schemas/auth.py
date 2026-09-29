@@ -1,11 +1,21 @@
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, EmailStr, Field, field_validator
+from pydantic import BaseModel, EmailStr, Field, TypeAdapter, field_validator
 
 from app.services.security import MAX_PASSWORD_BYTES
 
 MIN_PASSWORD_LENGTH = 8
+
+_email_adapter = TypeAdapter(EmailStr)
+
+
+def normalize_email(value: str) -> str:
+    """Return the address as UserRegister stores it (EmailStr form, domain lower-cased).
+
+    Raises ValueError (pydantic's ValidationError) if the value is not an address.
+    """
+    return _email_adapter.validate_python(value)
 
 
 class UserRegister(BaseModel):

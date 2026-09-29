@@ -1,5 +1,8 @@
 import pytest
 
+from app.models.user import User
+from app.services.security import hash_password
+
 
 @pytest.mark.asyncio
 async def test_register_then_login_returns_token_pair(client):
@@ -35,6 +38,45 @@ async def test_login_accepts_the_email_exactly_as_typed_at_registration(client):
             "/auth/login", data={"username": username, "password": "supersecret1"}
         )
         assert resp.status_code == 200, username
+
+
+@pytest.mark.asyncio
+async def test_login_still_finds_a_row_stored_with_the_email_as_typed(client, db_session):
+    # scripts/seed_demo_user.py used to store the command-line address as typed, so a
+    # row can hold a spelling EmailStr would normalize differently ("Example.COM").
+    db_session.add(
+        User(email="Demo@Example.COM", hashed_password=hash_password("supersecret1"))
+    )
+    await db_session.commit()
+
+    resp = await client.post(
+        "/auth/login", data={"username": "Demo@Example.COM", "password": "supersecret1"}
+    )
+    assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_login_prefers_the_row_stored_exactly_as_typed(client, db_session):
+    # A raw row and a registered (normalized) row can both exist, since registering
+    # "Ivan@Example.COM" stores "Ivan@example.com". Each spelling must keep reaching
+    # the row it reached before login normalized anything.
+    db_session.add(User(email="Ivan@Example.COM", hashed_password=hash_password("raw-row-pw")))
+    await db_session.commit()
+    register_resp = await client.post(
+        "/auth/register", json={"email": "Ivan@Example.COM", "password": "registered-pw"}
+    )
+    assert register_resp.status_code == 201
+    assert register_resp.json()["email"] == "Ivan@example.com"
+
+    for username, password, expected in (
+        ("Ivan@Example.COM", "raw-row-pw", 200),
+        ("Ivan@Example.COM", "registered-pw", 401),
+        ("Ivan@example.com", "registered-pw", 200),
+    ):
+        resp = await client.post(
+            "/auth/login", data={"username": username, "password": password}
+        )
+        assert resp.status_code == expected, (username, password)
 
 
 @pytest.mark.asyncio
