@@ -1,4 +1,6 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+import uuid
+
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -13,8 +15,8 @@ router = APIRouter(prefix="/logs", tags=["logs"])
 
 @router.get("", response_model=list[QueryLogSummary])
 async def list_logs(
-    limit: int = 20,
-    offset: int = 0,
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> list[QueryLog]:
@@ -30,7 +32,7 @@ async def list_logs(
 
 @router.get("/{log_id}", response_model=QueryLogDetail)
 async def get_log(
-    log_id: str,
+    log_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> QueryLog:

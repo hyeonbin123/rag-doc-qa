@@ -1,3 +1,4 @@
+import uuid
 from collections.abc import Callable
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -68,7 +69,7 @@ async def list_documents(db: AsyncSession = Depends(get_db)) -> list[DocumentOut
 
 
 @router.get("/documents/{document_id}", response_model=DocumentOut)
-async def get_document(document_id: str, db: AsyncSession = Depends(get_db)) -> DocumentOut:
+async def get_document(document_id: uuid.UUID, db: AsyncSession = Depends(get_db)) -> DocumentOut:
     document = await db.get(Document, document_id)
     if document is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
