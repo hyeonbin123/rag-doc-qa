@@ -2,7 +2,9 @@
 
 Idempotent by content hash: unchanged files are skipped, changed files have
 their chunks fully replaced, so re-running ingestion after a doc update only
-recomputes what actually changed.
+recomputes what actually changed. A full run (no limit) also deletes the documents
+of the ingested languages that the tree no longer lists: pages removed or renamed
+upstream, or newly excluded. The corpus then mirrors the docs at that commit.
 """
 
 from __future__ import annotations
@@ -14,7 +16,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 import httpx
-from sqlalchemy import delete, select, text
+from sqlalchemy import and_, delete, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.chunk import Chunk
@@ -71,7 +73,12 @@ async def list_doc_paths(
 ) -> list[tuple[str, str]]:
     resp = await client.get(f"{GITHUB_API}/repos/{REPO}/git/trees/{sha}", params={"recursive": "1"})
     resp.raise_for_status()
-    return select_doc_paths(resp.json()["tree"], languages)
+    data = resp.json()
+    # A full run deletes documents the listing leaves out, so a partial listing would
+    # delete pages that still exist.
+    if data.get("truncated"):
+        raise RuntimeError("GitHub tree listing is truncated; refusing to ingest a partial corpus")
+    return select_doc_paths(data["tree"], languages)
 
 
 async def fetch_raw_file(client: httpx.AsyncClient, sha: str, path: str) -> str:
@@ -89,12 +96,13 @@ def extract_title(raw_text: str, fallback: str) -> str:
 
 
 async def _vacuum_chunks(db: AsyncSession) -> None:
-    """Clear the rows that replaced chunks leave behind.
+    """Clear the rows that replaced or removed chunks leave behind.
 
-    A changed doc has its chunks deleted and reinserted. Until vacuum removes the dead
-    rows, HNSW scans still walk them and spend their ef_search budget on rows they
-    then discard. That is the likeliest cause of an English dev-set hit that went
-    missing right after a bulk re-ingest and came back once autovacuum had run.
+    A changed doc has its chunks deleted and reinserted, and a removed doc takes its
+    chunks with it. Until vacuum removes the dead rows, HNSW scans still walk them and
+    spend their ef_search budget on rows they then discard. That is the likeliest
+    cause of an English dev-set hit that went missing right after a bulk re-ingest
+    and came back once autovacuum had run.
     VACUUM can't run inside a transaction, hence the autocommit connection.
     """
     async with db.bind.connect() as conn:
@@ -105,6 +113,7 @@ async def _vacuum_chunks(db: AsyncSession) -> None:
 @dataclass
 class IngestOutcome:
     documents_processed: int
+    documents_deleted: int
     chunks_created: int
     chunks_updated: int
     chunks_skipped: int
@@ -122,6 +131,7 @@ async def run_ingestion(
 ) -> IngestOutcome:
     start = time.perf_counter()
     documents_processed = 0
+    documents_deleted = 0
     chunks_created = 0
     chunks_updated = 0
     chunks_skipped = 0
@@ -131,6 +141,10 @@ async def run_ingestion(
     ) as client:
         sha = await resolve_commit_sha(client, commit_sha)
         paths = await list_doc_paths(client, sha, languages)
+        listed = {path for path, _ in paths}
+        # Only languages that listed at least one page get pruned: an empty listing more
+        # likely means an upstream restructure or a mistyped language than no pages at all.
+        listed_languages = sorted({language for _, language in paths})
         if limit:
             paths = paths[:limit]
 
@@ -173,6 +187,7 @@ async def run_ingestion(
             existing.content_hash = content_hash
             existing.title = title
             existing.source_commit_sha = sha
+            existing.fetched_at = func.now()
             document = existing
             chunks_updated += len(chunk_results)
         else:
@@ -210,14 +225,38 @@ async def run_ingestion(
 
         documents_processed += 1
 
+    # Pages that left the tree (or became excluded) would otherwise stay searchable and
+    # citable, linking to a page that no longer exists. Never with a limit, which lists
+    # only part of the tree. Their chunks go with them (ON DELETE CASCADE).
+    if not limit and listed_languages:
+        stale = and_(
+            or_(
+                *(
+                    Document.source_path.startswith(docs_prefix(language), autoescape=True)
+                    for language in listed_languages
+                )
+            ),
+            Document.source_path.not_in(listed),
+        )
+        if dry_run:
+            documents_deleted = await db.scalar(
+                select(func.count()).select_from(Document).where(stale)
+            )
+        else:
+            result = await db.execute(
+                delete(Document).where(stale).execution_options(synchronize_session=False)
+            )
+            documents_deleted = result.rowcount
+
     if not dry_run:
         await db.commit()
-        if documents_processed:
+        if documents_processed or documents_deleted:
             await _vacuum_chunks(db)
 
     elapsed_ms = int((time.perf_counter() - start) * 1000)
     return IngestOutcome(
         documents_processed=documents_processed,
+        documents_deleted=documents_deleted,
         chunks_created=chunks_created,
         chunks_updated=chunks_updated,
         chunks_skipped=chunks_skipped,

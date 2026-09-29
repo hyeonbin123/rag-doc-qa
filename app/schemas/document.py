@@ -12,6 +12,7 @@ class IngestRequest(BaseModel):
 
 class IngestResult(BaseModel):
     documents_processed: int
+    documents_deleted: int = 0
     chunks_created: int
     chunks_updated: int
     chunks_skipped: int

@@ -32,6 +32,7 @@ async def main(
     print(f"embedding models:    {models}")
     print(f"commit sha:          {outcome.commit_sha}")
     print(f"documents processed: {outcome.documents_processed}")
+    print(f"documents deleted:   {outcome.documents_deleted} (no longer listed upstream)")
     print(f"chunks created:      {outcome.chunks_created}")
     print(f"chunks updated:      {outcome.chunks_updated}")
     print(f"documents skipped:   {outcome.chunks_skipped} (unchanged content hash)")

@@ -35,6 +35,7 @@ async def ingest_documents(
     )
     return IngestResult(
         documents_processed=outcome.documents_processed,
+        documents_deleted=outcome.documents_deleted,
         chunks_created=outcome.chunks_created,
         chunks_updated=outcome.chunks_updated,
         chunks_skipped=outcome.chunks_skipped,
