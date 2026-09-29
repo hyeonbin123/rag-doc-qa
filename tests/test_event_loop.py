@@ -1,9 +1,10 @@
-"""CPU-bound model calls must not stall the event loop.
+"""CPU-bound work must not stall the event loop.
 
 The embedding models run on the CPU: tens of milliseconds per question, minutes over
 a full ingest. Called directly inside an async handler, that time blocks every other
 request the server is handling, so model calls go to a bounded pool of worker threads
-(see app/services/inference.py).
+(see app/services/inference.py). bcrypt is the same kind of work: about a quarter
+second per login or registration.
 """
 
 import asyncio
@@ -15,6 +16,7 @@ import pytest
 from app.config import get_settings
 from app.dependencies import get_embedder
 from app.main import app
+from app.routers import auth as auth_router
 from app.services import ingestion
 from app.services.inference import run_model
 from tests.conftest import FakeEmbeddingService
@@ -105,6 +107,36 @@ async def test_ingestion_embedding_does_not_stall_the_event_loop(db_session, mon
     )
 
     assert outcome.chunks_created > 0
+    assert stall < BLOCK_SECONDS / 2
+
+
+@pytest.mark.asyncio
+async def test_password_hashing_does_not_stall_the_event_loop(client, monkeypatch):
+    real_hash, real_verify = auth_router.hash_password, auth_router.verify_password
+
+    def slow_hash(password: str) -> str:
+        time.sleep(BLOCK_SECONDS)
+        return real_hash(password)
+
+    def slow_verify(password: str, hashed_password: str) -> bool:
+        time.sleep(BLOCK_SECONDS)
+        return real_verify(password, hashed_password)
+
+    monkeypatch.setattr(auth_router, "hash_password", slow_hash)
+    monkeypatch.setattr(auth_router, "verify_password", slow_verify)
+    credentials = {"email": "stall@example.com", "password": "supersecret1"}
+
+    stall, response = await longest_loop_stall(client.post("/auth/register", json=credentials))
+    assert response.status_code == 201
+    assert stall < BLOCK_SECONDS / 2
+
+    stall, response = await longest_loop_stall(
+        client.post(
+            "/auth/login",
+            data={"username": credentials["email"], "password": credentials["password"]},
+        )
+    )
+    assert response.status_code == 200
     assert stall < BLOCK_SECONDS / 2
 
 

@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.concurrency import run_in_threadpool
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -31,7 +32,11 @@ async def register(payload: UserRegister, db: AsyncSession = Depends(get_db)) ->
     if existing is not None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email already registered")
 
-    user = User(email=payload.email, hashed_password=hash_password(payload.password))
+    # bcrypt costs about a quarter second of CPU per call (cost 12). On the event loop
+    # that would stall every other request, so it runs on a worker thread. Not the model
+    # pool (run_model): a login shouldn't queue behind embeddings.
+    hashed = await run_in_threadpool(hash_password, payload.password)
+    user = User(email=payload.email, hashed_password=hashed)
     db.add(user)
     await db.commit()
     await db.refresh(user)
@@ -44,7 +49,9 @@ async def login(
     db: AsyncSession = Depends(get_db),
 ) -> TokenPair:
     user = await db.scalar(select(User).where(User.email == form_data.username))
-    if user is None or not verify_password(form_data.password, user.hashed_password):
+    if user is None or not await run_in_threadpool(
+        verify_password, form_data.password, user.hashed_password
+    ):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Incorrect email or password"
         )
