@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.concurrency import run_in_threadpool
 from fastapi.security import OAuth2PasswordRequestForm
+from pydantic import EmailStr, TypeAdapter, ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -19,6 +20,10 @@ from app.services.security import (
 )
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+# Registration stores the address as EmailStr normalizes it (domain lower-cased), so
+# login has to normalize the typed username the same way before looking it up.
+_login_email = TypeAdapter(EmailStr)
 
 
 @router.post(
@@ -48,7 +53,11 @@ async def login(
     form_data: OAuth2PasswordRequestForm = Depends(),
     db: AsyncSession = Depends(get_db),
 ) -> TokenPair:
-    user = await db.scalar(select(User).where(User.email == form_data.username))
+    try:
+        email = _login_email.validate_python(form_data.username)
+    except ValidationError:
+        email = form_data.username  # can't match a registered address, so it ends in 401
+    user = await db.scalar(select(User).where(User.email == email))
     if user is None or not await run_in_threadpool(
         verify_password, form_data.password, user.hashed_password
     ):

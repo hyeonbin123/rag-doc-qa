@@ -20,6 +20,32 @@ async def test_register_then_login_returns_token_pair(client):
 
 
 @pytest.mark.asyncio
+async def test_login_accepts_the_email_exactly_as_typed_at_registration(client):
+    # Registration stores the validator's normalized form (lower-cased domain); login
+    # must look the typed address up the same way, or the chat page's automatic login
+    # right after "create account" fails.
+    typed = "Grace@Example.COM"
+    register_resp = await client.post(
+        "/auth/register", json={"email": typed, "password": "supersecret1"}
+    )
+    assert register_resp.status_code == 201
+
+    for username in (typed, "Grace@example.com", " Grace@Example.COM "):
+        resp = await client.post(
+            "/auth/login", data={"username": username, "password": "supersecret1"}
+        )
+        assert resp.status_code == 200, username
+
+
+@pytest.mark.asyncio
+async def test_login_with_a_username_that_is_not_an_email_returns_401(client):
+    resp = await client.post(
+        "/auth/login", data={"username": "not-an-email", "password": "supersecret1"}
+    )
+    assert resp.status_code == 401
+
+
+@pytest.mark.asyncio
 async def test_register_duplicate_email_conflicts(client):
     payload = {"email": "bob@example.com", "password": "supersecret1"}
     first = await client.post("/auth/register", json=payload)
