@@ -1,0 +1,37 @@
+{
+  "date": "2026-10-03T22:42:46.279389+00:00",
+  "tag": "v11_B_qa_dev_ko",
+  "provider": "ollama",
+  "model": "qwen2.5:7b-instruct",
+  "top_k": 5,
+  "retrieval_mode": "dense",
+  "dataset": "qa_dev_ko.jsonl",
+  "order": "shuffle",
+  "seed": 20261003,
+  "git_commit": "91c22b70d7506f65e23f1f7552dfb65184347202",
+  "ollama_version": "0.35.1",
+  "ollama_ps_after": {
+    "models": [
+      {
+        "name": "qwen2.5:7b-instruct",
+        "model": "qwen2.5:7b-instruct",
+        "size": 5133943438,
+        "digest": "845dbda0ea48ed749caafd9e6037047aa19acfcfd82e704d7ca97d631a0b697e",
+        "details": {
+          "parent_model": "",
+          "format": "gguf",
+          "family": "qwen2",
+          "families": [
+            "qwen2"
+          ],
+          "parameter_size": "7.6B",
+          "quantization_level": "Q4_K_M"
+        },
+        "expires_at": "2026-10-04T07:49:49.4386131+09:00",
+        "size_vram": 5133943438,
+        "context_length": 8192
+      }
+    ]
+  },
+  "records_path": "eval/runs/v11_B_qa_dev_ko.gen.jsonl"
+}
