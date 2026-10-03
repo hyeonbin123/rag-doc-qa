@@ -13,7 +13,7 @@ FastAPI 공식 문서(영어 원문 154개, 한국어 번역 123개, 청크 1,53
 | AI | 언어별 로컬 임베딩(영어 `BAAI/bge-small-en-v1.5`, 한국어 `intfloat/multilingual-e5-small`), 로컬 LLM Qwen2.5-7B(Ollama) 또는 Claude API, 언어별 cross-encoder 재정렬 |
 | 검색 모드 | `dense` / `hybrid`(벡터 + SQL로 계산한 BM25, 가중 RRF) / `rerank`(cross-encoder 재채점). 기본값은 `dense` (영어는 아래 v7, 한국어는 v9) |
 | 평가 | 질문셋 5개(영어: 테스트 30, 튜닝용 32, 새 테스트 43문항 / 한국어: 튜닝용 32, 테스트 43문항), Hit@k·MRR·검색 지연, LLM 판정 답변 정확도 |
-| 품질 관리 | pytest 80개(통합 테스트는 실제 Postgres + pgvector 사용), push마다 CI에서 ruff + pytest |
+| 품질 관리 | pytest 100개(통합 테스트는 실제 Postgres + pgvector 사용), push마다 CI에서 ruff + pytest |
 | 응답 시간 | 답변 생성 중앙값 약 4~5초 (v10 측정: 영어 5.3초, 한국어 4.3초. 로컬 Qwen2.5-7B, RTX 2080 Ti) |
 
 ## 구조
@@ -212,8 +212,13 @@ uv run python -m eval.run_retrieval_eval --mode rerank --dataset eval/qa_dev_ko.
 uv run python -m eval.run_answer_eval --mode rerank --dataset eval/qa_test2.jsonl --tag v7_rerank
 # 생성 모델을 비교할 때는 --judge-model로 판정 모델을 고정한다 (생략하면 생성 모델이 판정도 함)
 OLLAMA_MODEL_NAME=qwen2.5:14b-instruct uv run python -m eval.run_answer_eval --dataset eval/qa_test2.jsonl --judge-model qwen2.5:7b-instruct --tag v10_en_14b
+# 저장된 답변을 다시 판정 (생성 없이). --num-ctx 0은 v10까지의 판정 호출(Ollama 기본 문맥)
+uv run python -m eval.run_judge eval/runs/v10_en_14b.gen.jsonl --label J1
+# 두 판정 결과를 문항 단위로 비교 (대응표본 bootstrap 90% 구간, 오른·내린 문항 수), 판정 프롬프트 잘림 집계
+uv run python -m eval.compare_judgments pair --title "J1 - J0" --tag cmp --a eval/runs/x.J0.judge.jsonl --b eval/runs/x.J1.judge.jsonl
+uv run python -m eval.compare_judgments truncation --tag trunc --ctx 4096 eval/runs/x.J0.judge.jsonl
 ```
-결과는 `eval/reports/`에 마크다운으로 남는다. 판정 LLM은 `GENERATION_PROVIDER` 설정을 그대로 따르므로, Ollama 설정이면 평가 전체가 무료로 돌아간다.
+결과는 `eval/reports/`에 마크다운으로 남는다. 답변 평가는 문항별 기록도 `eval/runs/`에 JSONL로 남긴다: 검색된 청크(id, 순위, 본문), 답변, 생성 시간은 `<tag>.gen.jsonl`, 판정 원문과 판정 프롬프트의 토큰 수(Ollama가 실제로 읽은 수와 Qwen 토크나이저로 센 수), 잘림 여부는 `<tag>.<판정 이름>.judge.jsonl`. 판정 LLM은 `GENERATION_PROVIDER` 설정을 그대로 따르므로, Ollama 설정이면 평가 전체가 무료로 돌아간다. Ollama 판정 호출은 `num_ctx` 8192와 `truncate: false`를 주고, 보내기 전에 모든 판정 프롬프트가 문맥에 들어가는지 확인한다 (v11). v10까지는 `num_ctx` 없이 Ollama 기본 문맥(이 PC에서 4096토큰)으로 돌았다.
 
 ## 하지 않은 것 (의도적 스코프 제한)
 
