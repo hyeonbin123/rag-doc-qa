@@ -208,6 +208,11 @@ async def main(args: argparse.Namespace) -> int:
                 top_k=args.top_k,
             )
             records[index] = record
+            print(
+                f"[generate {order_index + 1}/{len(questions)}] {q.id} "
+                f"{record['generation_ms']:.0f} ms",
+                flush=True,
+            )
 
     gen_path = RUNS_DIR / f"{args.tag}.gen.jsonl"
     write_jsonl(gen_path, records)

@@ -281,4 +281,11 @@ async def judge_items(
                 "truncation": truncation,
             }
         )
+        # One line per item, so a long run's log shows progress (and a stall).
+        print(
+            f"[judge {config.label} {order_index + 1}/{len(records)}] {r['id']} "
+            f"read={outcome.prompt_eval_count} counted={counted} {truncation}"
+            + (f" error={outcome.error}" if outcome.error else ""),
+            flush=True,
+        )
     return judgments
