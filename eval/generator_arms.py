@@ -104,7 +104,8 @@ def split_file(gen_path: Path) -> tuple[Path, Path]:
     paths = []
     for arm, derive in (("raw", unguarded_record), ("lg", guarded_record)):
         out = _arm_path(gen_path, arm)
-        write_jsonl(out, [derive(r) for r in records])
+        # The arm goes into the run tag, so the two arms' judge reports never share a name.
+        write_jsonl(out, [{**derive(r), "run_tag": f"{r.get('run_tag')}.{arm}"} for r in records])
         write_json(meta_path(out), {**meta, "arm": arm, "derived_from": display_path(gen_path)})
         paths.append(out)
     return paths[0], paths[1]

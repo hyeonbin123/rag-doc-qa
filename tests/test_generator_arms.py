@@ -110,6 +110,9 @@ def test_split_writes_both_arm_files_with_their_run_notes(tmp_path):
     assert raw_path.name == "v13_unit_g0_qa_dev_ko.raw.gen.jsonl"
     assert lg_path.name == "v13_unit_g0_qa_dev_ko.lg.gen.jsonl"
     assert [r["answer"] for r in read_jsonl(raw_path)] == ["답입니다. 中文으로 다시", "답입니다."]
+    # The arm is part of the run tag, so the two arms' judge reports never share a name.
+    assert {r["run_tag"] for r in read_jsonl(raw_path)} == {"unit.raw"}
+    assert {r["run_tag"] for r in read_jsonl(lg_path)} == {"unit.lg"}
     assert read_json(tmp_path / "v13_unit_g0_qa_dev_ko.raw.gen.meta.json")["arm"] == "raw"
     lg_meta = read_json(tmp_path / "v13_unit_g0_qa_dev_ko.lg.gen.meta.json")
     assert lg_meta["arm"] == "lg" and lg_meta["derived_from"].endswith("v13_unit_g0_qa_dev_ko.gen.jsonl")
