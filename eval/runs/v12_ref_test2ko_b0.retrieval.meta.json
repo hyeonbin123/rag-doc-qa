@@ -1,0 +1,45 @@
+{
+  "date": "2026-10-04T04:58:03.999373+00:00",
+  "tag": "v12_ref_test2ko_b0",
+  "git_commit": "2a0ca74ce59651275d13b3bc2b13d45a47baf5e4",
+  "database": "ragdb_p1_e5s",
+  "embedding_models": {
+    "ko": "intfloat/multilingual-e5-small"
+  },
+  "mode": "dense",
+  "top_k": 10,
+  "score_floors": {
+    "ko": 0.3
+  },
+  "cross_lingual": false,
+  "exact": false,
+  "dense_plans": {
+    "ko": [
+      "Sort",
+      "Seq Scan on chunks c",
+      "Seq Scan on documents d"
+    ]
+  },
+  "datasets": [
+    "qa_test2_ko.jsonl"
+  ],
+  "vector_checks": [
+    {
+      "language": "ko",
+      "model": "intfloat/multilingual-e5-small",
+      "checked": 3,
+      "min_cosine": 1.0
+    }
+  ],
+  "torch_threads": 6,
+  "aggregate": {
+    "n": 43,
+    "hit@3": 0.7209302325581395,
+    "hit@5": 0.7674418604651163,
+    "hit@10": 0.813953488372093,
+    "mrr": 0.6093946105574012,
+    "short": 0,
+    "p50": 7.576400006655604,
+    "p95": 8.292679995065555
+  }
+}
