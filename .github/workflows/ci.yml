@@ -11,7 +11,7 @@ jobs:
 
     services:
       postgres:
-        image: pgvector/pgvector:pg16
+        image: pgvector/pgvector:0.8.7-pg16-bookworm
         # Only the app database exists up front, like a fresh `docker compose up -d db`,
         # so every run also exercises the test fixtures' database/extension setup.
         env:

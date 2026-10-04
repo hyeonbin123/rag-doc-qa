@@ -1,10 +1,10 @@
-FROM python:3.11-slim
+# Pin the Debian codename (trixie, what python:3.11-slim resolves to today) so the next Debian
+# release can't slip in under a floating tag. uv is a fixed release copied from its official
+# image, not whatever the install script serves on the day of the build.
+FROM python:3.11-slim-trixie
 
-RUN apt-get update && apt-get install -y --no-install-recommends curl \
-    && rm -rf /var/lib/apt/lists/*
-
-RUN curl -LsSf https://astral.sh/uv/install.sh | sh
-ENV PATH="/app/.venv/bin:/root/.local/bin:${PATH}"
+COPY --from=ghcr.io/astral-sh/uv:0.12.23 /uv /uvx /bin/
+ENV PATH="/app/.venv/bin:${PATH}"
 
 WORKDIR /app
 
