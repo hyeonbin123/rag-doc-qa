@@ -1,0 +1,24 @@
+{
+  "model": "Qwen/Qwen3-Embedding-0.6B@97b0c614be4d77ee51c0cef4e5f07c00f9eb65b3:dim384",
+  "load_s": 5.4,
+  "calls": 216,
+  "p50_ms": 315.3,
+  "p95_ms": 351.6,
+  "mean_ms": 315.4,
+  "max_ms": 364.0,
+  "batch_vs_single_min_cosine": 1.0,
+  "pooling": "lasttoken",
+  "last_token_is_eos": false,
+  "dtype": "torch.float32",
+  "max_seq_length": 32768,
+  "date": "2026-10-04T01:13:17.186048+00:00",
+  "tag": "v12_g1_q06",
+  "datasets": [
+    "qa_dev_ko.jsonl",
+    "qa_dev2_ko.jsonl"
+  ],
+  "questions": 72,
+  "passes": 3,
+  "torch_threads": 6,
+  "cpu": "AMD64 Family 23 Model 113 Stepping 0, AuthenticAMD"
+}

@@ -1,0 +1,24 @@
+{
+  "model": "intfloat/multilingual-e5-small",
+  "load_s": 8.0,
+  "calls": 216,
+  "p50_ms": 20.1,
+  "p95_ms": 27.7,
+  "mean_ms": 21.0,
+  "max_ms": 33.8,
+  "batch_vs_single_min_cosine": 1.0,
+  "pooling": "mean",
+  "last_token_is_eos": null,
+  "dtype": "torch.float32",
+  "max_seq_length": 512,
+  "date": "2026-10-04T00:30:22.874249+00:00",
+  "tag": "v12_g1_e5s",
+  "datasets": [
+    "qa_dev_ko.jsonl",
+    "qa_dev2_ko.jsonl"
+  ],
+  "questions": 72,
+  "passes": 3,
+  "torch_threads": 6,
+  "cpu": "AMD64 Family 23 Model 113 Stepping 0, AuthenticAMD"
+}

@@ -1,0 +1,24 @@
+{
+  "model": "ibm-granite/granite-embedding-311m-multilingual-r2@44399559930365213510b1ee2eb15ded83374f0e:dim384",
+  "load_s": 5.4,
+  "calls": 216,
+  "p50_ms": 59.8,
+  "p95_ms": 71.3,
+  "mean_ms": 60.6,
+  "max_ms": 77.1,
+  "batch_vs_single_min_cosine": 1.0,
+  "pooling": "cls",
+  "last_token_is_eos": null,
+  "dtype": "torch.float32",
+  "max_seq_length": 32768,
+  "date": "2026-10-04T01:11:29.140296+00:00",
+  "tag": "v12_g1_g311",
+  "datasets": [
+    "qa_dev_ko.jsonl",
+    "qa_dev2_ko.jsonl"
+  ],
+  "questions": 72,
+  "passes": 3,
+  "torch_threads": 6,
+  "cpu": "AMD64 Family 23 Model 113 Stepping 0, AuthenticAMD"
+}
