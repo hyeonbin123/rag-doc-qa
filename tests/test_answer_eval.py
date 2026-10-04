@@ -251,7 +251,7 @@ async def test_generation_record_keeps_ranked_chunks_answer_and_timing(monkeypat
         for n in range(1, 4)
     ]
 
-    async def fake_retrieve(db, question, vector, top_k, mode, language, reranker):
+    async def fake_retrieve(db, question, vector, top_k, mode, **kwargs):
         return chunks
 
     class FakeGenerator:
@@ -259,6 +259,8 @@ async def test_generation_record_keeps_ranked_chunks_answer_and_timing(monkeypat
             return GenerationResult("Use Query().", [1], 900, 40, "local-model")
 
     class FakeEmbedder:
+        model_name = "fake-embedding"
+
         def embed_query(self, text):
             return [0.0]
 
@@ -286,6 +288,44 @@ async def test_generation_record_keeps_ranked_chunks_answer_and_timing(monkeypat
     assert record["keyword_coverage"] == 1.0
     assert judge.judge_context(record) == "Text 1\n\nText 2\n\nText 3"
 
+
+
+async def test_generation_counts_the_other_translation_as_a_hit_and_crosses_only_korean(monkeypatch):
+    chunk = RetrievedChunk(uuid.uuid4(), uuid.uuid4(), "docs/en/docs/p1.md", "H", "Text", 0.8)
+    calls: list[dict] = []
+
+    async def fake_retrieve(db, question, vector, top_k, mode, **kwargs):
+        calls.append(kwargs)
+        return [chunk]
+
+    class FakeGenerator:
+        async def answer(self, question, retrieved, language="en"):
+            return GenerationResult("답", [1], 10, 5, "local-model")
+
+    class FakeEmbedder:
+        model_name = "fake-embedding"
+
+        def embed_query(self, text):
+            return [0.0]
+
+    monkeypatch.setattr(run_answer_eval, "retrieve", fake_retrieve)
+    ko = EvalQuestion("n1", "본문은 어떻게 받나요?", ["docs/ko/docs/p1.md"], "모델로.", [])
+    en = EvalQuestion("t1", "How do I read a body?", ["docs/en/docs/p1.md"], "A model.", [])
+
+    ko_record = await run_answer_eval.generate_answer(
+        None, lambda lang: FakeEmbedder(), FakeGenerator(), ko, 5, "dense", None,
+        cross_lingual=True, score_floor=0.2,
+    )
+    await run_answer_eval.generate_answer(
+        None, lambda lang: FakeEmbedder(), FakeGenerator(), en, 5, "dense", None, cross_lingual=True
+    )
+
+    assert ko_record["first_hit_rank"] == 1  # the English page of the expected Korean one
+    assert ko_record["cross_lingual"] is True
+    assert ko_record["score_floor"] == 0.2
+    assert calls[0]["cross_lingual"] is True and calls[0]["score_floor"] == 0.2
+    assert calls[1]["cross_lingual"] is False  # English questions search English only
+    assert calls[1]["score_floor"] == 0.3  # the model's floor when none is given
 
 def test_generation_order_is_the_dataset_order_or_a_seeded_shuffle():
     assert run_answer_eval.generation_order(5, "dataset", seed=1) == [0, 1, 2, 3, 4]

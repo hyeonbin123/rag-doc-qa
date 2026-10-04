@@ -1,4 +1,5 @@
 import json
+import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -59,3 +60,14 @@ def write_json(path: Path, data: dict) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return path
+
+
+def git_commit() -> str | None:
+    """The checked-out commit, recorded with each run."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True, timeout=10
+        )
+        return result.stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return None

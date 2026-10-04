@@ -91,7 +91,14 @@ def render_report(
         f"- ollama version: {gen_meta.get('ollama_version') or '-'} (generation)"
         + (f", {judge_meta.get('ollama_version') or '-'} (judge)" if judge_meta else ""),
         f"- top_k: {gen_meta.get('top_k', '-')}",
-        f"- retrieval mode: {gen_meta.get('retrieval_mode', '-')}",
+        f"- retrieval mode: {gen_meta.get('retrieval_mode', '-')}"
+        + (
+            " (Korean questions search the Korean and English chunks)"
+            if gen_meta.get("cross_lingual")
+            else ""
+        ),
+        f"- database: {gen_meta.get('database', '-')}, "
+        f"embedding models: {gen_meta.get('embedding_models', '-')}",
         f"- dataset: {gen_meta.get('dataset', '-')}",
         f"- questions: {s['n']}",
         f"- generation order: {order}",

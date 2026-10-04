@@ -18,7 +18,7 @@ Usage:
     python -m eval.run_answer_eval [--top-k 5] [--tag v1_baseline] [--mode dense|hybrid|rerank] [--skip-judge]
         [--dataset eval/qa_test2.jsonl] [--judge-model qwen2.5:7b-instruct]
         [--judge-num-ctx 8192] [--judge-label J1] [--order dataset|shuffle] [--seed 20261003]
-        [--no-token-count]
+        [--no-token-count] [--cross-lingual] [--score-floor 0.3] [--no-vector-check]
 """
 
 from __future__ import annotations
@@ -27,7 +27,6 @@ import argparse
 import asyncio
 import random
 import re
-import subprocess
 import sys
 import time
 from collections.abc import Callable
@@ -45,18 +44,20 @@ from app.services.generation import (
 )
 from app.services.language import Language, detect_language
 from app.services.reranking import RerankerService, get_reranker_service
-from app.services.retrieval import RetrievalMode, RetrievedChunk, retrieve
+from app.services.retrieval import RetrievalMode, RetrievedChunk, page_key, retrieve, score_floor_for
 from eval.answer_report import display_path, render_report
 from eval.common import (
     DATASET_PATH,
     RUNS_DIR,
     EvalQuestion,
+    git_commit,
     load_dataset,
     write_json,
     write_jsonl,
     write_report,
 )
 from eval.judge import DEFAULT_JUDGE_NUM_CTX, JUDGE_SCHEMA, JUDGE_TOOL, JudgeConfig, TokenCounter
+from eval.retrieval_checks import check_stored_vectors
 from eval.run_judge import default_label, judge_and_save, meta_path, ollama_state
 from eval.tokens import counter_for_model
 
@@ -109,19 +110,45 @@ async def generate_answer(
     mode: RetrievalMode,
     reranker: RerankerService | None,
     count_generation_prompt: GenerationPromptCounter | None = None,
+    *,
+    cross_lingual: bool = False,
+    score_floor: float | None = None,
 ) -> dict:
+    """Retrieve, generate and record one answer.
+
+    `cross_lingual` lets Korean questions search the English chunks too (docs/experiments.md
+    v12); English questions always search English only. `score_floor` defaults to the floor
+    of the model embedding the question.
+    """
     language = detect_language(q.question)
-    query_vector = embedder(language).embed_query(q.question)
+    query_model = embedder(language)
+    query_vector = query_model.embed_query(q.question)
+    crossed = cross_lingual and language == "ko"
+    floor = score_floor if score_floor is not None else score_floor_for(query_model.model_name)
     retrieved = await retrieve(
-        db, q.question, query_vector, top_k, mode, language=language, reranker=reranker
+        db,
+        q.question,
+        query_vector,
+        top_k,
+        mode,
+        language=language,
+        reranker=reranker,
+        score_floor=floor,
+        cross_lingual=crossed,
     )
     start = time.perf_counter()
     generation_result = await generator.answer(q.question, retrieved, language=language)
     generation_ms = (time.perf_counter() - start) * 1000
 
-    paths = [r.source_path for r in retrieved]
+    # A chunk of an expected page counts in any translation, as in run_retrieval_eval.
+    expected_pages = {page_key(p) for p in q.expected_source_paths}
     first_hit_rank = next(
-        (rank for rank, path in enumerate(paths, start=1) if path in q.expected_source_paths), None
+        (
+            rank
+            for rank, chunk in enumerate(retrieved, start=1)
+            if page_key(chunk.source_path) in expected_pages
+        ),
+        None,
     )
     return {
         "id": q.id,
@@ -142,6 +169,8 @@ async def generate_answer(
             for rank, r in enumerate(retrieved, start=1)
         ],
         "first_hit_rank": first_hit_rank,
+        "cross_lingual": crossed,
+        "score_floor": floor,
         "answer": generation_result.answer,
         "cited_chunk_numbers": generation_result.cited_chunk_numbers,
         "generation_ms": generation_ms,
@@ -157,16 +186,6 @@ async def generate_answer(
     }
 
 
-def git_commit() -> str | None:
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True, timeout=10
-        )
-        return result.stdout.strip()
-    except (OSError, subprocess.SubprocessError):
-        return None
-
-
 async def main(args: argparse.Namespace) -> int:
     settings = get_settings()
     mode = args.mode or settings.retrieval_mode
@@ -180,9 +199,18 @@ async def main(args: argparse.Namespace) -> int:
     gen_counter = counter_for_model(model_in_use) if use_counter else None
     judge_counter = counter_for_model(judge_model) if use_counter and not args.skip_judge else None
 
+    if args.cross_lingual and mode != "dense":
+        raise SystemExit("--cross-lingual is dense only")
     started = datetime.now(UTC).isoformat()
     records: list[dict] = [{} for _ in questions]
+    vector_checks: list[dict] = []
+    languages = sorted({detect_language(q.question) for q in questions})
     async with async_session_maker() as db:
+        if not args.no_vector_check:  # see eval/retrieval_checks.py
+            for language in languages:
+                vector_checks.append(await check_stored_vectors(db, embedder(language), language))
+            if args.cross_lingual and "ko" in languages:
+                vector_checks.append(await check_stored_vectors(db, embedder("ko"), "en"))
         for order_index, index in enumerate(generation_order(len(questions), args.order, args.seed)):
             q = questions[index]
             reranker = None
@@ -197,6 +225,8 @@ async def main(args: argparse.Namespace) -> int:
                 mode,
                 reranker,
                 ollama_answer_prompt_counter(gen_counter) if gen_counter else None,
+                cross_lingual=args.cross_lingual,
+                score_floor=args.score_floor,
             )
             record.update(
                 dataset=args.dataset.name,
@@ -224,6 +254,11 @@ async def main(args: argparse.Namespace) -> int:
         "model": model_in_use,
         "top_k": args.top_k,
         "retrieval_mode": mode,
+        "cross_lingual": bool(args.cross_lingual),
+        "score_floor": args.score_floor,
+        "database": settings.database_url.rsplit("/", 1)[-1],
+        "embedding_models": {lang: embedder(lang).identity for lang in languages},
+        "vector_checks": vector_checks,
         "dataset": args.dataset.name,
         "order": args.order,
         "seed": args.seed if args.order == "shuffle" else None,
@@ -286,6 +321,18 @@ if __name__ == "__main__":
     parser.add_argument("--order", choices=["dataset", "shuffle"], default="dataset")
     parser.add_argument("--seed", type=int, default=20261003, help="for --order shuffle")
     parser.add_argument("--no-token-count", action="store_true", help="skip the tokenizer counts")
+    parser.add_argument(
+        "--cross-lingual", action="store_true",
+        help="Korean questions search the Korean and English chunks (docs/experiments.md v12)",
+    )
+    parser.add_argument(
+        "--score-floor", type=float, default=None,
+        help="dense score floor; defaults to the floor of the model embedding each question",
+    )
+    parser.add_argument(
+        "--no-vector-check", action="store_true",
+        help="skip checking that the stored vectors come from the configured models",
+    )
     # A console code page that lacks some character in an answer must not end a long run.
     sys.stdout.reconfigure(errors="backslashreplace")
     sys.exit(asyncio.run(main(parser.parse_args())))
