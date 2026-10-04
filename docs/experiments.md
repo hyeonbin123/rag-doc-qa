@@ -701,6 +701,135 @@ dev = qa_dev_ko 32 + qa_dev2_ko 40, 72문항 한 번에. 복제 DB `ragdb_p1_<�
 - 이 결과를 다시 판정하려면 새 단계로 규칙을 먼저 적어야 함 (예: 같은 조건을 여러 번 생성해 섞임 빈도를 비교하거나, 쓰지 않은 셋에서 확인). 이 단계에서는 하지 않음
 - 복제 DB `ragdb_p1_e5s`, `ragdb_p1_g97`, `ragdb_p1_g311`은 다시 판정할 경우를 위해 남겨 둠 (로컬 DB 볼륨 안에만 있음)
 
+## v13: 생성 모델 교체 시험 (G0 + 언어 가드, qwen3.5:9b, gemma4:12b-it-qat, A.X-4.0-Light)
+
+이 절의 규칙은 2026-10-04에 측정 전에 기록함. 이 단계는 시스템 설정(생성 모델, 한국어 언어 가드)을 바꿀지 정하는 단계임. 판정은 v11의 J1로 고정함.
+
+**왜 하는가**
+- v12에서 검색 개선(granite-311m)이 생성기의 언어 섞임 한 건(n078)으로 막혔음. 두 조건 모두 정답 페이지를 받았는데 7B가 한국어 답 뒤에 중국어로 다시 썼음. 이제 생성기가 다른 개선까지 막는 병목임
+- v10에서 7B 한국어는 섞임 3/43, 환각 판정 3/43, 14B는 둘 다 0이었음. 14B가 탈락한 이유는 VRAM만이 아니라 영어 주 지표(198 → 196)와 지연(12%가 CPU에서 돌아 14~20초)이었음
+- 11GB에 다 올라갈 수 있는 Apache-2.0 후보가 생겼음: Qwen3.5-9B(2026-02), Gemma 4 12B(QAT 4비트, 다른 계열), 한국어 특화 A.X-4.0-Light(Qwen2.5-7B 계열, 2025-07). 그리고 내려받기가 없는 재생성 가드(LG)
+
+**후보** (Ollama 0.35.1, 2026-10-04 20:22~21:13 KST에 받거나 만듦. 태그가 다시 올라와도 아래 digest가 아니면 측정하지 않음)
+
+| | Ollama 모델 | digest (`/api/tags`) | 양자화, 크기 | `think` | 배포된 샘플링 파라미터 |
+|---|---|---|---|---|---|
+| G0 (지금) | `qwen2.5:7b-instruct` | `845dbda0ea48ed749caafd9e6037047aa19acfcfd82e704d7ca97d631a0b697e` | Q4_K_M, 4.68GB | 보내지 않음 | 없음 |
+| G0+LG | G0 + 언어 가드 | (G0와 같음) | | 보내지 않음 | |
+| G1 | `qwen3.5:9b` | `6488c96fa5faab64bb65cbd30d4289e20e6130ef535a93ef9a49f42eda893ea7` | Q4_K_M, 6.59GB (비전 인코더 포함) | `false` | presence_penalty 1.5, top_k 20, top_p 0.95 |
+| G2 | `gemma4:12b-it-qat` | `38044be4f923e5a55264ed7df4eaac2676651a905f735197c504045140c02bd3` | Q4_0 (QAT), 7.15GB | `false` (모델 기본도 꺼짐) | top_k 64, top_p 0.95 |
+| G3 | `a.x-4.0-light:q4_k_m` (로컬 변환, 아래) | `a874a70d2c09d0b718662cc3f52e38a85c34eacfb29284996530edfbc23d8661` | Q4_K_M, 4.44GB | 보내지 않음 | 없음 (stop 토큰만) |
+
+- 라이선스: Qwen3.5-9B, Gemma 4 12B, A.X-4.0-Light 모두 Apache-2.0 (Hugging Face 메타데이터, 2026-10-04 확인, 셋 다 gated 아님). Ollama는 MIT
+- `think`: G1은 기본으로 추론을 하므로 `think: false`를 보냄. G2는 기본이 꺼져 있지만 조건을 분명히 하려고 같이 보냄. G0와 G3는 추론 기능이 없어 보내지 않음 (G0의 요청이 v11·v12와 바이트 단위로 같게)
+- 배포된 샘플링 파라미터는 모델이 배포된 그대로 둠. temperature는 요청의 0이 덮어쓰지만, qwen3.5의 presence_penalty 1.5는 temperature 0에서도 로짓을 바꿈. 앱이 그 모델을 쓰면 받을 조건과 같게 두려는 것이고, 반복 루프는 `done_reason=length`로 감시함
+- 브리프에 있던 qwen3.5:4b는 A.X로 바꿈. 연구자 제안의 예비 후보 gemma4:e4b-it-qat는 받지 않고, G2가 관문에서 떨어져도 넣지 않음 (측정을 시작한 뒤 후보를 늘리지 않으려고)
+- 공통 조건: Ollama 0.35.1, temperature 0, `num_ctx` 8192, `num_predict` 1024, 두 단계 호출(답은 자유 텍스트, 인용은 숫자 스키마)과 프롬프트는 그대로, 본 DB(영어 bge-small, 한국어 e5-small), dense top-5
+
+**A.X-4.0-Light 변환** (측정 전, CPU. 이미 끝냄)
+- 원본: `skt/A.X-4.0-Light` 리비전 `ba21c20ea1b31ded1ec3e2fb432335077dc4be98` (safetensors 14.5GB, `D:\dev-cache\huggingface`). 2026-10-04 Hub에 공식 GGUF가 없어서 직접 변환함
+- llama.cpp `81bc6b8`의 `convert_hf_to_gguf.py`로 bf16 GGUF → 공식 Windows 릴리스 b11255(`81bc6b8`에서 55커밋 뒤)의 `llama-quantize`로 Q4_K_M (4.88 BPW, 4,226MiB). 참고로 Ollama 0.35.1에 들어 있는 llama.cpp는 b11232(`81bc6b8`에서 32커밋 뒤)
+- **토크나이저**: transformers 5.17의 `AutoTokenizer`는 이 저장소를 `config.json`의 model_type(qwen2)을 보고 `Qwen2Tokenizer`로 올려 Qwen2의 사전 분할 정규식을 씀. 그러면 변환기의 확인 문장이 해시 `261dca7f…`가 되어 변환이 멈춤. 저장소는 `tokenizer_class: GPT2Tokenizer`와 GPT-2 바이트 단위 정규식이 든 `tokenizer.json`을 선언하고 있고, 선언대로 올리면 해시가 `b0a6b1c0…`로 llama.cpp가 A.X 4.0 계열로 등록한 `a.x-4.0`(GPT-2 방식)과 같음. 그래서 변환할 때만 선언된 토크나이저(`GPT2TokenizerFast`, 즉 `tokenizer.json`)를 쓰게 함. A.X-4.0(72B)과 비교하면 merges가 같고, vocab은 id 22·23(`</think>`, `<think>`)만 다름
+- **확인**: GGUF 토크나이저(b11255 `llama-tokenize`)와 `tokenizer.json`이 65개 문장에서 토큰 id까지 같음 (변환기 확인 문장 + v11 qa_dev·qa_dev_ko 기록의 답변 호출 프롬프트 64개를 공식 채팅 템플릿으로 만든 것. 테스트셋은 쓰지 않음)
+- **채팅 템플릿**: Modelfile에 공식 템플릿의 도구 없는 경로를 그대로 적음 (`<|im_start|><|system|>…<|im_end|><|im_start|><|user|>…<|im_end|><|im_start|><|assistant|>`, stop `<|im_end|>`, `<|endoftext|>`). Ollama 0.35.1은 GGUF에 든 jinja 템플릿이 Modelfile 템플릿보다 기능(도구)이 많으면 GGUF 쪽을 골라서 Modelfile 템플릿을 조용히 무시함(`server/images.go`의 `shouldPreferChatTemplate`, 처음 만든 모델에서 확인). 그래서 GGUF에서 `tokenizer.chat_template`만 지우고(텐서는 그대로) 다시 만듦. GGUF sha256 `330634890beb44ac970bc7c12f96294e9be2d2a3111fe43101b65f330235d79b`
+- 템플릿이 실제로 맞는지는 GPU 관문에서 Ollama의 `prompt_eval_count`와 공식 템플릿 + `tokenizer.json`으로 센 수를 문항마다 비교해 확인함 (아래 관문 7)
+
+**언어 가드 (LG)** (`LANGUAGE_GUARD=true`일 때만, 기본은 꺼짐)
+- 한국어 질문의 답에서 코드 블록(```` ``` ```` 사이)과 인라인 코드(`` ` `` 사이)를 뺀 부분에 가나·한자(`[぀-ヿ一-鿿]`)가 있으면, 규칙 4를 더 강한 한국어 규칙(`KOREAN_RETRY_RULE`, 한국어로만 쓰고 한자·가나를 쓰지 말 것)으로 바꾼 같은 요청을 한 번만 다시 보냄. 두 번째 답에도 섞여 있어도 더 보내지 않고 그 답을 씀. 인용은 최종 답에 대해 받음. 영어 질문에는 걸리지 않음
+- arXiv 2510.17555(Language Confusion Gate)와 같은 문제를 노리지만, 그 논문은 디코딩 중에 토큰을 가리는 방법이고 Ollama로는 쓸 수 없음. LG는 그보다 단순한 재생성 방식임
+- **결정에 쓰는 섞임 지표는 v10~v12와 같은 `kana_han`**(답 전체에서 가나·한자가 하나라도 있으면 섞임). 코드 안에만 한자가 있는 답은 섞임으로 세지만 가드는 걸리지 않음
+
+**한 번의 생성으로 두 팔** (선택·채택 단계는 모두 `LANGUAGE_GUARD=true`로 생성)
+- raw 팔 = 첫 답변 호출. 가드가 없는 실행과 요청이 같음 (가드 호출은 그 뒤에 감). lg 팔 = 최종 답
+- `eval/generator_arms.py split`이 `<tag>.raw.gen.jsonl`, `<tag>.lg.gen.jsonl`을 만듦. raw 팔에서 가드가 다시 만든 문항은 인용이 없고(인용 호출은 최종 답을 봤으므로, 인용 지표에서 뺌) 생성 시간에서 재시도 시간을 뺌
+- G0+LG의 영어 문항은 G0와 답이 같을 수밖에 없으므로 판정도 G0 raw 판정을 그대로 씀 (영어 lg 파일은 판정하지 않음)
+- 한국어 lg 파일은 다시 판정함. 가드가 걸리지 않은 문항은 raw와 답이 같으므로, raw와 lg에서 점수가 다른 문항 수를 판정 결정성 확인으로 보고함 (v11에서 같은 설정·같은 순서면 판정이 결정적이었으므로 0이 예상값)
+
+**질문셋**
+- 관문: `qa_dev_ko` 32 (가드 끔)
+- 선택 dev 104: `qa_dev` 32(영어) + `qa_dev_ko` 32 + `qa_dev2_ko` 40(한국어 72)
+- 채택: `qa_test3b_ko` 40 + `qa_test3b_en` 40 (둘 다 처음 엶, 한 번만). `qa_test3b_en`은 `qa_test3b_ko`를 영어로 옮긴 셋 (`eval/pool3_provenance.md`)
+- 섞임 우위 (b)용: `qa_test2_ko` 43 (이미 쓴 셋, 생성만 하고 판정하지 않음). 155문항 = `qa_dev_ko` 32 + `qa_dev2_ko` 40 + `qa_test2_ko` 43 + `qa_test3b_ko` 40
+- **test3b는 RAG-T2(한국어 임베딩 재판정, 단계 B)와 같은 단계에서 씀.** 채택 단계의 생성 기록에는 test3b에서의 e5-small 검색 순위가 남으므로, 채택 단계는 단계 B 규칙이 이 절에 날짜를 붙여 커밋된 뒤(또는 lead가 단계 B를 하지 않기로 정한 뒤)에만 시작함
+
+**측정 조건** (모든 GPU 실행)
+- 시작 전 `nvidia-smi`, `/api/ps`, CPU 부하를 기록하고, CPU 1분 평균 15% 미만, GPU 10% 미만, Ollama에 올라간 모델 없음이 될 때까지 최대 60분 기다림. 넘으면 그대로 재고 조건을 적음
+- 생성기마다 `ollama stop`으로 내린 뒤 `num_ctx` 8192 요청 하나로 올려 둠(웜 상태). 실행이 끝날 때마다 `/api/ps`에서 `size_vram == size`, `context_length` 8192 확인, `/api/tags`의 digest가 위 표와 같은지 확인. 다르면 멈춤
+- 실행 중 10초마다 게임 프로세스와 GPU를 기록함. 게임이 켜진 실행은 버리고, 게임이 꺼진 뒤 다시 잼 (최대 60분 기다리고, 넘으면 그 상태로 재고 적음). 모델이 GPU에서 내려가거나 일부가 CPU로 가면 그 실행도 버리고 다시 잼
+- 판정은 단계마다 한 번의 `run_judge` 호출로, 아래 적은 파일 순서와 데이터셋 순서로 함 (v11 D3 주의 사항). J1 = `qwen2.5:7b-instruct`, `num_ctx` 8192, `truncate: false`, 보내기 전 길이 확인
+
+**관문** (스모크, 품질 결정에 쓰지 않음. G1·G2·G3. G0도 같은 방식으로 재지만 참고용)
+1. digest가 위 표와 같음
+2. 생성 뒤 `/api/ps`에서 `size_vram == size`, `context_length` 8192
+3. 추론 출력 0: 32문항의 모든 호출에서 `message.thinking`이 비어 있고 답에 `<think>`/`</think>`가 없음
+4. 인용 응답이 스키마대로 유효: 처음 10문항 10/10 (나머지 22문항은 보고)
+5. 답변 호출의 `done_reason=length`가 32문항 중 1개 이하
+6. 생성 시간(두 호출 합) 중앙값 10초 이하
+7. G3만: 32문항 모두 Ollama `prompt_eval_count` − 토크나이저 수(공식 템플릿, `tokenizer.json`)가 ±1 안. 직접 만든 템플릿이 공식 템플릿과 같은지 보는 조건임 (어시스턴트 머리말 `<|im_start|><|assistant|>`가 빠지면 2토큰 차이). G1·G2는 Ollama 내장 렌더러를 쓰므로 같은 비교를 보고만 함
+- 떨어진 후보는 품질을 보지 않고 선택에서 뺌. 이유를 기록함. 넷 다 떨어지면 G0+LG만 선택 단계로 감
+- 도구: `eval/generator_arms.py gate`
+
+**선택** (dev 104, 같은 세션)
+- 생성: G0 → 관문을 통과한 G1 → G2 → G3 순서로, 생성기마다 셋 세 개를 `LANGUAGE_GUARD=true`, 데이터셋 순서로 생성 → `split`
+- 판정 (한 번의 `run_judge`, 이 순서): G0 raw `qa_dev`, `qa_dev_ko`, `qa_dev2_ko` → G0 lg `qa_dev_ko`, `qa_dev2_ko` → G1 raw 세 셋 → G2 raw 세 셋 → G3 raw 세 셋 (최대 488회)
+- 후보 팔: G0+LG, G1, G2, G3 (raw). G1~G3의 lg 팔은 가드 적용 수, 재시도 지연, 가드 전후 섞임만 보고함
+- **적격** (G0 raw와 비교): 영어 J1 정확도 합(32) ≥ G0 − 2, 한국어 72문항의 섞인 답 수 ≤ G0, 환각 판정 수(104) ≤ G0 + 1
+- **G* 고르기**: 적격 후보 중 J1 정확도 합(104)이 가장 높은 후보. 가장 높은 값과 3점 이내인 적격 후보가 여럿이면 그중 VRAM(관문 실행 뒤 `/api/ps`의 `size`, G0+LG는 G0의 값)이 가장 작은 후보
+- **멈춤**: 적격 후보가 없거나, G*의 정확도 합이 G0 + 3 미만이면서 G*의 한국어 섞인 답 수도 G0보다 적지 않으면 여기서 멈춤. G0를 유지하고 LG는 끈 채로 두며 test3b는 열지 않음
+- 보고만: 충실도, 키워드 커버리지, 인용(스키마 오류, 번호가 1~k 안인지, 정답 페이지 청크를 인용했는지), 생성 중앙값, `done_reason=length`, 추론 출력, 문항별 차이의 대응표본 bootstrap 90% 구간(언어별, G0 기준, v11과 같은 10,000회·seed 20261003)
+- 도구: `eval/generator_arms.py summary --baseline G0`
+
+**채택** (test3b, 한 번)
+- 생성: G0와 G*의 생성기(G*가 G0+LG면 G0 한 번의 실행에서 두 팔)로 `qa_test3b_ko`, `qa_test3b_en`, `qa_test2_ko`를 `LANGUAGE_GUARD=true`로 생성 → `split`
+- 판정 (한 번의 `run_judge`, 이 순서): G0 raw `qa_test3b_ko`, `qa_test3b_en` → G0 lg `qa_test3b_ko` → G*의 생성기 raw `qa_test3b_ko`, `qa_test3b_en` → G*의 생성기 lg `qa_test3b_ko` (G*가 G0+LG면 뒤의 셋은 없음). `qa_test2_ko`는 판정하지 않음
+- **채택 조건** (모두 만족)
+  1. 언어별 J1 정확도 합(각 40): 한국어 G* ≥ G0 − 2, 영어 G* ≥ G0 − 2
+  2. `qa_test3b_ko`의 섞인 답 수: G* ≤ G0
+  3. 환각 판정 수(80): G* ≤ G0 + 1
+  4. G*의 test3b 80문항 생성 시간 중앙값 ≤ 10초 (G*가 LG를 포함하면 재시도 시간 포함)
+  5. G*의 모든 생성 실행 뒤 `size_vram == size` (100% GPU)
+  6. 우위: (a) 두 언어 J1 정확도 합(80) G* > G0, 또는 (b) 155문항의 섞인 답 수(판정과 무관한 정규식 지표) G* < G0 이고 G* ≤ 1. (b)는 선택에 쓴 dev 72문항과 나머지 83문항(`qa_test2_ko` 43 + `qa_test3b_ko` 40)으로 나눠서도 보고함. dev 72문항은 선택의 적격 조건에 쓰였으므로 나머지 83문항이 더 깨끗한 근거임
+  7. G*가 G0+LG면 아래 LG 조건 (i)(ii)도 만족해야 함
+- 보고: 정확도 차이의 bootstrap 90% 구간(언어별, 합계), 충실도, 인용, 생성 중앙값, 관문과 같은 진단 지표
+- 채택하면: `OLLAMA_MODEL_NAME`(그리고 G1·G2면 `OLLAMA_THINK=false`) 기본값, `.env.example`, README를 바꿈. 이전 수치는 고치지 않음
+
+**LG 결정** (채택 판정 뒤 쓰기로 한 생성기 G_final에 대해, test3b_ko에서)
+- (i) G_final + LG의 섞인 답 0개, (ii) J1 정확도 합 변화(G_final + LG − G_final) ≥ −1
+- G*가 G0+LG: 채택 조건 1~7을 모두 만족할 때만 LG를 켬 (G_final = G0)
+- G*가 G1~G3이고 채택됨: G_final = G*. (i)(ii)를 만족하면 LG를 켬 (`LANGUAGE_GUARD` 기본값 true)
+- G*가 G1~G3이고 채택되지 않음: G_final = G0. (i)(ii)를 만족하고 G0+LG가 선택 단계에서 적격이었을 때만 LG를 켬
+- 선택 단계에서 멈춘 경우: G0, LG 끔
+
+**주의 사항** (결정을 바꾸지 않음)
+- 자기선호 편향: J1은 G0와 같은 `qwen2.5:7b-instruct`라 G0(와 G0+LG)의 답만 자기 답으로 판정함. G1~G3에 불리한 방향일 수 있음. v11처럼 사람 라벨이 없어 크기는 모름
+- 40문항이라 정확도 차이를 가리는 힘이 약함. 그래서 판정과 무관한 섞임 수를 우위 조건 (b)로 둠
+- `qa_test3b_en`은 번역이라 처음부터 영어로 쓴 질문과 분포가 다를 수 있음
+- 관문의 생성 시간은 GPU가 비어 있을 때의 값임. 12B는 게임과 함께 GPU에 다 올라가지 못할 수 있음
+
+**코드 변경** (측정 전에 넣음. 기본 동작은 바뀌지 않음)
+- `app/services/generation.py`: `OllamaGenerationService(think=None, language_guard=False, strict_citations=True)`. `think`가 있으면 두 호출 모두에 보냄. 가드(위 정의). 호출별 진단(`prompt_eval_count`, `eval_count`, `done_reason`, 추론 출력 길이, 시간), 인용 응답의 스키마 검사(기록만, 앱은 전처럼 JSON이 아니면 실패)를 `GenerationResult.diagnostics`에 담음
+- `app/config.py`: `OLLAMA_THINK`(기본 없음), `LANGUAGE_GUARD`(기본 false)
+- `eval/run_answer_eval.py`: 평가는 인용 응답이 깨져도 멈추지 않고 문항별로 기록. 가드 전 답, 재시도 시간, 호출별 진단을 문항 기록에, 모델 digest·`think`·가드 설정을 실행 기록(`.meta.json`)에 남김
+- `eval/generator_arms.py`: 두 팔 나누기(`split`), 관문(`gate`), 팔 비교 표(`summary`)
+- `eval/tokens.py`: 후보 세 모델의 토크나이저(리비전 고정). A.X는 선언된 GPT-2 토크나이저, qwen3.5는 `enable_thinking=False` 템플릿
+- 테스트 133 → 175개
+
+**비용 예상**
+- 내려받기 (끝남): qwen3.5:9b 6.6GB, gemma4:12b-it-qat 7.2GB, A.X 원본 14.5GB + GGUF 4.4GB(Ollama 저장소, 작업 사본 4.4GB), 토크나이저 약 50MB. 모두 `D:`
+- GPU 약 2시간: 관문 약 0.4시간(모델 4개 × 올리기 + 32문항), 선택 생성 약 0.8시간(104문항 × 4), 판정 488회 약 0.3시간, 채택 생성 약 0.4시간(123문항 × 2), 판정 최대 240회 약 0.15시간. 유휴 대기는 빼고. 선택에서 멈추면 약 1.5시간
+
+**브리프와 달라진 점** (측정 전에 바꿈)
+- G0+LG를 후보 팔로 둠 (스켑틱 정정). LG 결정을 G*가 G0+LG일 때, 다른 후보가 채택됐을 때, G0로 돌아갔을 때로 나눠 미리 적음. G0로 돌아간 경우 G0+LG가 선택에서 적격이었어야 함
+- 가드 전후를 한 번의 생성에서 두 팔로 나눔 (raw = 첫 호출). 영어는 가드가 걸리지 않으므로 G0+LG의 영어 판정은 G0의 것을 씀
+- A.X: 공식 GGUF가 없어 직접 변환함. 토크나이저를 선언대로 올리고, GGUF에 든 jinja 템플릿을 지워 Modelfile 템플릿이 쓰이게 함 (이유는 위). 템플릿 확인 관문(7)을 더함
+- 관문의 인용 조건은 처음 10문항 10/10 (32문항 전체는 보고)
+- 연구자 제안의 보고 항목 중 "단일 호출 JSON 보존율"은 재지 않음. 두 단계 호출을 바꾸지 않으므로 결정과 무관하고, 호출이 더 필요함
+- 예비 후보 gemma4:e4b-it-qat는 쓰지 않음
+- 배포된 샘플링 파라미터(qwen3.5의 presence_penalty 1.5 등)는 그대로 둠. temperature 0만 프로젝트 불변식으로 덮어씀
+- VRAM 동률 규칙은 관문에서 잰 `/api/ps`의 크기로 정함
+- 섞임 우위 (b)의 155문항을 채우려고 채택 단계에서 `qa_test2_ko`도 생성함 (판정 없음)
+- 근거의 "14B는 VRAM 때문에만 탈락" 서술을 영어 −2점 + 지연으로 고침
+
 ## 기타 관찰
 
 - **LLM 판정의 오탐**: v3 dense에서 q017은 검색 실패 후 "컨텍스트에 정보가 없다"고 올바르게 답했지만, 판정 모델은 이를 환각으로 표시함.
