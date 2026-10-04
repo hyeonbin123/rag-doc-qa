@@ -15,7 +15,7 @@ from app.services.generation import GenerationService
 from app.services.inference import run_model
 from app.services.language import Language, detect_language
 from app.services.reranking import RerankerService
-from app.services.retrieval import retrieve
+from app.services.retrieval import retrieve, score_floor_for
 
 router = APIRouter(prefix="/query", tags=["query"])
 
@@ -33,10 +33,11 @@ async def ask(
     language = (
         detect_language(payload.question) if payload.language == "auto" else payload.language
     )
+    embedder = embedder_for(language)
     embed_sw = Stopwatch()
     with embed_sw.measure():
         # CPU-bound model call: queued on the model thread so other requests keep moving.
-        query_embedding = await run_model(embedder_for(language).embed_query, payload.question)
+        query_embedding = await run_model(embedder.embed_query, payload.question)
 
     retrieval_sw = Stopwatch()
     with retrieval_sw.measure():  # includes cross-encoder reranking in "rerank" mode
@@ -48,6 +49,7 @@ async def ask(
             settings.retrieval_mode,
             language=language,
             reranker=reranker_for(language) if reranker_for else None,
+            score_floor=score_floor_for(embedder.model_name),
         )
 
     # End the read transaction so the pooled connection isn't held while the LLM

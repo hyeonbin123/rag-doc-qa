@@ -1,10 +1,11 @@
 import pytest
 
-from app.dependencies import get_generator
+from app.dependencies import get_embedder, get_generator
 from app.main import app
 from app.models.chunk import Chunk
 from app.models.document import Document
-from tests.conftest import FakeEmbeddingService, FakeGenerationService
+from app.services import retrieval
+from tests.conftest import EMBEDDING_DIM, FakeEmbeddingService, FakeGenerationService
 
 
 class TransactionProbeGenerator(FakeGenerationService):
@@ -90,3 +91,46 @@ async def test_ask_releases_db_connection_during_generation(authed_client, db_se
     # The query log is still written afterwards, in its own short transaction.
     log_resp = await authed_client.get(f"/logs/{resp.json()['query_log_id']}")
     assert log_resp.status_code == 200
+
+
+class AxisEmbeddingService(FakeEmbeddingService):
+    """Embeds every question as the first axis, so a chunk's score is its first component."""
+
+    def __init__(self) -> None:
+        self.model_name = "axis-embedding"
+
+    def embed_query(self, text: str) -> list[float]:
+        return [1.0] + [0.0] * (EMBEDDING_DIM - 1)
+
+
+@pytest.mark.asyncio
+async def test_ask_uses_the_score_floor_of_the_embedding_model(authed_client, db_session, monkeypatch):
+    document = Document(
+        source_path="docs/en/docs/tutorial/body.md",
+        title="Body",
+        source_commit_sha="deadbeef",
+        content_hash="hash-body",
+    )
+    db_session.add(document)
+    await db_session.flush()
+    db_session.add(
+        Chunk(
+            document_id=document.id,
+            chunk_index=0,
+            heading_path="Body",
+            content="Declare a Pydantic model.",
+            token_count=5,
+            embedding=[0.25, (1 - 0.25**2) ** 0.5] + [0.0] * (EMBEDDING_DIM - 2),  # cosine 0.25
+        )
+    )
+    await db_session.commit()
+    app.dependency_overrides[get_embedder] = lambda: lambda language="en": AxisEmbeddingService()
+
+    under_shared_floor = await authed_client.post("/query/ask", json={"question": "Body?"})
+    monkeypatch.setitem(retrieval.SCORE_FLOORS, "axis-embedding", 0.2)
+    under_model_floor = await authed_client.post("/query/ask", json={"question": "Body?"})
+
+    assert under_shared_floor.json()["citations"] == []
+    assert [c["source_path"] for c in under_model_floor.json()["citations"]] == [
+        "docs/en/docs/tutorial/body.md"
+    ]

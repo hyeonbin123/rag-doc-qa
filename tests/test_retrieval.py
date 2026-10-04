@@ -5,10 +5,15 @@ from app.models.document import Document
 from app.services.reranking import RerankerService
 from app.services.retrieval import (
     RERANK_POOLS,
+    SCORE_FLOOR,
+    SCORE_FLOORS,
+    cross_lingual_search,
     hybrid_search,
     lexical_search,
+    page_key,
     rerank_search,
     retrieve,
+    score_floor_for,
     similarity_search,
 )
 from tests.conftest import EMBEDDING_DIM
@@ -203,3 +208,129 @@ async def test_unsupported_language_is_rejected_before_reaching_sql(db_session):
 async def test_retrieve_in_rerank_mode_requires_a_reranker(db_session):
     with pytest.raises(ValueError):
         await retrieve(db_session, "q", [1.0] + [0.0] * (EMBEDDING_DIM - 1), 5, "rerank")
+
+
+# --- score floor per embedding model, cross-lingual search (docs/experiments.md v12) ---
+
+
+def _unit(*components: float) -> list[float]:
+    """A vector whose first components are given and the rest zero."""
+    return list(components) + [0.0] * (EMBEDDING_DIM - len(components))
+
+
+def _at_similarity(cosine: float) -> list[float]:
+    """A unit vector whose cosine with _unit(1.0) is `cosine`."""
+    return _unit(cosine, (1 - cosine**2) ** 0.5)
+
+
+async def _seed_page_chunk(db_session, path: str, embedding: list[float], content: str, index: int = 0):
+    """A chunk of the page at `path`; the page's document is created on first use."""
+    from sqlalchemy import select
+
+    document = await db_session.scalar(select(Document).where(Document.source_path == path))
+    if document is None:
+        document = Document(
+            source_path=path, title="T", source_commit_sha="deadbeef", content_hash="h-" + path
+        )
+        db_session.add(document)
+        await db_session.flush()
+    db_session.add(
+        Chunk(
+            document_id=document.id,
+            chunk_index=index,
+            heading_path="H",
+            content=content,
+            token_count=10,
+            embedding=embedding,
+            language=path.split("/")[1],
+        )
+    )
+    await db_session.commit()
+
+
+@pytest.mark.asyncio
+async def test_similarity_search_takes_the_score_floor_as_a_parameter(db_session):
+    await _seed_page_chunk(db_session, "docs/en/docs/low.md", _at_similarity(0.25), "low score")
+
+    assert await similarity_search(db_session, _unit(1.0), 5) == []  # under the default 0.3
+    lowered = await similarity_search(db_session, _unit(1.0), 5, score_floor=0.2)
+    assert [r.content for r in lowered] == ["low score"]
+
+
+def test_models_without_a_measured_floor_use_the_shared_one(monkeypatch):
+    assert score_floor_for("intfloat/multilingual-e5-small") == SCORE_FLOOR
+    monkeypatch.setitem(SCORE_FLOORS, "some/model", 0.15)
+    assert score_floor_for("some/model") == 0.15
+
+
+def test_page_key_is_the_same_for_every_translation_of_a_page():
+    assert page_key("docs/ko/docs/tutorial/body.md") == "tutorial/body.md"
+    assert page_key("docs/en/docs/tutorial/body.md") == "tutorial/body.md"
+    assert page_key("docs/en/docs/index.md") == "index.md"
+    assert page_key("README.md") == "README.md"  # not a docs page: left as it is
+
+
+@pytest.mark.asyncio
+async def test_cross_lingual_search_keeps_one_translation_per_page(db_session):
+    await _seed_page_chunk(db_session, "docs/ko/docs/a.md", _at_similarity(0.9), "ko a")
+    await _seed_page_chunk(db_session, "docs/en/docs/a.md", _at_similarity(0.8), "en a")
+    await _seed_page_chunk(db_session, "docs/en/docs/b.md", _at_similarity(0.7), "en b")
+    await _seed_page_chunk(db_session, "docs/ko/docs/b.md", _at_similarity(0.6), "ko b")
+
+    results = await cross_lingual_search(db_session, _unit(1.0), 5, ("ko", "en"))
+
+    # Page a is taken by its Korean chunk and page b by its English one, so the other
+    # translation of each page is dropped instead of repeating the same content.
+    assert [r.content for r in results] == ["ko a", "en b"]
+
+
+@pytest.mark.asyncio
+async def test_cross_lingual_search_keeps_several_chunks_of_a_page_in_one_language(db_session):
+    await _seed_page_chunk(db_session, "docs/ko/docs/a.md", _at_similarity(0.9), "ko a 1", 0)
+    await _seed_page_chunk(db_session, "docs/ko/docs/a.md", _at_similarity(0.8), "ko a 2", 1)
+    await _seed_page_chunk(db_session, "docs/en/docs/c.md", _at_similarity(0.7), "en c")
+
+    results = await cross_lingual_search(db_session, _unit(1.0), 2, ("ko", "en"))
+
+    assert [r.content for r in results] == ["ko a 1", "ko a 2"]
+
+
+@pytest.mark.asyncio
+async def test_cross_lingual_search_applies_the_floor_to_both_languages(db_session):
+    await _seed_page_chunk(db_session, "docs/ko/docs/a.md", _at_similarity(0.25), "ko a")
+    await _seed_page_chunk(db_session, "docs/en/docs/b.md", _at_similarity(0.28), "en b")
+
+    assert await cross_lingual_search(db_session, _unit(1.0), 5, ("ko", "en")) == []
+    lowered = await cross_lingual_search(db_session, _unit(1.0), 5, ("ko", "en"), score_floor=0.2)
+    assert [r.content for r in lowered] == ["en b", "ko a"]
+
+
+@pytest.mark.asyncio
+async def test_retrieve_searches_every_translation_only_when_asked(db_session):
+    await _seed_page_chunk(db_session, "docs/ko/docs/a.md", _at_similarity(0.6), "ko a")
+    await _seed_page_chunk(db_session, "docs/en/docs/b.md", _at_similarity(0.9), "en b")
+
+    plain = await retrieve(db_session, "질문", _unit(1.0), 5, "dense", language="ko")
+    crossed = await retrieve(
+        db_session, "질문", _unit(1.0), 5, "dense", language="ko", cross_lingual=True
+    )
+
+    assert [r.content for r in plain] == ["ko a"]
+    assert [r.content for r in crossed] == ["en b", "ko a"]
+
+
+@pytest.mark.asyncio
+async def test_retrieve_passes_the_score_floor_to_dense_search(db_session):
+    await _seed_page_chunk(db_session, "docs/ko/docs/a.md", _at_similarity(0.25), "ko a")
+
+    assert await retrieve(db_session, "질문", _unit(1.0), 5, "dense", language="ko") == []
+    lowered = await retrieve(
+        db_session, "질문", _unit(1.0), 5, "dense", language="ko", score_floor=0.2
+    )
+    assert [r.content for r in lowered] == ["ko a"]
+
+
+@pytest.mark.asyncio
+async def test_cross_lingual_retrieval_is_dense_only(db_session):
+    with pytest.raises(ValueError):
+        await retrieve(db_session, "질문", _unit(1.0), 5, "hybrid", language="ko", cross_lingual=True)

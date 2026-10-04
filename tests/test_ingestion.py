@@ -163,3 +163,20 @@ async def test_a_truncated_tree_listing_is_refused():
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         with pytest.raises(RuntimeError, match="truncated"):
             await ingestion.list_doc_paths(client, "deadbeef", ("en",))
+
+
+class RevisedEmbeddingService(FakeEmbeddingService):
+    """The same model name at another pinned revision: different vectors, same name."""
+
+    revision = "0" * 40
+
+
+@pytest.mark.asyncio
+async def test_a_new_model_revision_reembeds_unchanged_pages(db_session, monkeypatch):
+    serve_upstream(monkeypatch, PAGES)
+    await ingest(db_session)
+
+    outcome = await ingestion.run_ingestion(db_session, lambda language: RevisedEmbeddingService())
+
+    assert outcome.documents_processed == len(PAGES)
+    assert outcome.chunks_skipped == 0

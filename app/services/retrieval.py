@@ -16,6 +16,11 @@ if TYPE_CHECKING:
 RetrievalMode = Literal["dense", "hybrid", "rerank"]
 
 SCORE_FLOOR = 0.3
+# Dense results under the floor are dropped, so a question the docs don't cover gets no
+# passages. Cosine scores sit in different ranges for different models, so a model whose
+# on-topic scores fall lower gets its own floor, set on the Korean tuning sets only
+# (docs/experiments.md v12). Models not listed use SCORE_FLOOR.
+SCORE_FLOORS: dict[str, float] = {}
 RRF_K = 60
 # pgvector's HNSW scan returns at most hnsw.ef_search rows (default 40), so a larger
 # LIMIT would silently shrink the dense candidate list back to 40 anyway.
@@ -34,6 +39,8 @@ LEXICAL_WEIGHT = 0.75
 RERANK_POOLS: dict[Language, int] = {"en": 5, "ko": 3}
 
 _WORD_RE = re.compile(r"[A-Za-z0-9]+")
+# docs/<language>/docs/<page>: every translation of a page shares <page>.
+_DOCS_PATH_RE = re.compile(r"^docs/([^/]+)/docs/(.+)$")
 
 # BM25 over chunks.content_tsv, computed in SQL so there is no extra index or stats
 # table to keep in sync with ingestion:
@@ -99,6 +106,26 @@ class RetrievedChunk:
     score: float
 
 
+def score_floor_for(model_name: str) -> float:
+    """The dense score floor for vectors from this embedding model."""
+    return SCORE_FLOORS.get(model_name, SCORE_FLOOR)
+
+
+def page_key(source_path: str) -> str:
+    """The page a docs path belongs to, the same for each translation of it.
+
+    "docs/ko/docs/tutorial/body.md" and "docs/en/docs/tutorial/body.md" are both
+    "tutorial/body.md". Anything else is returned unchanged.
+    """
+    match = _DOCS_PATH_RE.match(source_path)
+    return match.group(2) if match else source_path
+
+
+def _path_language(source_path: str) -> str:
+    match = _DOCS_PATH_RE.match(source_path)
+    return match.group(1) if match else ""
+
+
 def _vector_literal(query_embedding: list[float]) -> str:
     return "[" + ",".join(str(x) for x in query_embedding) + "]"
 
@@ -148,30 +175,74 @@ def _language_sql(language: Language) -> str:
     return f"'{language}'"
 
 
+def dense_search_sql(language: Language) -> str:
+    """The dense search statement for one language (binds :qvec and :top_k)."""
+    return f"""
+        SELECT c.id, c.document_id, c.content, c.heading_path, d.source_path,
+               1 - (c.embedding <=> :qvec) AS score
+        FROM chunks c
+        JOIN documents d ON d.id = c.document_id
+        WHERE c.language = {_language_sql(language)}
+        ORDER BY c.embedding <=> :qvec
+        LIMIT :top_k
+    """
+
+
 async def similarity_search(
-    db: AsyncSession, query_embedding: list[float], top_k: int, language: Language = "en"
+    db: AsyncSession,
+    query_embedding: list[float],
+    top_k: int,
+    language: Language = "en",
+    score_floor: float = SCORE_FLOOR,
 ) -> list[RetrievedChunk]:
     """Cosine similarity search over chunks via pgvector's <=> operator.
 
     `1 - (embedding <=> :qvec)` converts cosine *distance* into a
-    similarity score in roughly [0, 1] for normalized vectors.
+    similarity score in roughly [0, 1] for normalized vectors. Of the top_k, the ones
+    scoring under `score_floor` are dropped.
     """
     result = await db.execute(
-        text(
-            f"""
-            SELECT c.id, c.document_id, c.content, c.heading_path, d.source_path,
-                   1 - (c.embedding <=> :qvec) AS score
-            FROM chunks c
-            JOIN documents d ON d.id = c.document_id
-            WHERE c.language = {_language_sql(language)}
-            ORDER BY c.embedding <=> :qvec
-            LIMIT :top_k
-            """
-        ),
+        text(dense_search_sql(language)),
         {"qvec": _vector_literal(query_embedding), "top_k": top_k},
     )
     chunks = [_to_chunk(row) for row in result]
-    return [c for c in chunks if c.score >= SCORE_FLOOR]
+    return [c for c in chunks if c.score >= score_floor]
+
+
+async def cross_lingual_search(
+    db: AsyncSession,
+    query_embedding: list[float],
+    top_k: int,
+    languages: tuple[Language, ...],
+    score_floor: float = SCORE_FLOOR,
+) -> list[RetrievedChunk]:
+    """Dense search over several translations at once, one translation per page.
+
+    Only meaningful when every searched language was embedded by the same multilingual
+    model as the question (docs/experiments.md v12, "T3"): the scores are then on one
+    scale and can be merged. Each language's top 2 * top_k (through its own HNSW index)
+    are merged by score. A chunk is skipped when its page is already in the list in
+    another translation, so the same content does not take two of the top_k places;
+    several chunks of one page in the same translation are kept, as in a one-language
+    search.
+    """
+    candidates: list[RetrievedChunk] = []
+    for language in languages:
+        candidates += await similarity_search(
+            db, query_embedding, 2 * top_k, language, score_floor
+        )
+    candidates.sort(key=lambda c: c.score, reverse=True)
+
+    page_language: dict[str, str] = {}
+    merged: list[RetrievedChunk] = []
+    for chunk in candidates:
+        language = _path_language(chunk.source_path)
+        if page_language.setdefault(page_key(chunk.source_path), language) != language:
+            continue
+        merged.append(chunk)
+        if len(merged) == top_k:
+            break
+    return merged
 
 
 async def lexical_search(
@@ -337,9 +408,22 @@ async def retrieve(
     lexical_weight: float = LEXICAL_WEIGHT,
     reranker: "RerankerService | None" = None,
     rerank_pool: int | None = None,
+    score_floor: float = SCORE_FLOOR,
+    cross_lingual: bool = False,
 ) -> list[RetrievedChunk]:
-    """Search the docs translation matching `language`, detected from the question if None."""
+    """Search the docs translation matching `language`, detected from the question if None.
+
+    `score_floor` applies to dense search. `cross_lingual` (dense only) searches every
+    translation instead, the question's own first; see cross_lingual_search.
+    """
     language = language or detect_language(question)
+    if cross_lingual:
+        if mode != "dense":
+            raise ValueError("cross-lingual retrieval is dense only")
+        others = tuple(lang for lang in SUPPORTED_LANGUAGES if lang != language)
+        return await cross_lingual_search(
+            db, query_embedding, top_k, (language, *others), score_floor
+        )
     if mode == "rerank":
         if reranker is None:
             raise ValueError("retrieval mode 'rerank' needs a reranker")
@@ -350,4 +434,4 @@ async def retrieve(
         return await hybrid_search(
             db, question, query_embedding, top_k, lexical_weight, language
         )
-    return await similarity_search(db, query_embedding, top_k, language)
+    return await similarity_search(db, query_embedding, top_k, language, score_floor)

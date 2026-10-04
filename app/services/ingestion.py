@@ -160,9 +160,10 @@ async def run_ingestion(
         embedder = embedder_for(language)
         # The chunker version and the embedding model are part of the key: otherwise
         # changing either would leave every unchanged doc "skipped" and silently keep
-        # its stale chunks, or vectors from a different model.
+        # its stale chunks, or vectors from a different model. The model's identity also
+        # names a pinned revision or a cut dimension (it is just the name for e5 and bge).
         content_hash = hashlib.sha256(
-            f"chunker-v{CHUNKER_VERSION}\nembedding-{embedder.model_name}\n{raw_text}".encode()
+            f"chunker-v{CHUNKER_VERSION}\nembedding-{embedder.identity}\n{raw_text}".encode()
         ).hexdigest()
 
         existing = await db.scalar(select(Document).where(Document.source_path == path))
