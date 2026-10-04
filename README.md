@@ -12,8 +12,8 @@ FastAPI 공식 문서(영어 원문 154개, 한국어 번역 123개, 청크 1,53
 | 백엔드 | FastAPI(비동기), SQLAlchemy 2.0 + asyncpg, Alembic, PostgreSQL 16 + pgvector, Docker Compose, GitHub Actions CI |
 | AI | 언어별 로컬 임베딩(영어 `BAAI/bge-small-en-v1.5`, 한국어 `intfloat/multilingual-e5-small`), 로컬 LLM Qwen2.5-7B(Ollama) 또는 Claude API, 언어별 cross-encoder 재정렬 |
 | 검색 모드 | `dense` / `hybrid`(벡터 + SQL로 계산한 BM25, 가중 RRF) / `rerank`(cross-encoder 재채점). 기본값은 `dense` (영어는 아래 v7, 한국어는 v9) |
-| 평가 | 질문셋 5개(영어: 테스트 30, 튜닝용 32, 새 테스트 43문항 / 한국어: 튜닝용 32, 테스트 43문항), Hit@k·MRR·검색 지연, LLM 판정 답변 정확도 |
-| 품질 관리 | pytest 100개(통합 테스트는 실제 Postgres + pgvector 사용), push마다 CI에서 ruff + pytest |
+| 평가 | 질문셋 8개(영어: 테스트 30, 튜닝용 32, 새 테스트 43문항 / 한국어: 튜닝용 32·40, 테스트 43·40, 다음 단계용 40문항), Hit@k·MRR·검색 지연, LLM 판정 답변 정확도 |
+| 품질 관리 | pytest 133개(통합 테스트는 실제 Postgres + pgvector 사용), push마다 CI에서 ruff + pytest |
 | 응답 시간 | 답변 생성 중앙값 약 4~5초 (v10 측정: 영어 5.3초, 한국어 4.3초. 로컬 Qwen2.5-7B, RTX 2080 Ti) |
 
 ## 구조
@@ -204,7 +204,7 @@ uv run python -m eval.run_retrieval_eval --tag v2_tuned
 # 검색 모드 비교 (--mode를 생략하면 RETRIEVAL_MODE 설정을 따름)
 uv run python -m eval.run_retrieval_eval --mode dense --tag v4_dense
 uv run python -m eval.run_retrieval_eval --mode hybrid --tag v4_hybrid
-# 파라미터 튜닝은 튜닝용 셋으로만 한다 (영어 eval/qa_dev.jsonl, 한국어 eval/qa_dev_ko.jsonl. --dataset 기본값은 테스트셋인 eval/qa_dataset.jsonl)
+# 파라미터 튜닝은 튜닝용 셋으로만 한다 (영어 eval/qa_dev.jsonl, 한국어 eval/qa_dev_ko.jsonl·eval/qa_dev2_ko.jsonl. --dataset 기본값은 테스트셋인 eval/qa_dataset.jsonl, 여러 개를 주면 함께 집계)
 uv run python -m eval.run_retrieval_eval --mode hybrid --dataset eval/qa_dev.jsonl --lexical-weight 0.5 --tag dev_w050
 # rerank: 재정렬 모델과 목록당 후보 수는 질문 언어를 따름 (영어 5개, 한국어 3개. --reranker-model, --rerank-pool로 모든 질문에 덮어쓸 수 있음). 리포트에 검색 지연 p50/p95도 기록됨
 uv run python -m eval.run_retrieval_eval --mode rerank --dataset eval/qa_dev.jsonl --tag dev_rerank

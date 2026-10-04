@@ -1,0 +1,45 @@
+{
+  "date": "2026-10-04T00:18:25.584785+00:00",
+  "tag": "v12_regress_qa_dev",
+  "git_commit": "5c25cbc688ab51be41c61524ac8b5f3641de73a3",
+  "database": "ragdb",
+  "embedding_models": {
+    "en": "BAAI/bge-small-en-v1.5"
+  },
+  "mode": "dense",
+  "top_k": 10,
+  "score_floors": {
+    "en": 0.3
+  },
+  "cross_lingual": false,
+  "exact": false,
+  "dense_plans": {
+    "en": [
+      "Sort",
+      "Seq Scan on chunks c",
+      "Seq Scan on documents d"
+    ]
+  },
+  "datasets": [
+    "qa_dev.jsonl"
+  ],
+  "vector_checks": [
+    {
+      "language": "en",
+      "model": "BAAI/bge-small-en-v1.5",
+      "checked": 3,
+      "min_cosine": 1.0
+    }
+  ],
+  "torch_threads": 6,
+  "aggregate": {
+    "n": 32,
+    "hit@3": 0.875,
+    "hit@5": 0.90625,
+    "hit@10": 0.96875,
+    "mrr": 0.8581597222222223,
+    "short": 0,
+    "p50": 8.646100002806634,
+    "p95": 11.899774985795375
+  }
+}
