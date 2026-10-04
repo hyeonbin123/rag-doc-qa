@@ -19,6 +19,14 @@ class EvalQuestion:
     must_include_keywords: list[str] = field(default_factory=list)
 
 
+def keyword_coverage(answer: str, keywords: list[str]) -> float:
+    if not keywords:
+        return 1.0
+    lower_answer = answer.lower()
+    hits = sum(1 for kw in keywords if kw.lower() in lower_answer)
+    return hits / len(keywords)
+
+
 def load_dataset(path: Path = DATASET_PATH) -> list[EvalQuestion]:
     questions = []
     with open(path, encoding="utf-8") as f:

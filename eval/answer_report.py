@@ -50,6 +50,37 @@ def summarize(records: list[dict], judgments: list[dict] | None) -> dict:
     }
 
 
+def generation_notes(gen_meta: dict, records: list[dict]) -> list[str]:
+    """v13 run notes: the model digest, think and guard settings, per-call stop reasons."""
+    n = len(records)
+    calls = [r.get("generation_calls") for r in records]
+    lines = []
+    if gen_meta.get("model_digest"):
+        lines.append(f"- model digest: {gen_meta['model_digest']}")
+    if "think" in gen_meta or "language_guard" in gen_meta:
+        guard = "on" if gen_meta.get("language_guard") else "off"
+        if gen_meta.get("language_guard"):
+            guard += f" (regenerated {sum(1 for r in records if r.get('guard_applied'))}/{n})"
+        lines.append(f"- think: {gen_meta.get('think')}, language guard: {guard}")
+    if any(calls):
+        cut = sum(1 for c in calls if c and c["answer"][-1].get("done_reason") == "length")
+        thinking = sum(
+            1
+            for r, c in zip(records, calls, strict=True)
+            if c
+            and (
+                r.get("think_tag_in_answer")
+                or any(x.get("thinking_chars") for x in [*c["answer"], c["citation"]])
+            )
+        )
+        bad = sum(1 for r in records if r.get("citation_schema_error"))
+        lines.append(
+            f"- final answer call stopped by the output limit, done_reason=length: {cut}/{n}; "
+            f"reasoning output: {thinking}/{n}; citation replies breaking the schema: {bad}/{n}"
+        )
+    return lines
+
+
 def judge_description(judge_meta: dict | None) -> list[str]:
     if judge_meta is None:
         return ["- judge: skipped"]
@@ -87,6 +118,7 @@ def render_report(
         f"- generated: {gen_meta.get('date', '-')}",
         f"- provider: {gen_meta.get('provider', '-')}",
         f"- model: {gen_meta.get('model', '-')}",
+        *generation_notes(gen_meta, records),
         *judge_description(judge_meta),
         f"- ollama version: {gen_meta.get('ollama_version') or '-'} (generation)"
         + (f", {judge_meta.get('ollama_version') or '-'} (judge)" if judge_meta else ""),

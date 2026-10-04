@@ -26,18 +26,20 @@ from __future__ import annotations
 import argparse
 import asyncio
 import random
-import re
 import sys
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
-from app.config import get_settings
+from app.config import Settings, get_settings
 from app.db.session import async_session_maker
 from app.services.embedding import get_embedding_service
 from app.services.generation import (
+    KANA_HAN_RE,
     OLLAMA_ANSWER_PROMPT,
+    GenerationService,
+    OllamaGenerationService,
     _build_user_message,
     get_generation_service,
     system_prompt_for,
@@ -51,6 +53,7 @@ from eval.common import (
     RUNS_DIR,
     EvalQuestion,
     git_commit,
+    keyword_coverage,
     load_dataset,
     write_json,
     write_jsonl,
@@ -58,25 +61,41 @@ from eval.common import (
 )
 from eval.judge import DEFAULT_JUDGE_NUM_CTX, JUDGE_SCHEMA, JUDGE_TOOL, JudgeConfig, TokenCounter
 from eval.retrieval_checks import check_stored_vectors
-from eval.run_judge import default_label, judge_and_save, meta_path, ollama_state
+from eval.run_judge import default_label, judge_and_save, meta_path, model_digest, ollama_state
 from eval.tokens import counter_for_model
 
-__all__ = ["JUDGE_SCHEMA", "JUDGE_TOOL", "generate_answer", "generation_order", "keyword_coverage"]
+__all__ = [
+    "JUDGE_SCHEMA",
+    "JUDGE_TOOL",
+    "KANA_HAN_RE",
+    "build_generator",
+    "generate_answer",
+    "generation_order",
+    "keyword_coverage",
+]
 
-# Kana (U+3040-U+30FF) and Han (U+4E00-U+9FFF) characters. The docs never use them, so
-# in an answer they mean the model slipped into Japanese or Chinese (seen in Korean
-# answers from the 7B model).
-KANA_HAN_RE = re.compile(r"[぀-ヿ一-鿿]")
+# KANA_HAN_RE: kana (U+3040-U+30FF) and Han (U+4E00-U+9FFF) characters. The docs never use
+# them, so in an answer they mean the model slipped into Japanese or Chinese (seen in
+# Korean answers from the 7B model). Counted anywhere in the answer, code included.
 
 GenerationPromptCounter = Callable[[str, list[RetrievedChunk], Language], int]
 
 
-def keyword_coverage(answer: str, keywords: list[str]) -> float:
-    if not keywords:
-        return 1.0
-    lower_answer = answer.lower()
-    hits = sum(1 for kw in keywords if kw.lower() in lower_answer)
-    return hits / len(keywords)
+def build_generator(settings: Settings) -> GenerationService:
+    """The configured generator; for Ollama, one that records a bad citation reply.
+
+    The app raises on a citation reply that is not JSON; an eval run records it per item
+    (docs/experiments.md v13 counts them) and goes on.
+    """
+    if settings.generation_provider != "ollama":
+        return get_generation_service()
+    return OllamaGenerationService(
+        settings.ollama_base_url,
+        settings.ollama_model_name,
+        think=settings.ollama_think,
+        language_guard=settings.language_guard,
+        strict_citations=False,
+    )
 
 
 def generation_order(n: int, order: str, seed: int) -> list[int]:
@@ -139,6 +158,8 @@ async def generate_answer(
     start = time.perf_counter()
     generation_result = await generator.answer(q.question, retrieved, language=language)
     generation_ms = (time.perf_counter() - start) * 1000
+    diagnostics = generation_result.diagnostics or {}
+    unguarded = diagnostics.get("unguarded_answer")
 
     # A chunk of an expected page counts in any translation, as in run_retrieval_eval.
     expected_pages = {page_key(p) for p in q.expected_source_paths}
@@ -183,6 +204,21 @@ async def generate_answer(
         ),
         "keyword_coverage": keyword_coverage(generation_result.answer, q.must_include_keywords),
         "kana_han": bool(KANA_HAN_RE.search(generation_result.answer)),
+        # v13: the language guard (the first answer when it regenerated) and per-call
+        # details from the Ollama provider; None/False for providers that report none.
+        "guard_applied": bool(diagnostics.get("guard_applied")),
+        "unguarded_answer": unguarded,
+        "kana_han_unguarded": bool(KANA_HAN_RE.search(unguarded)) if unguarded is not None else None,
+        "guard_retry_ms": diagnostics.get("guard_retry_ms"),
+        "generation_calls": (
+            {"answer": diagnostics["answer_calls"], "citation": diagnostics["citation_call"]}
+            if "answer_calls" in diagnostics
+            else None
+        ),
+        "citation_schema_error": diagnostics.get("citation_schema_error"),
+        "citation_reply": diagnostics.get("citation_reply"),
+        "think": diagnostics.get("think"),
+        "think_tag_in_answer": diagnostics.get("think_tag_in_answer"),
     }
 
 
@@ -190,7 +226,7 @@ async def main(args: argparse.Namespace) -> int:
     settings = get_settings()
     mode = args.mode or settings.retrieval_mode
     embedder = get_embedding_service  # per-language lookup, called with each question's language
-    generator = get_generation_service()
+    generator = build_generator(settings)
     questions = load_dataset(args.dataset)
     ollama = settings.generation_provider == "ollama"
     model_in_use = settings.ollama_model_name if ollama else settings.claude_model_name
@@ -265,6 +301,9 @@ async def main(args: argparse.Namespace) -> int:
         "git_commit": git_commit(),
         "ollama_version": (state.get("version") or {}).get("version"),
         "ollama_ps_after": state.get("ps"),
+        "model_digest": model_digest(state, model_in_use) if ollama else None,
+        "think": settings.ollama_think if ollama else None,
+        "language_guard": settings.language_guard if ollama else False,
         "records_path": display_path(gen_path),
     }
     write_json(meta_path(gen_path), gen_meta)

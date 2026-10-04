@@ -39,10 +39,10 @@ from eval.tokens import counter_for_model, tokenizer_source
 
 
 async def ollama_state(base_url: str) -> dict:
-    """Ollama's version and loaded models, best effort (recorded next to the results)."""
+    """Ollama's version, loaded models and local tags, best effort (recorded with results)."""
     state: dict = {}
     async with httpx.AsyncClient(timeout=10.0) as client:
-        for key, path in (("version", "/api/version"), ("ps", "/api/ps")):
+        for key, path in (("version", "/api/version"), ("ps", "/api/ps"), ("tags", "/api/tags")):
             try:
                 response = await client.get(f"{base_url.rstrip('/')}{path}")
                 response.raise_for_status()
@@ -50,6 +50,14 @@ async def ollama_state(base_url: str) -> dict:
             except (httpx.HTTPError, ValueError):
                 state[key] = None
     return state
+
+
+def model_digest(state: dict, model: str) -> str | None:
+    """The local model's manifest digest: tags get re-pushed, so a tag alone does not pin it."""
+    for local in (state.get("tags") or {}).get("models", []):
+        if local.get("name") == model or local.get("model") == model:
+            return local.get("digest")
+    return None
 
 
 def context_in_use(state: dict, model: str) -> int | None:

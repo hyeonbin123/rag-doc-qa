@@ -417,3 +417,174 @@ def test_pairing_refuses_files_with_different_items():
             [{"id": "t9", "correctness_score": 3}],
             "correctness_score",
         )
+
+
+# --- v13: generation diagnostics and the language guard in the per-item record ----------
+
+
+async def test_generation_record_keeps_the_guard_and_per_call_diagnostics(monkeypatch):
+    chunk = RetrievedChunk(uuid.uuid4(), uuid.uuid4(), "docs/ko/docs/p1.md", "H", "본문", 0.8)
+    def call(prompt, output, ms):
+        return {
+            "prompt_eval_count": prompt,
+            "eval_count": output,
+            "done_reason": "stop",
+            "thinking_chars": 0,
+            "ms": ms,
+        }
+
+    answer_calls = [call(1800, 371, 5000.0), call(1830, 120, 1500.0)]
+    citation_call = call(2200, 12, 400.0)
+
+    async def fake_retrieve(db, question, vector, top_k, mode, **kwargs):
+        return [chunk]
+
+    class GuardedGenerator:
+        async def answer(self, question, retrieved, language="en"):
+            return GenerationResult(
+                "`APIRouter`로 나눕니다.",
+                [1],
+                5830,
+                503,
+                "local-model",
+                diagnostics={
+                    "think": False,
+                    "guard_applied": True,
+                    "unguarded_answer": "APIRouter로 나눕니다. 更好地翻译成中文",
+                    "guard_retry_ms": 1500.0,
+                    "answer_calls": answer_calls,
+                    "citation_call": citation_call,
+                    "citation_schema_error": None,
+                    "think_tag_in_answer": False,
+                },
+            )
+
+    class FakeEmbedder:
+        model_name = "fake-embedding"
+
+        def embed_query(self, text):
+            return [0.0]
+
+    monkeypatch.setattr(run_answer_eval, "retrieve", fake_retrieve)
+    q = EvalQuestion("n078", "APIRouter로 나누는 방법?", ["docs/ko/docs/p1.md"], "나눈다.", ["APIRouter"])
+
+    record = await run_answer_eval.generate_answer(
+        None, lambda lang: FakeEmbedder(), GuardedGenerator(), q, 5, "dense", None
+    )
+
+    assert record["answer"] == "`APIRouter`로 나눕니다."
+    assert record["kana_han"] is False
+    assert record["guard_applied"] is True
+    assert record["unguarded_answer"] == "APIRouter로 나눕니다. 更好地翻译成中文"
+    assert record["kana_han_unguarded"] is True
+    assert record["guard_retry_ms"] == 1500.0
+    assert record["generation_calls"] == {"answer": answer_calls, "citation": citation_call}
+    assert record["citation_schema_error"] is None
+    assert record["think"] is False and record["think_tag_in_answer"] is False
+
+
+async def test_generation_record_without_diagnostics_keeps_its_old_shape(monkeypatch):
+    # The Anthropic provider (and the fakes in other tests) report no diagnostics.
+    chunk = RetrievedChunk(uuid.uuid4(), uuid.uuid4(), "docs/en/docs/p1.md", "H", "Text", 0.8)
+
+    async def fake_retrieve(db, question, vector, top_k, mode, **kwargs):
+        return [chunk]
+
+    class PlainGenerator:
+        async def answer(self, question, retrieved, language="en"):
+            return GenerationResult("Use Query().", [1], 900, 40, "claude")
+
+    class FakeEmbedder:
+        model_name = "fake-embedding"
+
+        def embed_query(self, text):
+            return [0.0]
+
+    monkeypatch.setattr(run_answer_eval, "retrieve", fake_retrieve)
+    q = EvalQuestion("t1", "How?", ["docs/en/docs/p1.md"], "Declare it.", ["Query"])
+
+    record = await run_answer_eval.generate_answer(
+        None, lambda lang: FakeEmbedder(), PlainGenerator(), q, 5, "dense", None
+    )
+
+    assert record["guard_applied"] is False
+    assert record["unguarded_answer"] is None
+    assert record["generation_calls"] is None
+
+
+def test_the_eval_generator_records_bad_citation_replies_instead_of_failing(monkeypatch):
+    from app.config import Settings
+    from app.services.generation import OllamaGenerationService
+
+    settings = Settings(
+        database_url="x", jwt_secret_key="y", _env_file=None, ollama_think=False, language_guard=True
+    )
+
+    generator = run_answer_eval.build_generator(settings)
+
+    assert isinstance(generator, OllamaGenerationService)
+    assert generator._strict_citations is False
+    assert generator._think is False and generator._language_guard is True
+
+
+def test_model_digest_comes_from_ollama_tags():
+    models = [{"name": "a:1", "digest": "aaa"}, {"name": "qwen3.5:9b", "digest": "6488c96f"}]
+    state = {"tags": {"models": models}}
+
+    assert run_judge.model_digest(state, "qwen3.5:9b") == "6488c96f"
+    assert run_judge.model_digest(state, "missing:1") is None
+    assert run_judge.model_digest({}, "qwen3.5:9b") is None
+
+
+def test_chat_token_counter_passes_template_arguments():
+    seen = {}
+
+    class FakeTokenizer:
+        def apply_chat_template(self, messages, tokenize, add_generation_prompt, **kwargs):
+            seen.update(kwargs)
+            return "x"
+
+        def __call__(self, text, add_special_tokens):
+            return {"input_ids": [1]}
+
+    ChatTokenCounter(FakeTokenizer(), {"enable_thinking": False})([{"role": "user", "content": "q"}])
+
+    assert seen == {"enable_thinking": False}
+
+
+def test_v13_candidates_have_pinned_tokenizers():
+    from eval.tokens import TOKENIZERS
+
+    assert TOKENIZERS["qwen3.5:9b"].template_kwargs == {"enable_thinking": False}
+    assert TOKENIZERS["a.x-4.0-light:q4_k_m"].loader == "gpt2"
+    assert all(len(spec.revision) == 40 for spec in TOKENIZERS.values())
+
+
+def test_report_notes_the_generation_settings_and_diagnostics():
+    from eval.answer_report import render_report
+
+    def record(item_id, guard_applied, done_reason, citation_error):
+        return {
+            "id": item_id,
+            "question": "Q",
+            "answer": "A",
+            "keyword_coverage": 1.0,
+            "generation_ms": 1000.0,
+            "kana_han": False,
+            "guard_applied": guard_applied,
+            "generation_calls": {
+                "answer": [{"done_reason": done_reason, "thinking_chars": 0}],
+                "citation": {"thinking_chars": 0},
+            },
+            "citation_schema_error": citation_error,
+        }
+
+    records = [record("t1", True, "stop", None), record("t2", False, "length", "not JSON")]
+    meta = {"model": "qwen3.5:9b", "model_digest": "6488c96f", "think": False, "language_guard": True}
+
+    report = render_report("unit", meta, records, None, None)
+
+    assert "- model digest: 6488c96f" in report
+    assert "- think: False, language guard: on (regenerated 1/2)" in report
+    assert "done_reason=length: 1/2" in report
+    assert "citation replies breaking the schema: 1/2" in report
