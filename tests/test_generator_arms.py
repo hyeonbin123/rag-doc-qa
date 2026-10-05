@@ -360,3 +360,35 @@ def test_an_lg_arm_can_share_the_raw_judgments_of_items_the_guard_left_alone(tmp
     assert lg["summary"]["all"]["correctness_sum"] == 5 + 4 + 5  # k1 its own, k2 and k3 from G0
     assert lg["shared"] == {"from": "G0", "items": 2, "own_judgment_differs": 1}
     assert shared["arms"]["G0+LG"]["vs_baseline"]["all"].startswith("+3")
+
+
+def test_item_row_says_whether_the_answer_s_passages_held_an_expected_page():
+    # docs/experiments.md v13 stage B compares two Korean embedders with one generator and
+    # reports how many answers were written from passages that held an expected page (v12
+    # counted 36 vs 39 of 40). A page counts in any translation, as a retrieval hit does.
+    hit = generator_arms.item_row(gen("k1"), None)  # passage 1 is docs/ko/docs/p1.md
+    other_translation = generator_arms.item_row(
+        gen("k2", expected_source_paths=["docs/en/docs/p2.md"]), None
+    )
+    miss = generator_arms.item_row(gen("k3", expected_source_paths=["docs/ko/docs/p9.md"]), None)
+    no_passages = generator_arms.item_row(gen("k4", chunks=[]), None)
+
+    assert hit["context_has_expected_page"] is True
+    assert other_translation["context_has_expected_page"] is True
+    assert miss["context_has_expected_page"] is False
+    assert no_passages["context_has_expected_page"] is False
+
+
+def test_the_summary_reports_answers_written_from_an_expected_page(tmp_path):
+    records = [gen("k1"), gen("k2", expected_source_paths=["docs/ko/docs/p9.md"])]
+    gen_path = tmp_path / "v13b_unit.gen.jsonl"
+    write_jsonl(gen_path, records)
+
+    report, data = generator_arms.summary_report("t", "", {"B0": [gen_path]}, None)
+
+    assert data["arms"]["B0"]["summary"]["ko"]["context_expected_page"] == "1/2"
+    table = [line for line in report.splitlines() if line.startswith("|")]
+    header = [c.strip() for c in table[0].strip("|").split("|")]
+    row = [c.strip() for c in table[2].strip("|").split("|")]
+    assert len(row) == len(header)
+    assert row[header.index("passages hold an expected page")] == "1/2"

@@ -124,10 +124,10 @@ def item_row(record: dict, judgment: dict | None) -> dict:
     j = judgment or {}
     cited = record.get("cited_chunk_numbers")
     chunks = record.get("chunks") or []
+    expected = {page_key(p) for p in record.get("expected_source_paths") or []}
     in_range = cites_expected = None
     if cited is not None:
         in_range = bool(cited) and all(isinstance(n, int) and 1 <= n <= len(chunks) for n in cited)
-        expected = {page_key(p) for p in record.get("expected_source_paths") or []}
         cites_expected = any(
             isinstance(n, int)
             and 1 <= n <= len(chunks)
@@ -150,6 +150,8 @@ def item_row(record: dict, judgment: dict | None) -> dict:
         "citation_error": record.get("citation_schema_error") is not None if cited is not None else None,
         "citations_in_range": in_range,
         "cites_expected_page": cites_expected,
+        # Retrieval's share: the generator saw a passage of an expected page (any translation).
+        "context_has_expected_page": any(page_key(c["source_path"]) in expected for c in chunks),
         "guard_applied": bool(record.get("guard_applied")),
         "guard_retry_ms": record.get("guard_retry_ms"),
         "answer_sha1": answer_sha1(record.get("answer") or ""),
@@ -178,6 +180,7 @@ def _summary(rows: list[dict]) -> dict:
         "citation_errors": sum(1 for r in rows if r["citation_error"]),
         "citations_in_range": _ratio([r["citations_in_range"] for r in rows]),
         "cites_expected_page": _ratio([r["cites_expected_page"] for r in rows]),
+        "context_expected_page": _ratio([r.get("context_has_expected_page") for r in rows]),
         "guard_applied": sum(1 for r in rows if r["guard_applied"]),
         "guard_retry_p50_ms": statistics.median(retries) if retries else None,
     }
@@ -348,6 +351,8 @@ def summary_report(
         "- correctness/faithfulness: J1 sums over judged items; kana/han: answers with kana or Han anywhere",
         "- citations: replies that break the schema; cited numbers within 1..k; a cited passage on an "
         "expected page (raw-arm items the guard regenerated have no citations of their own and are left out)",
+        "- passages hold an expected page: answers written from passages that include a page the item "
+        "expects (any translation), i.e. retrieval's share",
         *[
             f"- {lg}: items the guard left alone take {n['from']}'s judgment ({n['items']} items; "
             f"its own judgment differed on {n['own_judgment_differs']})"
@@ -355,9 +360,9 @@ def summary_report(
         ],
         "",
         "| arm | lang | n | correctness sum | hallucinated | kana/han | faithfulness sum | gen p50 ms "
-        "| done=length | thinking | citation errors | cites in range | cites expected page | guard applied "
-        "| guard retry p50 ms |",
-        "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
+        "| done=length | thinking | citation errors | cites in range | cites expected page "
+        "| passages hold an expected page | guard applied | guard retry p50 ms |",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for name, arm in rows.items():
         s = summarize(arm)
@@ -375,7 +380,7 @@ def summary_report(
                 f"| {x['hallucinated']} | {x['kana_han']} | {x['faithfulness_sum']} | {p50} "
                 f"| {x['done_length']} | {x['thinking']} "
                 f"| {x['citation_errors']} | {x['citations_in_range']} | {x['cites_expected_page']} "
-                f"| {x['guard_applied']} | {retry} |"
+                f"| {x['context_expected_page']} | {x['guard_applied']} | {retry} |"
             )
     if baseline:
         lines += [
