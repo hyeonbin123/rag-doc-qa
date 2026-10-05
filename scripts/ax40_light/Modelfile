@@ -1,0 +1,9 @@
+FROM ./A.X-4.0-Light-Q4_K_M-gotmpl.gguf
+TEMPLATE """{{- range .Messages }}
+{{- if eq .Role "system" }}<|im_start|><|system|>{{ .Content }}<|im_end|>
+{{- else if eq .Role "user" }}<|im_start|><|user|>{{ .Content }}<|im_end|>
+{{- else if eq .Role "assistant" }}<|im_start|><|assistant|>{{ .Content }}<|im_end|>
+{{- end }}
+{{- end }}<|im_start|><|assistant|>"""
+PARAMETER stop "<|im_end|>"
+PARAMETER stop "<|endoftext|>"
