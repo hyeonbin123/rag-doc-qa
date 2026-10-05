@@ -295,6 +295,28 @@ def test_the_prompt_match_tolerance_catches_a_missing_assistant_header(tmp_path)
     assert within_1["checks"]["prompt_match"]["ok"] is False
 
 
+def test_gate_report_gives_every_row_the_header_s_columns(tmp_path):
+    # Only the A.X run checks its prompt counts (rule 7). The 2026-10-05 report took its
+    # header from the first run, so that row had one cell more than the header.
+    records = [gen(f"k{i}", generation_prompt_tokens_counted=1500) for i in range(1, 13)]
+    path = write_gate_run(tmp_path, records, GATE_META)
+    results = [
+        generator_arms.gate(path, digest="abc123"),
+        generator_arms.gate(path, digest="abc123", require_prompt_match=True),
+    ]
+
+    lines = generator_arms.gate_report(results).splitlines()
+    table = [line for line in lines if line.startswith("|")]
+
+    header = [c.strip() for c in table[0].strip("|").split("|")]
+    assert "prompt_match" in header
+    assert {line.count("|") for line in table} == {table[0].count("|")}
+    first, second = ([c.strip() for c in row.strip("|").split("|")] for row in table[2:])
+    column = header.index("prompt_match")
+    assert first[column] == "-" and second[column].startswith("ok: ")
+    assert first[-1] == second[-1] == "12 items, median 0.0, max abs 0"
+
+
 def test_arm_files_pair_with_their_judgments(tmp_path):
     gen_path = tmp_path / "v13_sel_g0_qa_dev_ko.raw.gen.jsonl"
     write_jsonl(gen_path, [generator_arms.unguarded_record(gen("k1"))])

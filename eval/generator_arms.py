@@ -396,6 +396,9 @@ def summary_report(
 
 
 def gate_report(results: list[dict]) -> str:
+    # Runs can have different checks (only the A.X run checks its prompt counts), so the
+    # columns are every check any run has; a run without one gets "-" there.
+    names = list(dict.fromkeys(name for r in results for name in r["checks"]))
     lines = [
         "# Generation smoke gate (docs/experiments.md v13)",
         "",
@@ -404,13 +407,16 @@ def gate_report(results: list[dict]) -> str:
         f"done_reason=length <= {GATE_MAX_LENGTH_STOPS}, no reasoning output, "
         "model fully on the GPU (size_vram == size), pinned digest, p50 limit",
         "",
-        "| run | model | think | passed | "
-        + " | ".join(results[0]["checks"])
-        + " | prompt count Ollama - tokenizer |",
-        "|---|---|---|---|" + "---|" * len(results[0]["checks"]) + "---|",
+        "| run | model | think | passed | " + " | ".join(names) + " | prompt count Ollama - tokenizer |",
+        "|---|---|---|---|" + "---|" * len(names) + "---|",
     ]
     for r in results:
-        cells = [f"{'ok' if c['ok'] else 'FAIL'}: {c['value']}" for c in r["checks"].values()]
+        cells = [
+            f"{'ok' if r['checks'][name]['ok'] else 'FAIL'}: {r['checks'][name]['value']}"
+            if name in r["checks"]
+            else "-"
+            for name in names
+        ]
         pc = r["prompt_count"]
         lines.append(
             f"| {r['run']} | {r['model']} | {r['think']} | {r['passed']} | {' | '.join(cells)} "
