@@ -27,7 +27,7 @@ Usage:
         [--max-p50-ms 10000] [--require-prompt-match MODEL] [--prompt-tolerance 16]
     python -m eval.generator_arms summary --tag v13_sel --label J1 --baseline G0
         --arm G0=eval/runs/v13_sel_g0_qa_dev.raw.gen.jsonl,eval/runs/v13_sel_g0_qa_dev_ko.raw.gen.jsonl
-        --arm G1=...
+        --arm G1=... [--share G0+LG=G0]
 """
 
 from __future__ import annotations
@@ -304,11 +304,42 @@ def _answers_differ(base: list[dict], other: list[dict]) -> int:
     return sum(1 for r in base if by_key.get((r["dataset"], r["id"])) != r["answer_sha1"])
 
 
+JUDGMENT_FIELDS = ("correctness", "faithfulness", "hallucinated", "judged")
+
+
+def share_unguarded_judgments(lg_rows: list[dict], raw_rows: list[dict], raw_name: str) -> dict:
+    """Give the lg arm the raw arm's judgment wherever the guard did not fire.
+
+    Those answers are the same text in both arms, yet J1 can score the same answer a point
+    apart when it sits at another place in the judge order (docs/experiments.md v13, rule
+    change 2026-10-05). Sharing keeps that noise out of the guard's effect; the lg arm's own
+    differing judgments are only counted.
+    """
+    by_key = {(r["dataset"], r["id"]): r for r in raw_rows}
+    shared = differs = 0
+    for row in lg_rows:
+        raw = by_key.get((row["dataset"], row["id"]))
+        if raw is None or row["guard_applied"]:
+            continue
+        if any(row[f] != raw[f] for f in JUDGMENT_FIELDS):
+            differs += 1
+        row.update({f: raw[f] for f in JUDGMENT_FIELDS})
+        shared += 1
+    return {"from": raw_name, "items": shared, "own_judgment_differs": differs}
+
+
 def summary_report(
-    tag: str, label: str, arms: dict[str, list[Path]], baseline: str | None
+    tag: str,
+    label: str,
+    arms: dict[str, list[Path]],
+    baseline: str | None,
+    shares: dict[str, str] | None = None,
 ) -> tuple[str, dict]:
     rows = {name: arm_rows(paths, label) for name, paths in arms.items()}
     data = {"tag": tag, "label": label, "baseline": baseline, "arms": {}}
+    shared_notes = {}
+    for lg_name, raw_name in (shares or {}).items():
+        shared_notes[lg_name] = share_unguarded_judgments(rows[lg_name], rows[raw_name], raw_name)
     lines = [
         f"# Generator comparison ({tag}, judge {label})",
         "",
@@ -317,6 +348,11 @@ def summary_report(
         "- correctness/faithfulness: J1 sums over judged items; kana/han: answers with kana or Han anywhere",
         "- citations: replies that break the schema; cited numbers within 1..k; a cited passage on an "
         "expected page (raw-arm items the guard regenerated have no citations of their own and are left out)",
+        *[
+            f"- {lg}: items the guard left alone take {n['from']}'s judgment ({n['items']} items; "
+            f"its own judgment differed on {n['own_judgment_differs']})"
+            for lg, n in shared_notes.items()
+        ],
         "",
         "| arm | lang | n | correctness sum | hallucinated | kana/han | faithfulness sum | gen p50 ms "
         "| done=length | thinking | citation errors | cites in range | cites expected page | guard applied "
@@ -326,6 +362,8 @@ def summary_report(
     for name, arm in rows.items():
         s = summarize(arm)
         data["arms"][name] = {"summary": s, "files": [display_path(p) for p in arms[name]], "rows": arm}
+        if name in shared_notes:
+            data["arms"][name]["shared"] = shared_notes[name]
         for lang in ("en", "ko", "all"):
             x = s[lang]
             if not x["n"]:
@@ -414,6 +452,12 @@ def main() -> int:
     su.add_argument("--label", default="J1")
     su.add_argument("--baseline", default=None)
     su.add_argument("--arm", action="append", required=True, help="NAME=gen1,gen2,...")
+    su.add_argument(
+        "--share",
+        action="append",
+        default=[],
+        help="LG=RAW: the LG arm takes RAW's judgment where the guard did not fire",
+    )
     args = parser.parse_args()
     sys.stdout.reconfigure(errors="backslashreplace")  # see eval/run_answer_eval.py
 
@@ -445,7 +489,8 @@ def main() -> int:
     for spec in args.arm:
         name, files = spec.split("=", 1)
         arms[name] = [Path(f) for f in files.split(",") if f]
-    report, data = summary_report(args.tag, args.label, arms, args.baseline)
+    shares = dict(spec.split("=", 1) for spec in args.share)
+    report, data = summary_report(args.tag, args.label, arms, args.baseline, shares)
     path = _write(f"generator_summary_{args.tag}", report, data)
     print(report)
     print(f"\nwritten to {path}")

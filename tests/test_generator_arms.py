@@ -307,3 +307,34 @@ def test_arm_files_pair_with_their_judgments(tmp_path):
 
     assert rows[0]["correctness"] == 5 and rows[0]["dataset"] == "qa_dev_ko.jsonl"
     assert json.loads(json.dumps(rows))  # plain data, kept in the summary JSON
+
+
+def test_an_lg_arm_can_share_the_raw_judgments_of_items_the_guard_left_alone(tmp_path):
+    # docs/experiments.md v13, rule change 2026-10-05: the same answer judged at another place
+    # in the judge order can move by a point, so where the guard did not fire the lg arm takes
+    # the raw arm's judgment; its own differing judgments are only counted.
+    records = [gen("k1", **GUARDED), gen("k2"), gen("k3")]
+    paths = {}
+    for arm, derive in (("raw", generator_arms.unguarded_record), ("lg", generator_arms.guarded_record)):
+        gen_path = tmp_path / f"v13_adopt_g0_qa_test3b_ko.{arm}.gen.jsonl"
+        write_jsonl(gen_path, [derive(r) for r in records])
+        paths[arm] = gen_path
+    scores = {"raw": {"k1": 2, "k2": 4, "k3": 5}, "lg": {"k1": 5, "k2": 3, "k3": 5}}
+    for arm, by_id in scores.items():
+        write_jsonl(
+            tmp_path / f"v13_adopt_g0_qa_test3b_ko.{arm}.J1.judge.jsonl",
+            [
+                {"id": i, "correctness_score": s, "faithfulness_score": s, "hallucinated": s < 3}
+                for i, s in by_id.items()
+            ],
+        )
+    arms = {"G0": [paths["raw"]], "G0+LG": [paths["lg"]]}
+
+    _, own = generator_arms.summary_report("t", "J1", arms, "G0")
+    _, shared = generator_arms.summary_report("t", "J1", arms, "G0", shares={"G0+LG": "G0"})
+
+    assert own["arms"]["G0+LG"]["summary"]["all"]["correctness_sum"] == 13
+    lg = shared["arms"]["G0+LG"]
+    assert lg["summary"]["all"]["correctness_sum"] == 5 + 4 + 5  # k1 its own, k2 and k3 from G0
+    assert lg["shared"] == {"from": "G0", "items": 2, "own_judgment_differs": 1}
+    assert shared["arms"]["G0+LG"]["vs_baseline"]["all"].startswith("+3")
