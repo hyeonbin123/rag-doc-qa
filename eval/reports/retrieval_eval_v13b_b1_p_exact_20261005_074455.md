@@ -1,0 +1,66 @@
+# Retrieval eval report (v13b_b1_p_exact)
+
+- date: 2026-10-05T07:44:42.092484+00:00
+- embedding models: en BAAI/bge-small-en-v1.5, ko ibm-granite/granite-embedding-311m-multilingual-r2
+- database: ragdb_p1_g311
+- top_k: 10
+- retrieval mode: dense
+- search: exact (index scans off); dense plan: ko Sort > Seq Scan on chunks c > Seq Scan on documents d
+- score floor: ko 0.3
+- stored vectors checked: ko chunks vs ibm-granite/granite-embedding-311m-multilingual-r2@44399559930365213510b1ee2eb15ded83374f0e:dim384 (min cosine 1.0)
+- dataset: qa_test3b_ko.jsonl
+- questions: 40
+- hit: a chunk of an expected page, in any translation
+- short: questions with fewer than 5 results (the score floor cut the rest)
+- latency: retrieval only (after the query embedding), this machine's CPU
+
+## Aggregate metrics
+
+| set | questions | Hit@3 | Hit@5 | Hit@10 | MRR | short | latency p50 (ms) | latency p95 (ms) |
+|---|---|---|---|---|---|---|---|---|
+| all | 40 | 0.95 | 0.97 | 1.00 | 0.909 | 0 | 9 | 11 |
+
+## Per-question
+
+| id | hit@3 | hit@5 | hit@10 | RR | results | ms | question |
+|---|---|---|---|---|---|---|---|
+| n007 | True | True | True | 1.00 | 10 | 13 | Query로 문자열 최소/최대 길이 제한이랑 정규식 검증을 거는 방법 알려주세요. |
+| n008 | True | True | True | 1.00 | 10 | 9 | 쿼리 파라미터 이름에 item-query처럼 하이픈을 쓰고 싶은데 파이썬 변수명으론 안 되잖아요. alias로 해결되나요? |
+| n010 | True | True | True | 1.00 | 10 | 9 | Path로 숫자형 경로 파라미터에 gt, le 같은 범위 검증을 걸 수 있습니까? |
+| n013 | True | True | True | 1.00 | 10 | 8 | 한 엔드포인트에서 경로 파라미터, 쿼리 파라미터, 요청 본문을 같이 받으면 FastAPI는 각각을 어떻게 구분하나요? |
+| n017 | True | True | True | 1.00 | 10 | 8 | 중첩된 Pydantic 모델이나 리스트, set 타입 필드는 어떻게 정의하나요? |
+| n019 | True | True | True | 1.00 | 10 | 9 | 응답에서 비밀번호 같은 민감한 필드를 빼고 싶으면 response_model을 어떻게 써야 하나요? |
+| n020 | True | True | True | 1.00 | 10 | 9 | response_model_exclude_unset 옵션은 어떤 상황에서 쓰는 건가요? |
+| n023 | True | True | True | 1.00 | 10 | 8 | 응답 모델에 Union 타입을 지정해서 여러 형태 중 하나를 반환할 수 있나요? |
+| n025 | True | True | True | 0.50 | 10 | 9 | HTML 폼 데이터를 받으려면 따로 설치해야 하는 패키지가 있나요? 선언은 어떻게 하죠? |
+| n027 | True | True | True | 1.00 | 10 | 10 | 여러 파일을 한 번에 업로드받는 엔드포인트는 어떻게 만들어? |
+| n028 | True | True | True | 1.00 | 10 | 11 | 파일이랑 폼 필드를 같이 받는 요청에서 JSON 바디도 함께 받을 수 있나요? |
+| n029 | True | True | True | 1.00 | 10 | 8 | 업로드된 파일의 원래 파일명이랑 content type은 어떻게 확인하나요? |
+| n030 | True | True | True | 1.00 | 10 | 9 | Header로 헤더 값을 읽을 때 언더스코어가 하이픈으로 자동 변환된다는 게 무슨 뜻이야? |
+| n032 | True | True | True | 1.00 | 10 | 9 | 응답에 쿠키를 설정하거나 커스텀 헤더를 추가하려면 어떻게 하나요? |
+| n034 | True | True | True | 1.00 | 10 | 9 | 커스텀 예외 클래스를 만들고 앱 전역에서 처리하는 exception handler를 등록하고 싶어요. |
+| n035 | False | True | True | 0.25 | 10 | 9 | 요청 검증에 실패했을 때 나오는 422 에러 응답 형식을 우리 회사 포맷으로 바꿀 수 있나요? |
+| n036 | True | True | True | 1.00 | 10 | 8 | RequestValidationError 핸들러를 덮어쓰면서 FastAPI 기본 핸들러 동작도 재사용하는 방법이 있을까? |
+| n039 | True | True | True | 1.00 | 10 | 8 | 의존성 안에서 또 다른 의존성을 쓰는 하위 의존성은 어떻게 동작해? |
+| n047 | True | True | True | 1.00 | 10 | 8 | OAuth2PasswordBearer로 토큰 기반 로그인을 구현하는 전체 흐름이 궁금합니다. |
+| n048 | True | True | True | 1.00 | 10 | 8 | JWT 토큰을 발급하고 검증할 때 어떤 라이브러리를 쓰는 게 좋나요? |
+| n050 | True | True | True | 1.00 | 10 | 8 | 현재 로그인한 사용자 정보를 의존성으로 가져오는 get_current_user 같은 함수는 어떻게 만드나요? |
+| n051 | True | True | True | 1.00 | 10 | 10 | 비활성화된 계정은 로그인돼도 API를 못 쓰게 막고 싶은데 의존성을 어떻게 구성하나요? |
+| n054 | True | True | True | 1.00 | 10 | 8 | API 키를 헤더나 쿼리로 받아서 인증하는 방식도 지원합니까? |
+| n055 | True | True | True | 1.00 | 10 | 8 | 토큰 발급 엔드포인트에서 OAuth2PasswordRequestForm은 어떤 필드들을 받나요? |
+| n061 | False | False | True | 0.11 | 10 | 9 | HTTPS 리다이렉트, TrustedHost, GZip 같은 기본 제공 미들웨어는 어떻게 붙여? |
+| n067 | True | True | True | 1.00 | 10 | 8 | pytest에서 async 함수를 테스트하려면 어떻게 해야 해? httpx AsyncClient를 써야 하나? |
+| n077 | True | True | True | 1.00 | 10 | 8 | @app.on_event("startup")은 아직 써도 되나요? deprecated 된 건가요? |
+| n083 | True | True | True | 1.00 | 10 | 8 | Jinja2 템플릿으로 HTML 페이지를 렌더링해서 반환하는 방법 |
+| n086 | True | True | True | 1.00 | 10 | 9 | 기본 JSONResponse 대신 ORJSONResponse를 쓰면 성능이 좋아지나요? |
+| n091 | True | True | True | 0.50 | 10 | 8 | 기본 응답 외에 다른 상태 코드로도 응답하는데 그게 OpenAPI 문서에 안 나와요. 어떻게 표시하나요? |
+| n096 | True | True | True | 1.00 | 10 | 10 | .env 파일에서 설정 값을 읽어오는 방법 |
+| n097 | True | True | True | 1.00 | 10 | 9 | 설정 객체를 lru_cache로 감싸서 한 번만 생성하는 이유가 뭐야? |
+| n099 | True | True | True | 1.00 | 10 | 9 | /docs랑 /redoc 경로를 바꾸거나 운영 환경에서 아예 꺼버리려면? |
+| n105 | True | True | True | 0.50 | 10 | 8 | 엔드포인트 docstring이 문서 설명으로 나오던데, summary랑 description은 따로 어떻게 지정하나요? |
+| n106 | True | True | True | 1.00 | 10 | 8 | Docker로 FastAPI 앱을 배포하려는데 Dockerfile 예시 좀 알려주세요. |
+| n112 | True | True | True | 1.00 | 10 | 9 | FastAPI 버전은 requirements에 어떻게 고정하는 게 좋습니까? 범위로 적어도 되나요? |
+| n113 | True | True | True | 1.00 | 10 | 8 | 경로 함수에서 Request 객체를 직접 받아서 클라이언트 IP나 원본 바디를 읽는 방법 |
+| n115 | True | True | True | 0.50 | 10 | 9 | JSON 바디를 분명히 보냈는데 422 Unprocessable Entity가 계속 떠요. 뭘 잘못한 걸까요? |
+| n116 | True | True | True | 1.00 | 10 | 9 | 쿼리 파라미터 여러 개를 Pydantic 모델 하나로 묶어서 받을 수 있나요? 정의 안 된 파라미터가 오면 거부하게도 할 수 있나요? |
+| n120 | True | True | True | 1.00 | 10 | 8 | OpenAPI callbacks나 webhooks를 문서에 정의하는 방법이 궁금합니다. |

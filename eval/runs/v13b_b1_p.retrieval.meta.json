@@ -1,0 +1,45 @@
+{
+  "date": "2026-10-05T07:44:07.848440+00:00",
+  "tag": "v13b_b1_p",
+  "git_commit": "2aeed8fa9fceb13f6a65c487b8fae4ca6bea78f8",
+  "database": "ragdb_p1_g311",
+  "embedding_models": {
+    "ko": "ibm-granite/granite-embedding-311m-multilingual-r2@44399559930365213510b1ee2eb15ded83374f0e:dim384"
+  },
+  "mode": "dense",
+  "top_k": 10,
+  "score_floors": {
+    "ko": 0.3
+  },
+  "cross_lingual": false,
+  "exact": false,
+  "dense_plans": {
+    "ko": [
+      "Sort",
+      "Seq Scan on chunks c",
+      "Seq Scan on documents d"
+    ]
+  },
+  "datasets": [
+    "qa_test3b_ko.jsonl"
+  ],
+  "vector_checks": [
+    {
+      "language": "ko",
+      "model": "ibm-granite/granite-embedding-311m-multilingual-r2@44399559930365213510b1ee2eb15ded83374f0e:dim384",
+      "checked": 3,
+      "min_cosine": 1.0
+    }
+  ],
+  "torch_threads": 6,
+  "aggregate": {
+    "n": 40,
+    "hit@3": 0.95,
+    "hit@5": 0.975,
+    "hit@10": 1.0,
+    "mrr": 0.9090277777777779,
+    "short": 0,
+    "p50": 8.475750000798143,
+    "p95": 10.544114993535914
+  }
+}
