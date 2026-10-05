@@ -1,0 +1,182 @@
+[
+ {
+  "run": "eval/runs/v13_gate_g0_qa_dev_ko.gen.jsonl",
+  "model": "qwen2.5:7b-instruct",
+  "think": null,
+  "language_guard": false,
+  "questions": 32,
+  "passed": true,
+  "checks": {
+   "full_gpu": {
+    "ok": true,
+    "value": {
+     "size": 5133943438,
+     "size_vram": 5133943438,
+     "context_length": 8192
+    }
+   },
+   "digest": {
+    "ok": true,
+    "value": "845dbda0ea48ed749caafd9e6037047aa19acfcfd82e704d7ca97d631a0b697e"
+   },
+   "no_thinking": {
+    "ok": true,
+    "value": 0
+   },
+   "citations_first_10": {
+    "ok": true,
+    "value": "10/10 valid (0 invalid in all 32)"
+   },
+   "done_length": {
+    "ok": true,
+    "value": 0
+   },
+   "p50": {
+    "ok": true,
+    "value": 4984.0
+   }
+  },
+  "prompt_count": {
+   "items": 32,
+   "max_abs_diff": 0,
+   "median_diff": 0.0
+  }
+ },
+ {
+  "run": "eval/runs/v13_gate_g1_qa_dev_ko.gen.jsonl",
+  "model": "qwen3.5:9b",
+  "think": false,
+  "language_guard": false,
+  "questions": 32,
+  "passed": true,
+  "checks": {
+   "full_gpu": {
+    "ok": true,
+    "value": {
+     "size": 5729167604,
+     "size_vram": 5729167604,
+     "context_length": 8192
+    }
+   },
+   "digest": {
+    "ok": true,
+    "value": "6488c96fa5faab64bb65cbd30d4289e20e6130ef535a93ef9a49f42eda893ea7"
+   },
+   "no_thinking": {
+    "ok": true,
+    "value": 0
+   },
+   "citations_first_10": {
+    "ok": true,
+    "value": "10/10 valid (0 invalid in all 32)"
+   },
+   "done_length": {
+    "ok": true,
+    "value": 0
+   },
+   "p50": {
+    "ok": true,
+    "value": 7074.6
+   }
+  },
+  "prompt_count": {
+   "items": 32,
+   "max_abs_diff": 0,
+   "median_diff": 0.0
+  }
+ },
+ {
+  "run": "eval/runs/v13_gate_g2_qa_dev_ko.gen.jsonl",
+  "model": "gemma4:12b-it-qat",
+  "think": false,
+  "language_guard": false,
+  "questions": 32,
+  "passed": true,
+  "checks": {
+   "full_gpu": {
+    "ok": true,
+    "value": {
+     "size": 7967415991,
+     "size_vram": 7967415991,
+     "context_length": 8192
+    }
+   },
+   "digest": {
+    "ok": true,
+    "value": "38044be4f923e5a55264ed7df4eaac2676651a905f735197c504045140c02bd3"
+   },
+   "no_thinking": {
+    "ok": true,
+    "value": 0
+   },
+   "citations_first_10": {
+    "ok": true,
+    "value": "10/10 valid (0 invalid in all 32)"
+   },
+   "done_length": {
+    "ok": true,
+    "value": 0
+   },
+   "p50": {
+    "ok": true,
+    "value": 9598.9
+   }
+  },
+  "prompt_count": {
+   "items": 32,
+   "max_abs_diff": 0,
+   "median_diff": 0.0
+  }
+ },
+ {
+  "run": "eval/runs/v13_gate_g3_qa_dev_ko.gen.jsonl",
+  "model": "a.x-4.0-light:q4_k_m",
+  "think": null,
+  "language_guard": false,
+  "questions": 32,
+  "passed": true,
+  "checks": {
+   "full_gpu": {
+    "ok": true,
+    "value": {
+     "size": 4987929230,
+     "size_vram": 4987929230,
+     "context_length": 8192
+    }
+   },
+   "digest": {
+    "ok": true,
+    "value": "a874a70d2c09d0b718662cc3f52e38a85c34eacfb29284996530edfbc23d8661"
+   },
+   "no_thinking": {
+    "ok": true,
+    "value": 0
+   },
+   "citations_first_10": {
+    "ok": true,
+    "value": "10/10 valid (0 invalid in all 32)"
+   },
+   "done_length": {
+    "ok": true,
+    "value": 1
+   },
+   "p50": {
+    "ok": true,
+    "value": 8611.3
+   },
+   "prompt_match": {
+    "ok": true,
+    "value": {
+     "items": 32,
+     "max_abs_diff": 0,
+     "median_diff": 0.0
+    }
+   }
+  },
+  "prompt_count": {
+   "items": 32,
+   "max_abs_diff": 0,
+   "median_diff": 0.0
+  }
+ }
+]
