@@ -1,0 +1,36 @@
+{
+  "date": "2026-10-08T14:21:05.013282+00:00",
+  "label": "J1",
+  "model": "qwen2.5:7b-instruct",
+  "num_ctx": 8192,
+  "truncate": false,
+  "provider": "ollama",
+  "order": "dataset",
+  "ollama_version": "0.35.1",
+  "ollama_ps_after": {
+    "models": [
+      {
+        "name": "qwen2.5:7b-instruct",
+        "model": "qwen2.5:7b-instruct",
+        "size": 5133943438,
+        "digest": "845dbda0ea48ed749caafd9e6037047aa19acfcfd82e704d7ca97d631a0b697e",
+        "details": {
+          "parent_model": "",
+          "format": "gguf",
+          "family": "qwen2",
+          "families": [
+            "qwen2"
+          ],
+          "parameter_size": "7.6B",
+          "quantization_level": "Q4_K_M"
+        },
+        "expires_at": "2026-10-08T23:28:11.5703475+09:00",
+        "size_vram": 5133943438,
+        "context_length": 8192
+      }
+    ]
+  },
+  "context_in_use": 8192,
+  "tokenizer": "Qwen/Qwen2.5-7B-Instruct@a09a354",
+  "judgments_path": "eval/runs/v13_adopt_g0_qa_test3b_ko.raw.J1.judge.jsonl"
+}

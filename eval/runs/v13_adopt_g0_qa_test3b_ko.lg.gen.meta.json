@@ -1,0 +1,56 @@
+{
+  "date": "2026-10-08T13:32:57.106473+00:00",
+  "tag": "v13_adopt_g0_qa_test3b_ko",
+  "provider": "ollama",
+  "model": "qwen2.5:7b-instruct",
+  "top_k": 5,
+  "retrieval_mode": "dense",
+  "cross_lingual": false,
+  "score_floor": null,
+  "database": "ragdb",
+  "embedding_models": {
+    "ko": "intfloat/multilingual-e5-small"
+  },
+  "vector_checks": [
+    {
+      "language": "ko",
+      "model": "intfloat/multilingual-e5-small",
+      "checked": 3,
+      "min_cosine": 1.0
+    }
+  ],
+  "dataset": "qa_test3b_ko.jsonl",
+  "order": "dataset",
+  "seed": null,
+  "git_commit": "5ce99179b53944fb1c85e3db9a1acf1ae5d0c425",
+  "ollama_version": "0.35.1",
+  "ollama_ps_after": {
+    "models": [
+      {
+        "name": "qwen2.5:7b-instruct",
+        "model": "qwen2.5:7b-instruct",
+        "size": 5133943438,
+        "digest": "845dbda0ea48ed749caafd9e6037047aa19acfcfd82e704d7ca97d631a0b697e",
+        "details": {
+          "parent_model": "",
+          "format": "gguf",
+          "family": "qwen2",
+          "families": [
+            "qwen2"
+          ],
+          "parameter_size": "7.6B",
+          "quantization_level": "Q4_K_M"
+        },
+        "expires_at": "2026-10-08T22:41:42.2231301+09:00",
+        "size_vram": 5133943438,
+        "context_length": 8192
+      }
+    ]
+  },
+  "model_digest": "845dbda0ea48ed749caafd9e6037047aa19acfcfd82e704d7ca97d631a0b697e",
+  "think": null,
+  "language_guard": true,
+  "records_path": "eval/runs/v13_adopt_g0_qa_test3b_ko.gen.jsonl",
+  "arm": "lg",
+  "derived_from": "eval/runs/v13_adopt_g0_qa_test3b_ko.gen.jsonl"
+}
