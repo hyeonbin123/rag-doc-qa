@@ -1,0 +1,56 @@
+{
+  "date": "2026-10-08T16:43:26.577463+00:00",
+  "tag": "v13b_b2_g3_b0",
+  "provider": "ollama",
+  "model": "a.x-4.0-light:q4_k_m",
+  "top_k": 5,
+  "retrieval_mode": "dense",
+  "cross_lingual": false,
+  "score_floor": 0.3,
+  "database": "ragdb_p1_e5s",
+  "embedding_models": {
+    "ko": "intfloat/multilingual-e5-small"
+  },
+  "vector_checks": [
+    {
+      "language": "ko",
+      "model": "intfloat/multilingual-e5-small",
+      "checked": 3,
+      "min_cosine": 1.0
+    }
+  ],
+  "dataset": "qa_test3b_ko.jsonl",
+  "order": "dataset",
+  "seed": null,
+  "git_commit": "6fd2c7a5887f2a8875412ae152147da0ce522f5a",
+  "ollama_version": "0.35.1",
+  "ollama_ps_after": {
+    "models": [
+      {
+        "name": "a.x-4.0-light:q4_k_m",
+        "model": "a.x-4.0-light:q4_k_m",
+        "size": 4987929230,
+        "digest": "a874a70d2c09d0b718662cc3f52e38a85c34eacfb29284996530edfbc23d8661",
+        "details": {
+          "parent_model": "",
+          "format": "gguf",
+          "family": "qwen2",
+          "families": [
+            "qwen2"
+          ],
+          "parameter_size": "7.3B",
+          "quantization_level": "Q4_K_M"
+        },
+        "expires_at": "2026-10-09T01:53:50.1458144+09:00",
+        "size_vram": 4987929230,
+        "context_length": 8192
+      }
+    ]
+  },
+  "model_digest": "a874a70d2c09d0b718662cc3f52e38a85c34eacfb29284996530edfbc23d8661",
+  "think": null,
+  "language_guard": true,
+  "records_path": "eval/runs/v13b_b2_g3_b0.gen.jsonl",
+  "arm": "raw",
+  "derived_from": "eval/runs/v13b_b2_g3_b0.gen.jsonl"
+}
