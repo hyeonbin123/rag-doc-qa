@@ -54,7 +54,8 @@ def system_prompt_for(prompt: str, language: Language) -> str:
     return prompt + KOREAN_ANSWER_RULE if language == "ko" else prompt
 
 
-# The language guard (docs/experiments.md v13, off unless LANGUAGE_GUARD is set): a Korean
+# The language guard (docs/experiments.md v13; on by default since the v13 adoption through
+# Settings.language_guard, LANGUAGE_GUARD=false turns it off): a Korean
 # answer with kana or Han characters outside code is generated once more with this rule in
 # place of KOREAN_ANSWER_RULE. The docs never use those scripts, so in an answer they mean
 # the model slipped into Japanese or Chinese (v10-v12 saw it in the 7B model's answers).

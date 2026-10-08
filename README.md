@@ -214,7 +214,9 @@ uv run python -m eval.run_retrieval_eval --mode hybrid --dataset eval/qa_dev.jso
 uv run python -m eval.run_retrieval_eval --mode rerank --dataset eval/qa_dev.jsonl --tag dev_rerank
 uv run python -m eval.run_retrieval_eval --mode rerank --dataset eval/qa_dev_ko.jsonl --tag dev_ko_rerank
 # 두 평가 모두 --dataset으로 질문셋을 고른다 (v7은 eval/qa_test2.jsonl, 한국어는 eval/qa_test2_ko.jsonl)
-uv run python -m eval.run_answer_eval --mode rerank --dataset eval/qa_test2.jsonl --tag v7_rerank
+uv run python -m eval.run_answer_eval --mode rerank --dataset eval/qa_test2.jsonl --judge-model qwen2.5:7b-instruct --tag v7_rerank
+# 위 명령은 지금 기본값(A.X-4.0-Light, 언어 가드 켬)으로 답을 만든다. v7 때 설정(생성도 qwen2.5:7b-instruct, 가드 없음, v11 이전 판정 호출)으로 돌리려면
+# 앞에 OLLAMA_MODEL_NAME=qwen2.5:7b-instruct LANGUAGE_GUARD=false를 붙이고 --judge-num-ctx 0을 더한다
 # 판정 모델은 qwen2.5:7b-instruct(v11 이후 J1)로 고정한다. --judge-model(run_judge는 --model)을 생략하면 생성 모델이 판정도 하므로,
 # 기본 생성 모델이 A.X-4.0-Light인 v13 이후에는 꼭 준다
 OLLAMA_MODEL_NAME=qwen2.5:14b-instruct uv run python -m eval.run_answer_eval --dataset eval/qa_test2.jsonl --judge-model qwen2.5:7b-instruct --tag v10_en_14b
