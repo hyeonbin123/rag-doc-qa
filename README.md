@@ -10,11 +10,11 @@ FastAPI 공식 문서(영어 원문 154개, 한국어 번역 123개, 청크 1,53
 |---|---|
 | 기능 | JWT 로그인 → 질문 → 문서 검색 → 인용이 붙은 답변. 질문마다 검색 결과와 단계별 지연을 로그로 남김. 한국어 질문은 한국어 번역 문서에서 찾아 한국어로 답함. 브라우저에서 바로 써 볼 수 있는 채팅 화면 포함 |
 | 백엔드 | FastAPI(비동기), SQLAlchemy 2.0 + asyncpg, Alembic, PostgreSQL 16 + pgvector, Docker Compose, GitHub Actions CI |
-| AI | 언어별 로컬 임베딩(영어 `BAAI/bge-small-en-v1.5`, 한국어 `intfloat/multilingual-e5-small`), 로컬 LLM Qwen2.5-7B(Ollama) 또는 Claude API, 언어별 cross-encoder 재정렬 |
+| AI | 언어별 로컬 임베딩(영어 `BAAI/bge-small-en-v1.5`, 한국어 `intfloat/multilingual-e5-small`), 로컬 LLM A.X-4.0-Light(Qwen2.5-7B 계열의 한국어 특화 모델을 직접 4비트 GGUF로 변환, Ollama. v13에서 Qwen2.5-7B 대신 채택) 또는 Claude API, 언어별 cross-encoder 재정렬 |
 | 검색 모드 | `dense` / `hybrid`(벡터 + SQL로 계산한 BM25, 가중 RRF) / `rerank`(cross-encoder 재채점). 기본값은 `dense` (영어는 아래 v7, 한국어는 v9) |
 | 평가 | 질문셋 9개(영어: 테스트 30, 튜닝용 32, 새 테스트 43문항 / 한국어: 튜닝용 32·40, 테스트 43·40, 다음 단계용 40문항 / 다음 단계용 40문항의 영어판), Hit@k·MRR·검색 지연, LLM 판정 답변 정확도 |
 | 품질 관리 | pytest 179개(통합 테스트는 실제 Postgres + pgvector 사용), push마다 CI에서 ruff + pytest |
-| 응답 시간 | 답변 생성 중앙값 약 4~5초 (v10 측정: 영어 5.3초, 한국어 4.3초. 로컬 Qwen2.5-7B, RTX 2080 Ti) |
+| 응답 시간 | 답변 생성 중앙값 약 9초 (v13 채택 측정: 영어 10.2초, 한국어 7.6초. 로컬 A.X-4.0-Light, RTX 2080 Ti, 데스크톱 앱이 GPU를 약 25% 쓰던 부하 조건). v12까지의 Qwen2.5-7B는 약 4~5초 (v10: 영어 5.3초, 한국어 4.3초) |
 
 ## 구조
 
@@ -112,9 +112,9 @@ flowchart LR
 - 한국어 튜닝용 셋은 영어 튜닝용 셋을 옮긴 것이라, 문서를 보면서 쓴 질문의 편향을 그대로 가짐. v9에서 이 셋은 후보를 줄였을 때의 위험을 잡아내지 못했음.
 - 한국어 번역은 영어 문서 155개 중 124개에만 있음. API 레퍼런스, 릴리스 노트 같은 페이지는 번역이 없어서, 그 내용을 한국어로 물으면 답을 찾지 못함.
 - 질문 언어는 한글이 한 글자라도 있으면 한국어로 판별함. API 요청에 `language`를 넣어 직접 지정할 수도 있음.
-- 로컬 Qwen2.5-7B는 한국어 답변에 가끔 일본어 단어(예: "엔드ポイント")나 중국어 문장을 섞음(한국어 테스트셋 43문항 중 3개). 14B에서는 없어졌지만, 이 PC의 GPU(11GB)에서는 생성이 3~5배 느려져 쓰지 않음 (v10). v12에서 한국어 임베딩을 바꾼 조건의 답변 하나가 한국어로 답한 뒤 같은 내용을 중국어로 다시 써서, 검색이 좋아진 모델을 채택하지 못했음.
+- v12까지의 기본 생성 모델 Qwen2.5-7B는 한국어 답변에 가끔 일본어 단어(예: "엔드ポイント")나 중국어 문장을 섞음(한국어 테스트셋 43문항 중 3개). 14B에서는 없어졌지만, 이 PC의 GPU(11GB)에서는 생성이 3~5배 느려져 쓰지 않음 (v10). v12에서 한국어 임베딩을 바꾼 조건의 답변 하나가 한국어로 답한 뒤 같은 내용을 중국어로 다시 써서, 검색이 좋아진 모델을 채택하지 못했음. v13에서 바꾼 A.X-4.0-Light는 한국어 155문항에서 섞인 답이 0개였고(Qwen2.5-7B는 5개), 섞인 답이 나오면 한 번 다시 만드는 언어 가드(`LANGUAGE_GUARD`)도 켜 둠. 대신 답이 3~5배 길어 생성이 약 1.7배 느림.
 - 질문셋이 30~43문항이라, 문항 하나가 순위 한 칸 바뀌면 MRR이 0.02 안팎 움직임. 방법 간 작은 차이는 가려내기 어려움.
-- 판정은 로컬 7B 모델이 하므로 오판이 있음. 예를 들어 검색 실패 후 "컨텍스트에 정보가 없다"는 올바른 거절 응답을 환각으로 표시한 적이 있음. 평가 순서만 바꿔도 43문항 합계가 2~5점 움직였음 (v10). Ollama 0.35.1에서 다시 재 보니, 같은 답변을 순서만 바꿔 다시 판정하면 셋 합계가 최대 1점, 판정 문맥 크기(4096 → 8192)만 바꿔도 한 셋에서 5점 움직였음 (v11). 그래서 비교하는 조건들은 같은 판정 설정과 같은 순서로 판정함. 어느 판정 설정이 사람 판단에 더 가까운지는 재지 않았음.
+- 판정은 로컬 7B 모델이 하므로 오판이 있음. 예를 들어 검색 실패 후 "컨텍스트에 정보가 없다"는 올바른 거절 응답을 환각으로 표시한 적이 있음. 평가 순서만 바꿔도 43문항 합계가 2~5점 움직였음 (v10). Ollama 0.35.1에서 다시 재 보니, 같은 답변을 순서만 바꿔 다시 판정하면 셋 합계가 최대 1점, 판정 문맥 크기(4096 → 8192)만 바꿔도 한 셋에서 5점 움직였음 (v11). 그래서 비교하는 조건들은 같은 판정 설정과 같은 순서로 판정함. 어느 판정 설정이 사람 판단에 더 가까운지는 재지 않았음. v13에서 고른 A.X-4.0-Light는 답이 길고 판정 모델과 같은 Qwen2.5-7B 계열이라, 판정의 긴 답 선호나 자기선호가 점수에 섞였을 수 있음(크기는 모름).
 - 키워드 커버리지는 거친 지표임. 판정 정확도가 5점인데 핵심 이름을 다르게 표현해 커버리지가 0인 문항이 있어서, 두 지표를 함께 봐야 함.
 - Claude API 경로는 코드와 단위 테스트만 있고, 실제 API로는 돌려 보지 않았음(크레딧 없음).
 
@@ -123,7 +123,9 @@ flowchart LR
 ### 사전 준비
 - Docker Desktop (WSL2 backend)
 - 생성 프로바이더 중 하나:
-  - **Ollama**(기본, 무료): [ollama.com](https://ollama.com) 설치 후 `ollama pull qwen2.5:7b-instruct`. VRAM 6GB 이상 GPU 권장.
+  - **Ollama**(기본, 무료): [ollama.com](https://ollama.com) 설치. VRAM 6GB 이상 GPU 권장.
+    - 기본 생성 모델 A.X-4.0-Light(`a.x-4.0-light:q4_k_m`)는 Ollama 라이브러리에 없어서 직접 만든다. Hugging Face `skt/A.X-4.0-Light`(Apache-2.0, safetensors 약 14.5GB)를 llama.cpp로 GGUF로 바꾸고 Q4_K_M으로 양자화한 뒤 `ollama create`로 등록한다. 단계별 명령은 `scripts/ax40_light/convert.py` 맨 위 설명에, 템플릿은 `scripts/ax40_light/Modelfile`에 있다. 만든 모델의 digest(`ollama list`)가 `a874a70d…`면 측정에 쓴 모델과 같다. 문맥 8192에서 GPU 메모리를 약 5.0GB 쓴다.
+    - 변환 없이 바로 써 보려면 `ollama pull qwen2.5:7b-instruct` 후 `.env`의 `OLLAMA_MODEL_NAME`을 `qwen2.5:7b-instruct`로 바꾼다 (v12까지의 기본값). 답변 평가의 판정 모델도 이 모델이다.
   - **Anthropic**: `ANTHROPIC_API_KEY` 발급 후 `.env`에 `GENERATION_PROVIDER=anthropic` 설정
 
 ### 1. 환경 변수
@@ -176,7 +178,7 @@ API를 직접 호출해 보려면 Swagger UI를 쓴다.
 4. `POST /query/ask` → **Try it out** → `{"question": "How do I add CORS to my FastAPI app?"}` → **Execute**. 응답에 답변(`answer`), 출처(`citations`), 단계별 지연(`latency_ms`)이 나온다.
 5. `GET /logs`에서 지금까지 한 질문과 검색 결과를 다시 볼 수 있다.
 
-로컬 Ollama로 답변을 생성하므로 한 번에 몇 초가 걸린다. 생성 시간 중앙값은 약 4~5초였고(v10), 서버를 막 띄운 직후에는 10~20초가 걸린 적도 있다.
+로컬 Ollama로 답변을 생성하므로 한 번에 몇 초가 걸린다. 생성 시간 중앙값은 A.X-4.0-Light로 약 9초(v13, 부하 조건), Qwen2.5-7B로 약 4~5초(v10)였고, 서버를 막 띄운 직후에는 10~20초가 걸린 적도 있다.
 
 ## 로컬 개발 (Docker 없이 코드만 보는 경우)
 
@@ -198,7 +200,7 @@ uv run pytest
 
 ```bash
 uv run python -m eval.run_retrieval_eval --tag v1_baseline
-uv run python -m eval.run_answer_eval --tag v1_baseline
+uv run python -m eval.run_answer_eval --judge-model qwen2.5:7b-instruct --tag v1_baseline
 # 판정 LLM 호출 없이 빠르게 반복하려면
 uv run python -m eval.run_answer_eval --skip-judge --tag quick
 # (청커를 바꿨다면 CHUNKER_VERSION을 올리고 재수집한 뒤)
@@ -213,10 +215,11 @@ uv run python -m eval.run_retrieval_eval --mode rerank --dataset eval/qa_dev.jso
 uv run python -m eval.run_retrieval_eval --mode rerank --dataset eval/qa_dev_ko.jsonl --tag dev_ko_rerank
 # 두 평가 모두 --dataset으로 질문셋을 고른다 (v7은 eval/qa_test2.jsonl, 한국어는 eval/qa_test2_ko.jsonl)
 uv run python -m eval.run_answer_eval --mode rerank --dataset eval/qa_test2.jsonl --tag v7_rerank
-# 생성 모델을 비교할 때는 --judge-model로 판정 모델을 고정한다 (생략하면 생성 모델이 판정도 함)
+# 판정 모델은 qwen2.5:7b-instruct(v11 이후 J1)로 고정한다. --judge-model(run_judge는 --model)을 생략하면 생성 모델이 판정도 하므로,
+# 기본 생성 모델이 A.X-4.0-Light인 v13 이후에는 꼭 준다
 OLLAMA_MODEL_NAME=qwen2.5:14b-instruct uv run python -m eval.run_answer_eval --dataset eval/qa_test2.jsonl --judge-model qwen2.5:7b-instruct --tag v10_en_14b
 # 저장된 답변을 다시 판정 (생성 없이). --num-ctx 0은 v10까지의 판정 호출(Ollama 기본 문맥)
-uv run python -m eval.run_judge eval/runs/v10_en_14b.gen.jsonl --label J1
+uv run python -m eval.run_judge eval/runs/v10_en_14b.gen.jsonl --label J1 --model qwen2.5:7b-instruct
 # 두 판정 결과를 문항 단위로 비교 (대응표본 bootstrap 90% 구간, 오른·내린 문항 수), 판정 프롬프트 잘림 집계
 uv run python -m eval.compare_judgments pair --title "J1 - J0" --tag cmp --a eval/runs/x.J0.judge.jsonl --b eval/runs/x.J1.judge.jsonl
 uv run python -m eval.compare_judgments truncation --tag trunc --ctx 4096 eval/runs/x.J0.judge.jsonl

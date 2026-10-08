@@ -296,10 +296,12 @@ def test_the_service_takes_think_and_the_guard_from_settings(monkeypatch):
         generation.get_generation_service.cache_clear()
 
 
-def test_think_and_the_guard_default_to_the_v12_behaviour(monkeypatch):
+def test_the_defaults_are_the_v13_adoption(monkeypatch):
+    monkeypatch.delenv("OLLAMA_MODEL_NAME", raising=False)
     monkeypatch.delenv("OLLAMA_THINK", raising=False)
     monkeypatch.delenv("LANGUAGE_GUARD", raising=False)
     settings = Settings(database_url="x", jwt_secret_key="y", _env_file=None)
 
+    assert settings.ollama_model_name == "a.x-4.0-light:q4_k_m"
     assert settings.ollama_think is None
-    assert settings.language_guard is False
+    assert settings.language_guard is True

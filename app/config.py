@@ -17,12 +17,15 @@ class Settings(BaseSettings):
     anthropic_api_key: str = ""
     claude_model_name: str = "claude-sonnet-5"
     ollama_base_url: str = "http://localhost:11434"
-    ollama_model_name: str = "qwen2.5:7b-instruct"
+    # A.X-4.0-Light (Q4_K_M), built locally with scripts/ax40_light/; adopted in v13 over
+    # qwen2.5:7b-instruct, which stays the judge (docs/experiments.md v13).
+    ollama_model_name: str = "a.x-4.0-light:q4_k_m"
     # Sent as Ollama's `think` field when set; models that reason by default (qwen3.5)
     # need false. Unset sends no field, as before v13 (docs/experiments.md).
     ollama_think: bool | None = None
-    # Regenerate once a Korean answer that slipped into Chinese or Japanese (v13).
-    language_guard: bool = False
+    # Regenerate once a Korean answer that slipped into Chinese or Japanese (v13; on since
+    # the v13 adoption).
+    language_guard: bool = True
     embedding_model_name: str = "BAAI/bge-small-en-v1.5"
     # Korean docs and questions need a multilingual model; English keeps the English
     # one because the multilingual model scored far lower on the English test sets.
