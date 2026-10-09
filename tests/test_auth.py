@@ -140,11 +140,23 @@ async def test_a_72_byte_password_registers_and_logs_in(client):
 
 
 @pytest.mark.asyncio
-async def test_register_rejects_a_malformed_email(client):
-    resp = await client.post(
-        "/auth/register", json={"email": "not-an-email", "password": "supersecret1"}
-    )
+@pytest.mark.parametrize("email", ["not-an-email", "nul\x00@example.com"])
+async def test_register_rejects_a_malformed_email(client, email):
+    resp = await client.post("/auth/register", json={"email": email, "password": "supersecret1"})
     assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_login_with_a_nul_character_in_the_username_returns_401(client):
+    # No stored address holds U+0000 (registration refuses it), and PostgreSQL rejects it
+    # in a query parameter, so the lookup must not reach the database (it used to be a 500).
+    await client.post(
+        "/auth/register", json={"email": "gina@example.com", "password": "supersecret1"}
+    )
+    resp = await client.post(
+        "/auth/login", data={"username": "gina@example.com\x00", "password": "supersecret1"}
+    )
+    assert resp.status_code == 401
 
 
 @pytest.mark.asyncio

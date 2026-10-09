@@ -14,6 +14,8 @@ async def find_user_by_email(db: AsyncSession, typed: str) -> User | None:
     login that matched a row before normalization existed still reaches that row;
     the normalized spelling only adds matches.
     """
+    if "\x00" in typed:
+        return None  # no stored address holds U+0000, and PostgreSQL rejects it as a parameter
     candidates = [typed]
     try:
         normalized = normalize_email(typed)

@@ -1,8 +1,11 @@
+import json
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import FileResponse, Response
 
 from app.config import get_settings
 from app.core.logging import configure_logging
@@ -24,6 +27,18 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="RAG Doc QA API", lifespan=lifespan)
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error(request: Request, exc: RequestValidationError) -> Response:
+    """FastAPI's 422, written as ASCII JSON.
+
+    The errors echo the input, and JSON can spell a lone UTF-16 surrogate ("\\ud800") that
+    has no UTF-8 form, so encoding the body as UTF-8 turned the 422 into a 500.
+    """
+    body = json.dumps({"detail": jsonable_encoder(exc.errors())})
+    return Response(body, status_code=422, media_type="application/json")
+
 
 app.include_router(health.router)
 app.include_router(auth.router)

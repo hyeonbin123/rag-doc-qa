@@ -134,3 +134,43 @@ async def test_ask_uses_the_score_floor_of_the_embedding_model(authed_client, db
     assert [c["source_path"] for c in under_model_floor.json()["citations"]] == [
         "docs/en/docs/tutorial/body.md"
     ]
+
+
+class CountingGenerator(FakeGenerationService):
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def answer(self, question, chunks, language="en"):
+        self.calls += 1
+        return await super().answer(question, chunks, language)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("question", ["What is\x00FastAPI?", "경로 매개변수는\x00 어떻게 선언하나요?"])
+async def test_ask_rejects_a_nul_character_before_answering(authed_client, question):
+    # PostgreSQL text cannot hold U+0000, so such a question could not be logged: the
+    # request used to fail with 500 at the final commit, after the LLM had answered.
+    generator = CountingGenerator()
+    app.dependency_overrides[get_generator] = lambda: generator
+
+    resp = await authed_client.post("/query/ask", json={"question": question})
+
+    assert resp.status_code == 422
+    assert resp.json()["detail"][0]["loc"] == ["body", "question"]
+    assert generator.calls == 0
+    assert (await authed_client.get("/logs")).json() == []
+
+
+@pytest.mark.asyncio
+async def test_ask_rejects_a_lone_surrogate(authed_client):
+    # JSON can spell half of a UTF-16 pair, which has no UTF-8 form, so it could be neither
+    # embedded nor stored. Pydantic refuses it as a string, but the 422 body echoes the
+    # input, and encoding that as UTF-8 used to turn the rejection into a 500.
+    resp = await authed_client.post(
+        "/query/ask",
+        content=rb'{"question": "What is \ud800 FastAPI?"}',
+        headers={"Content-Type": "application/json"},
+    )
+
+    assert resp.status_code == 422
+    assert resp.json()["detail"][0]["loc"] == ["body", "question"]

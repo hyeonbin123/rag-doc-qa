@@ -3,9 +3,11 @@ from datetime import datetime
 
 from pydantic import BaseModel
 
+from app.schemas.text import NulFreeStr
+
 
 class IngestRequest(BaseModel):
-    commit_sha: str | None = None
+    commit_sha: NulFreeStr | None = None
     limit: int | None = None
     dry_run: bool = False
 
