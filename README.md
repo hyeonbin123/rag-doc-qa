@@ -198,7 +198,7 @@ uv run pytest
 ```
 `tests/conftest.py`는 `ragdb_test` 데이터베이스와 스키마에 필요한 확장(`vector`, `pgcrypto`)이 없으면 직접 만들고, 테스트마다 스키마를 생성·정리한다. 임베딩·생성·재정렬 모델은 외부 API를 부르지 않는 결정론적 fake로 대체된다. push와 PR마다 GitHub Actions가 pgvector 서비스 컨테이너를 띄워 같은 ruff + pytest를 실행한다 (`.github/workflows/ci.yml`).
 
-서비스 코드를 바꾼 뒤에는 실행 중인 API를 OWASP ZAP으로 스캔한다(OpenAPI 설명, 스파이더, 패시브 스캔, 액티브 스캔). DB 사본과 생성기 대역으로 띄운 이미지를 스캔하며, 방법과 결과는 [docs/security-scan.md](docs/security-scan.md)에 있다. 첫 스캔(2026-10-09)에서는 High 0, 채팅 화면의 보안 헤더(CSP, 클릭재킹 방지)가 없다는 Medium 2개, 질문에 NUL 문자가 있으면 500이 나는 문제 1개가 나왔고 아직 고치지 않았다.
+서비스 코드를 바꾼 뒤에는 실행 중인 API를 OWASP ZAP으로 스캔한다(OpenAPI 설명, 스파이더, 패시브 스캔, 액티브 스캔). DB 사본과 생성기 대역으로 띄운 이미지를 스캔하며, 방법과 결과는 [docs/security-scan.md](docs/security-scan.md)에 있다. 첫 스캔(2026-10-09)에서는 High 0, 채팅 화면의 보안 헤더(CSP, 클릭재킹 방지)가 없다는 Medium 2개, 질문에 NUL 문자가 있으면 500이 나는 문제 1개가 나왔다. 둘 다 고친 뒤의 두 번째 스캔에서는 High 0, Medium 0, Low 1(질문 기록 JSON에 스캐너의 스크립트 문장이 그대로 있다는 신뢰도 Low 경보), 500 0이다.
 
 ## 평가
 
