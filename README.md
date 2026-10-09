@@ -170,7 +170,8 @@ curl -X POST localhost:8000/query/ask \
   - 근거로 쓴 문서: 누르면 공식 문서 원문으로 이동한다
   - 단계별로 걸린 시간
 - 로그인하면 최근 질문 10개를 불러온다.
-- 화면은 정적 HTML 한 장(`app/web/index.html`)이고, 아래 API를 그대로 호출한다.
+- 화면은 정적 HTML 한 장(`app/web/index.html`)과 그 스크립트·스타일 파일(`app/web/static/`)이고, 아래 API를 그대로 호출한다.
+- 모든 응답에 Content-Security-Policy(같은 출처의 파일만 실행, 인라인 코드 없음), 다른 사이트의 프레임 안에 넣지 못하게 하는 `frame-ancestors 'none'`·`X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`가 붙는다. FastAPI가 만드는 `/docs`·`/redoc` 화면만 CDN 파일과 인라인 코드를 허용한다.
 
 API를 직접 호출해 보려면 Swagger UI를 쓴다.
 1. `http://localhost:8000/docs`를 연다.

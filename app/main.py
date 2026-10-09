@@ -6,6 +6,7 @@ from fastapi import FastAPI, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, Response
+from fastapi.staticfiles import StaticFiles
 
 from app.config import get_settings
 from app.core.logging import configure_logging
@@ -40,6 +41,37 @@ async def validation_error(request: Request, exc: RequestValidationError) -> Res
     return Response(body, status_code=422, media_type="application/json")
 
 
+# Every response: no MIME sniffing, no framing. The chat page and the API allow only
+# same-origin code; the page's script and style are files under /static.
+APP_CSP = (
+    "default-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; "
+    "frame-ancestors 'none'"
+)
+# FastAPI's own docs pages load Swagger UI and ReDoc (and ReDoc's fonts) from CDNs and start
+# them with inline code. Allowing jsDelivr already lets any package there run, so hashing the
+# inline code would not make this policy much stricter; the pages hold no user data.
+DOCS_CSP = (
+    "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+    "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://fonts.googleapis.com; "
+    "font-src 'self' https://fonts.gstatic.com; "
+    "img-src 'self' data: https://fastapi.tiangolo.com https://cdn.redoc.ly; "
+    "worker-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'self'; "
+    "frame-ancestors 'none'"
+)
+DOCS_PATHS = {app.docs_url, app.swagger_ui_oauth2_redirect_url, app.redoc_url}
+
+
+@app.middleware("http")
+async def security_headers(request: Request, call_next) -> Response:
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Content-Security-Policy"] = (
+        DOCS_CSP if request.url.path in DOCS_PATHS else APP_CSP
+    )
+    return response
+
+
 app.include_router(health.router)
 app.include_router(auth.router)
 app.include_router(documents.router)
@@ -47,6 +79,7 @@ app.include_router(query.router)
 app.include_router(logs.router)
 
 WEB_DIR = Path(__file__).parent / "web"
+app.mount("/static", StaticFiles(directory=WEB_DIR / "static"), name="static")
 
 
 @app.get("/", include_in_schema=False)
