@@ -1110,6 +1110,17 @@ dev = qa_dev_ko 32 + qa_dev2_ko 40, 72문항 한 번에. 복제 DB `ragdb_p1_<�
 - 위험 (규칙의 위험 절 그대로, 결정을 바꾸지 않음): test3b 40문항을 v13 채택 판정과 같이 씀. 채택하면 질의 임베딩이 20 → 60ms, 이미지가 +658MB, 한국어 적재가 약 3배가 됨. 답변 정확도 차이는 이 표본에서 0과 구분되지 않음
 - 리포트 `eval/reports/generator_summary_v13b_b2_g3_lg_20261008_170008.md`, `judge_truncation_v13b_b2_g3_J1_20261008_170006.md`, `answer_eval_v13b_b2_g3_*` (파일 이름의 시각은 UTC), 기록 `eval/runs/v13b_b2_g3_*` (생성, raw/lg 분할, J1 판정). 명령: 로컬 `work/v13b/v13b_gpu.sh b2 g3 lg`, 판정 `work/v13b/v13b_decide.py b2`·`noise`
 
+**v13 단계 B 채택 반영 (2026-10-09 11:58~12:16 KST, 별도 커밋, GPU 안 씀)**
+
+규칙의 "채택하면 별도 커밋으로 아래를 바꿈"대로 바꿈. 이전 수치는 고치지 않음
+- 기본값: `EMBEDDING_MODEL_NAME_KO` = `ibm-granite/granite-embedding-311m-multilingual-r2` (`app/config.py`, `.env.example`). 리비전 `44399559`와 384차원 자르기, float32는 v12부터 `app/services/embedding.py`의 모델 설정 표에 있던 그대로. 바닥값은 0.3이라 `SCORE_FLOORS`는 비어 있는 그대로. 기본값 테스트 1개 추가(바꾸기 전 실패 확인) → 180개
+- Dockerfile: 리비전 `44399559…` 스냅숏을 받는 층을 따로 추가하고 e5-small은 남김. 새 층 658MB(v12 관문 G3 값과 같음), 이미지 층 합 2,752 → 3,428MB(나머지 26MB는 저장소 복사 층이 커진 것). 이미지 안(`HF_HUB_OFFLINE=1`)에서 그 리비전이 로드되고 `/health`가 새 모델을 보고함
+- README: 스택 표, 구조도, 핵심 결과 표의 단계 B 행(질의 임베딩 p50 20 → 60ms, 이미지 +658MB, 한국어 적재 77 → 256초, 모두 v12 관문 값), 이미지와 첫 적재 시간 설명, e5-small 시절에 적재한 DB는 한국어를 다시 적재해야 한다는 안내
+- 본 DB 한국어 재적재: `scripts.ingest_fastapi_docs --languages ko --commit 50113da`. 문서 123개 처리, 청크 621개 갱신, 지운 문서 0, elapsed 372초(문서 받기 포함. v12 관문의 256초는 CPU 13%에서 잰 값이고, 이번에는 시작 상태를 기록하지 않았으며 데스크톱 앱이 GPU를 약 30% 쓰고 있었음. 속도 조건이 아니라 보고만). 재적재 뒤 청크 본문은 그대로이고(md5 같음), 한국어 벡터는 복제 DB `ragdb_p1_g311`의 한국어 벡터와 바이트 단위로 같음(md5 같음). 영어 청크·벡터는 바뀌지 않음
+- **확인 (규칙의 마지막 항목)**: 본 DB에서 `qa_dev_ko` MRR 0.831, `qa_dev2_ko` 0.915 (72문항 0.877, Hit@5 0.958, short 0) → v12 dev의 P 값과 같음. 72문항 모두 상위 10개의 페이지 순서와 점수가 v12 dev 실행(`v12_dev_g311`)과 같았음(점수 차 최대 0). 저장 벡터 확인 최소 cos 1.0. 새로 빌드한 이미지 안에서 같은 평가를 돌려도 0.831 / 0.915, 최소 cos 1.0
+- 리포트 `retrieval_eval_v13b_adopt_dev_main_*`, `retrieval_compare_v12_dev_g311_vs_v13b_adopt_dev_main_*`(DB가 달라 청크 id가 다르므로 '같은 상위 10개 청크' 0은 의미 없음), 기록 `eval/runs/v13b_adopt_dev_main.retrieval.jsonl`
+- 되돌리기: `EMBEDDING_MODEL_NAME_KO=intfloat/multilingual-e5-small`로 두고 한국어를 다시 적재함 (이미지를 다시 빌드할 필요 없음)
+
 ## 기타 관찰
 
 - **LLM 판정의 오탐**: v3 dense에서 q017은 검색 실패 후 "컨텍스트에 정보가 없다"고 올바르게 답했지만, 판정 모델은 이를 환각으로 표시함.

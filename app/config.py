@@ -29,7 +29,9 @@ class Settings(BaseSettings):
     embedding_model_name: str = "BAAI/bge-small-en-v1.5"
     # Korean docs and questions need a multilingual model; English keeps the English
     # one because the multilingual model scored far lower on the English test sets.
-    embedding_model_name_ko: str = "intfloat/multilingual-e5-small"
+    # Granite R2 311M cut to 384 dimensions, adopted in v13 stage B over
+    # intfloat/multilingual-e5-small, which stays in the image (docs/experiments.md).
+    embedding_model_name_ko: str = "ibm-granite/granite-embedding-311m-multilingual-r2"
     retrieval_mode: Literal["dense", "hybrid", "rerank"] = "dense"
     reranker_model_name: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
     # The model above was trained on English only; on the Korean tuning set it ranked

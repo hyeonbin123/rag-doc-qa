@@ -7,6 +7,7 @@ records how it was constructed.
 import pytest
 import torch
 
+from app.config import Settings
 from app.models.chunk import EMBEDDING_DIM
 from app.services import embedding
 from app.services.embedding import EMBEDDING_MODELS, EmbeddingService, EmbeddingSpec, prefixes_for
@@ -104,3 +105,14 @@ def test_identity_names_the_revision_and_the_cut(recorded):
 
     assert identity == f"{GRANITE_311M}@{spec.revision}:dim{EMBEDDING_DIM}"
     assert EmbeddingService(GRANITE_97M).identity == f"{GRANITE_97M}@{EMBEDDING_MODELS[GRANITE_97M].revision}"
+
+
+def test_the_korean_default_is_the_v13_stage_b_adoption(monkeypatch):
+    # granite-311m@384 replaced e5-small as the Korean model (docs/experiments.md v13 stage B).
+    monkeypatch.delenv("EMBEDDING_MODEL_NAME_KO", raising=False)
+    settings = Settings(database_url="x", jwt_secret_key="y", _env_file=None)
+
+    assert settings.embedding_model_name_ko == GRANITE_311M
+    # The revision and the cut that were measured, and the same vector column as before.
+    assert EMBEDDING_MODELS[GRANITE_311M].revision == "44399559930365213510b1ee2eb15ded83374f0e"
+    assert EMBEDDING_MODELS[GRANITE_311M].truncate_dim == EMBEDDING_DIM == 384

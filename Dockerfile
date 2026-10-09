@@ -16,7 +16,11 @@ RUN uv sync --frozen --no-dev --no-install-project
 # means they could not be fetched at runtime either.
 RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('BAAI/bge-small-en-v1.5'); SentenceTransformer('intfloat/multilingual-e5-small')"
 RUN python -c "from sentence_transformers import CrossEncoder; CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2'); CrossEncoder('cross-encoder/mmarco-mMiniLMv2-L12-H384-v1')"
-# The model is cached above; without this, every startup still round-trips to the Hub.
+# The Korean model since v13 stage B, at the revision app/services/embedding.py pins (the app
+# loads that commit, so it must be the snapshot cached here). e5-small above stays in the image
+# so EMBEDDING_MODEL_NAME_KO can switch back without a rebuild.
+RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('ibm-granite/granite-embedding-311m-multilingual-r2', revision='44399559930365213510b1ee2eb15ded83374f0e')"
+# The models are cached above; without this, every startup still round-trips to the Hub.
 ENV HF_HUB_OFFLINE=1
 
 COPY . .
