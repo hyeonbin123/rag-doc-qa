@@ -13,7 +13,7 @@ FastAPI 공식 문서(영어 원문 154개, 한국어 번역 123개, 청크 1,53
 | AI | 언어별 로컬 임베딩(영어 `BAAI/bge-small-en-v1.5`, 한국어 `ibm-granite/granite-embedding-311m-multilingual-r2`를 384차원으로 잘라 씀. v13 단계 B에서 `intfloat/multilingual-e5-small` 대신 채택), 로컬 LLM A.X-4.0-Light(Qwen2.5-7B 계열의 한국어 특화 모델을 직접 4비트 GGUF로 변환, Ollama. v13에서 Qwen2.5-7B 대신 채택) 또는 Claude API, 언어별 cross-encoder 재정렬 |
 | 검색 모드 | `dense` / `hybrid`(벡터 + SQL로 계산한 BM25, 가중 RRF) / `rerank`(cross-encoder 재채점). 기본값은 `dense` (영어는 아래 v7, 한국어는 v9) |
 | 평가 | 질문셋 9개(영어: 테스트 30, 튜닝용 32, 새 테스트 43문항 / 한국어: 튜닝용 32·40, 테스트 43·40, 다음 단계용 40문항 / 다음 단계용 40문항의 영어판), Hit@k·MRR·검색 지연, LLM 판정 답변 정확도 |
-| 품질 관리 | pytest 180개(통합 테스트는 실제 Postgres + pgvector 사용), push마다 CI에서 ruff + pytest |
+| 품질 관리 | pytest 194개(통합 테스트는 실제 Postgres + pgvector 사용), push마다 CI에서 ruff + pytest |
 | 응답 시간 | 답변 생성 중앙값 약 9초 (v13 채택 측정: 영어 10.2초, 한국어 7.6초. 로컬 A.X-4.0-Light, RTX 2080 Ti, 데스크톱 앱이 GPU를 약 25% 쓰던 부하 조건). v12까지의 Qwen2.5-7B는 약 4~5초 (v10: 영어 5.3초, 한국어 4.3초) |
 
 ## 구조
