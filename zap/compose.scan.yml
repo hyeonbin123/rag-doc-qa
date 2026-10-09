@@ -1,0 +1,21 @@
+# Scan target for zap/run_zap.sh (docs/security-scan.md): the same api image, but on a copy of the database
+# and with a stand-in generator, so the scan neither writes into ragdb nor runs the LLM. Start it with
+#   docker compose -f docker-compose.yml -f zap/compose.scan.yml up -d --wait api
+# after making the copy (SCAN_DB, default ragdb_scan) with createdb -T ragdb.
+services:
+  ollama-stub:
+    image: python:3.11-slim-trixie
+    command: ["python", "/stub/ollama_stub.py"]
+    volumes:
+      - ./zap/ollama_stub.py:/stub/ollama_stub.py:ro
+
+  api:
+    depends_on:
+      ollama-stub:
+        condition: service_started
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-raguser}:${POSTGRES_PASSWORD:-ragpass}@db:5432/${SCAN_DB:-ragdb_scan}
+      GENERATION_PROVIDER: ollama
+      OLLAMA_BASE_URL: http://ollama-stub:11434
+      # One token has to last the whole scan (the default is 30 minutes).
+      ACCESS_TOKEN_EXPIRE_MINUTES: "240"

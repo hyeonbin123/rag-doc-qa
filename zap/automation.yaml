@@ -1,0 +1,74 @@
+# OWASP ZAP automation plan for the API: the OpenAPI description, one Korean question, spider, passive scan
+# (the baseline part), then an active scan with the default policy (the API part), every request carrying a
+# user's access token. Written for the cross-platform ZAP 2.17.0 release (Java 17 or later). No secrets in
+# this file: the variables come from the environment, and zap/run_zap.sh sets them and starts ZAP.
+#
+#   TARGET       the scan target, e.g. http://127.0.0.1:8000 (only ever a local service; see
+#                zap/compose.scan.yml for how it is started)
+#   REPORT_DIR   absolute path of the folder the reports go to; REPORT_NAME their file name without extension
+#
+# The token is not a plan variable: ZAP itself adds `Authorization: Bearer <token>` to every request it sends
+# to the target host when ZAP_AUTH_HEADER, ZAP_AUTH_HEADER_VALUE and ZAP_AUTH_HEADER_SITE are set (run_zap.sh
+# sets them). No admin token is given, so the admin ingest endpoint is only reached up to its token check.
+env:
+  contexts:
+    - name: rag-doc-qa
+      urls:
+        - ${TARGET}
+      includePaths:
+        - "${TARGET}.*"
+  parameters:
+    failOnError: true
+    failOnWarning: false
+    progressToStdout: true
+
+jobs:
+  - type: openapi
+    parameters:
+      apiUrl: ${TARGET}/openapi.json
+      context: rag-doc-qa
+
+  # The generated example question has no Hangul, so it only takes the English path. This one ("how do I
+  # declare a path parameter?", escaped to keep the plan ASCII) goes through the Korean embedding model, and
+  # the active scan attacks it too.
+  - type: requestor
+    requests:
+      - url: ${TARGET}/query/ask
+        method: POST
+        headers:
+          - "Content-Type:application/json"
+        data: '{"question": "\uacbd\ub85c \ub9e4\uac1c\ubcc0\uc218\ub294 \uc5b4\ub5bb\uac8c \uc120\uc5b8\ud558\ub098\uc694?", "top_k": 5, "language": "auto"}'
+
+  - type: spider
+    parameters:
+      context: rag-doc-qa
+      maxDuration: 2
+
+  - type: passiveScan-wait
+    parameters:
+      maxDuration: 5
+
+  # Default policy. Four threads, as in the other projects' plans; the app runs model calls on six threads.
+  - type: activeScan
+    parameters:
+      context: rag-doc-qa
+      threadPerHost: 4
+      maxScanDurationInMins: 120
+
+  - type: passiveScan-wait
+    parameters:
+      maxDuration: 5
+
+  - type: report
+    parameters:
+      template: traditional-json
+      reportDir: ${REPORT_DIR}
+      reportFile: ${REPORT_NAME}
+      reportTitle: rag-doc-qa ZAP scan
+
+  - type: report
+    parameters:
+      template: traditional-md
+      reportDir: ${REPORT_DIR}
+      reportFile: ${REPORT_NAME}
+      reportTitle: rag-doc-qa ZAP scan
