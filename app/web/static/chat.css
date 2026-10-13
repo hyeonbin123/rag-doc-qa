@@ -1,3 +1,10 @@
+/* [파일 역할] 채팅 화면(app/web/index.html)의 스타일. 원래 index.html의 인라인 style에 있던 내용을 */
+/* CSP(같은 출처 파일만 허용)를 지키려고 이 파일로 옮겼다. */
+/* [구성] 색 변수(밝은·어두운 테마) → 기본 글꼴·접근성 → 상단 막대 → 대화 영역(말풍선, 답변, 코드) → 근거 */
+/* 문서·걸린 시간 막대 → 입력부 → 좁은 화면·움직임 줄이기 설정. */
+
+/* 색은 모두 변수로 두고 아래 규칙은 변수만 쓴다. 그래서 어두운 테마는 변수 값만 바꾸면 된다. --seg-*는 */
+/* 걸린 시간 막대의 단계별 색(질문 분석·문서 검색·답변 작성)이다. */
 :root {
   --paper: #f4f7f6;
   --surface: #ffffff;
@@ -15,6 +22,8 @@
   --danger: #b3261e;
   color-scheme: light;
 }
+/* 운영체제가 어두운 테마면 같은 변수에 어두운 색을 넣는다. color-scheme도 함께 바꿔 스크롤바·입력칸 같은 */
+/* 브라우저 기본 요소도 테마를 따르게 한다. */
 @media (prefers-color-scheme: dark) {
   :root {
     --paper: #111a1b;
@@ -35,6 +44,8 @@
   }
 }
 
+/* 기본 설정. 화면 전체를 세로 flex로 두어 머리(막대)·몸통(대화)·바닥(입력부)으로 나눈다. 글꼴은 한글 */
+/* 글꼴을 먼저 고르고, word-break: keep-all로 한글 단어가 중간에서 끊기지 않게 한다. */
 * { box-sizing: border-box; }
 html, body { height: 100%; margin: 0; }
 body {
@@ -47,6 +58,9 @@ body {
 }
 button, input, textarea { font: inherit; color: inherit; }
 a { color: var(--teal-link); }
+/* 접근성: 키보드로 이동할 때 초점 위치가 잘 보이게 굵은 테두리를 그린다. [hidden]에 !important를 주는 */
+/* 이유는 display: flex 같은 규칙이 hidden 속성을 이기지 못하게 하려는 것이다(chat.js가 hidden으로 폼을 */
+/* 바꿔 보여 준다). .sr-only는 화면에는 안 보이지만 화면 읽기 프로그램은 읽는 글(질문 칸 label)이다. */
 :focus-visible { outline: 3px solid var(--teal); outline-offset: 2px; }
 [hidden] { display: none !important; }
 .sr-only {
@@ -54,6 +68,7 @@ a { color: var(--teal-link); }
   clip: rect(0 0 0 0); white-space: nowrap;
 }
 
+/* 상단 막대: 가운데 정렬한 최대 48rem 폭. 좁으면 flex-wrap으로 로그인 정보가 다음 줄로 내려간다. */
 /* Header */
 .bar { background: var(--surface); border-bottom: 1px solid var(--line); }
 .bar-inner {
@@ -70,6 +85,9 @@ a { color: var(--teal-link); }
   text-decoration: underline; text-underline-offset: 3px;
 }
 
+/* 대화 영역: main만 세로로 스크롤되고 위아래 막대는 고정된다. 내 질문은 오른쪽 말풍선(pre-wrap으로 줄바꿈 */
+/* 유지), 답변은 왼쪽 카드다. 긴 URL·식별자가 화면 밖으로 나가지 않도록 overflow-wrap: anywhere를 주고, 이 */
+/* 부분만 keep-all 대신 normal로 되돌린다. 코드 블록은 가로 스크롤한다. */
 /* Conversation */
 main { flex: 1; overflow-y: auto; }
 .log {
@@ -105,6 +123,7 @@ main { flex: 1; overflow-y: auto; }
 }
 .answer pre code { padding: 0; background: none; font-size: 0.84rem; line-height: 1.55; }
 
+/* 첫 화면의 예시 질문 버튼(알약 모양). */
 .examples { display: flex; flex-direction: column; align-items: flex-start; gap: 0.4rem; margin-top: 0.2rem; }
 .example {
   padding: 0.35rem 0.85rem; text-align: left; cursor: pointer;
@@ -112,6 +131,8 @@ main { flex: 1; overflow-y: auto; }
 }
 .example:hover { border-color: var(--teal); }
 
+/* 근거 문서 목록: 왼쪽 세로선으로 답변과 구분하고, 항목마다 절 이름(굵게)과 문서 경로(흐리게)를 보여 준다. */
+/* 근거가 없으면 .no-sources 문구를 쓴다. */
 /* Evidence strip: the part that makes this a documentation assistant */
 .sources {
   margin: 0.65rem 0 0 0.35rem;
@@ -126,6 +147,10 @@ main { flex: 1; overflow-y: auto; }
 .sources .path { display: block; color: var(--muted); font-size: 0.8125rem; }
 .no-sources { margin: 0.6rem 0 0 0.35rem; font-size: 0.8125rem; color: var(--muted); }
 
+/* 걸린 시간 막대: 세 단계를 색 칸으로 이어 붙인 가로 막대와 범례. 칸의 너비는 chat.js가 스크립트로 */
+/* element.style에 비율을 넣어 정한다(CSP는 HTML의 style 속성은 막지만 스크립트로 스타일 속성을 바꾸는 것은 */
+/* 막지 않는다). min-width로 아주 짧은 단계도 보이게 한다. tabular-nums는 숫자 폭을 같게 해 시간이 바뀔 때 */
+/* 글자가 흔들리지 않게 한다. */
 .timing { margin: 0.6rem 0 0 0.35rem; font-size: 0.8125rem; color: var(--muted); }
 .timing-bar {
   display: flex; gap: 2px; max-width: 22rem; height: 6px; margin: 0.25rem 0 0.3rem;
@@ -137,11 +162,14 @@ main { flex: 1; overflow-y: auto; }
 .legend { display: flex; flex-wrap: wrap; gap: 0.2rem 0.9rem; font-variant-numeric: tabular-nums; }
 .legend i { display: inline-block; width: 0.6rem; height: 0.6rem; border-radius: 2px; margin-right: 0.3rem; vertical-align: 0.02em; }
 
+/* 답변을 기다리는 동안 보이는 깜빡이는 점과 경과 시간. 오류 문구는 .failed 색으로 표시한다. */
 .pending { display: flex; align-items: center; gap: 0.6rem; padding: 0.4rem 0.2rem; color: var(--muted); font-variant-numeric: tabular-nums; }
 .pulse { width: 0.55rem; height: 0.55rem; border-radius: 50%; background: var(--teal); animation: pulse 1.2s ease-in-out infinite; }
 @keyframes pulse { 50% { opacity: 0.25; transform: scale(0.8); } }
 .failed { color: var(--danger); }
 
+/* 하단 입력부: 질문 칸은 내용에 따라 높이가 늘고(chat.js의 autoGrow) 최대 10rem까지만 커진다. 로그인 폼은 */
+/* 이메일·비밀번호·두 버튼을 한 줄 격자로 놓는다. */
 /* Composer */
 .dock { background: var(--surface); border-top: 1px solid var(--line); }
 .dock-inner { max-width: 48rem; margin: 0 auto; padding: 0.8rem 1.25rem 1rem; }
@@ -169,10 +197,12 @@ main { flex: 1; overflow-y: auto; }
 .form-msg { margin: 0.45rem 0 0; font-size: 0.8125rem; color: var(--muted); }
 .form-msg.failed { color: var(--danger); }
 
+/* 좁은 화면(휴대폰): 로그인 폼을 두 줄 격자로 바꾸고 내 질문 말풍선을 더 넓게 쓴다. */
 @media (max-width: 640px) {
   .login { grid-template-columns: 1fr 1fr; }
   .msg-user { max-width: 92%; }
 }
+/* 접근성: 움직임 줄이기를 켠 사용자에게는 기다림 표시의 깜빡임 애니메이션을 끈다. */
 @media (prefers-reduced-motion: reduce) {
   .pulse { animation: none; }
 }

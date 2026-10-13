@@ -14,6 +14,14 @@ and pooling handled right) and, for last-token pooling, that the tokenized input
 the end-of-text token.
 """
 
+# [파일 역할] 임베딩 모델 하나의 CPU 질의 임베딩 지연을 재는 스크립트. v12 한국어 임베딩 후보를 품질을 보기
+# 전에 거르는 예산 관문 G1(질의 임베딩 p50 ≤ 100ms)에 썼다(docs/experiments.md v12).
+# [왜 이렇게 재나] 질문 하나가 올 때마다 CPU에서 질문을 임베딩하므로, 실제 서비스처럼 한 번에 한 질문씩
+# embed_query를 부른 시간을 잰다. 모델은 앱과 같은 EmbeddingService로 불러 접두사·리비전·자르기·float32가
+# 실제와 같다. 처음 몇 번은 느릴 수 있어 워밍업 3회 뒤부터 잰다.
+# [결과] v12에서 Qwen3-Embedding-0.6B가 p50 315ms로 이 관문에서 탈락했다. 결과는
+# eval/runs/<tag>.latency.json과 eval/reports/embedding_latency_*에 남는다.
+
 from __future__ import annotations
 
 import argparse
@@ -24,17 +32,21 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 
+# torch: 측정 조건으로 torch 스레드 수를 기록한다. EmbeddingService: 앱과 똑같은 방식으로 모델을 올린다.
 import torch
 
 from app.services.embedding import EmbeddingService
 from eval.common import RUNS_DIR, load_dataset, write_json, write_report
 
 
+# 두 벡터의 코사인 유사도(한 문장씩 넣은 벡터와 묶어 넣은 벡터 비교용).
 def _cosine(a: list[float], b: list[float]) -> float:
     dot = sum(x * y for x, y in zip(a, b, strict=True))
     return dot / (math.sqrt(sum(x * x for x in a)) * math.sqrt(sum(y * y for y in b)))
 
 
+# 측정 본체. 모델 로딩 시간 → 워밍업 3회 → 모든 질문을 passes번 한 번에 하나씩 임베딩하며 호출마다 시간을
+# 잰다.
 def measure(model_name: str, questions: list[str], passes: int) -> dict:
     start = time.perf_counter()
     service = EmbeddingService(model_name)
@@ -49,11 +61,15 @@ def measure(model_name: str, questions: list[str], passes: int) -> dict:
             service.embed_query(q)
             timings_ms.append((time.perf_counter() - t) * 1000)
 
+    # 정합성 확인: 질문 8개를 하나씩 넣은 벡터와 한 묶음으로 넣은 벡터의 최소 코사인. 1에 가까워야 패딩·풀링이
+    # 묶음에서도 맞게 처리된다는 뜻이다(적재는 묶음, 질문은 한 개씩 임베딩하므로 둘이 같아야 한다).
     sample = questions[:8]
     single = [service.embed_passages([q])[0] for q in sample]
     batch = service.embed_passages(sample)
     consistency = min(_cosine(a, b) for a, b in zip(single, batch, strict=True))
 
+    # 마지막 토큰 풀링 모델(Qwen3 계열)은 입력 끝이 EOS 토큰이어야 의도대로 풀링되므로, 토크나이저가 EOS를
+    # 붙이는지 확인해 기록한다. v12에서 Qwen3 리비전은 EOS를 붙이지 않았다(탈락해서 결과에는 영향 없음).
     model = service._model
     pooling = getattr(model[1], "pooling_mode", None) if len(model) > 1 else None
     ends_with_eos = None
@@ -61,6 +77,8 @@ def measure(model_name: str, questions: list[str], passes: int) -> dict:
         ids = model.tokenizer("경로 매개변수")["input_ids"]
         ends_with_eos = ids[-1] == model.tokenizer.eos_token_id
 
+    # 결과: 모델 식별자, 로딩 시간, 호출 수, p50·p95·평균·최대(ms), 정합성, 풀링 방식, EOS 여부, 실제 dtype,
+    # 최대 입력 길이. p95는 quantiles(n=20)의 19번째 경계값이다.
     return {
         "model": service.identity,
         "load_s": round(load_s, 1),
@@ -77,6 +95,8 @@ def measure(model_name: str, questions: list[str], passes: int) -> dict:
     }
 
 
+# 여러 질문셋의 질문 문장만 모아(라벨·검색은 쓰지 않음) 측정하고, 날짜·CPU·torch 스레드 수 같은 조건을 결과에
+# 더해 JSON과 마크다운 리포트로 남긴다.
 def main(args: argparse.Namespace) -> None:
     questions = [q.question for path in args.dataset for q in load_dataset(path)]
     started = datetime.now(UTC).isoformat()

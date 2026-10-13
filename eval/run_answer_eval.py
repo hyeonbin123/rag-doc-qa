@@ -21,6 +21,18 @@ Usage:
         [--no-token-count] [--cross-lingual] [--score-floor 0.3] [--no-vector-check]
 """
 
+# [파일 역할] 답변 품질 평가의 본 스크립트. 질문셋의 문항마다 앱과 같은 경로(질문 언어 판별 → 같은 언어 모델로
+# 질문 임베딩 → 검색 → 생성)로 답을 만들고, 그 기록을 남긴 뒤 LLM 판정으로 채점해 마크다운 리포트를 쓴다.
+# [왜 이렇게 나눴나] v11에서 '모든 답 생성 → 기록 저장 → 일괄 판정'으로 바꿨다. 답과 패시지를 저장해 두면
+# eval/run_judge.py로 생성 없이 다시 판정할 수 있고(판정 설정 비교, J0/J1), 생성과 판정을 번갈아 하면 Ollama가
+# 모델을 계속 바꿔 올려 생성 시간에 그 시간이 섞이기 때문이다(docs/experiments.md v11).
+# [흐름] main: 설정·생성기·토크나이저 준비 → 저장 벡터 확인(eval/retrieval_checks.py) → 문항별 generate_answer
+# → <tag>.gen.jsonl과 .meta.json 저장 → (선택) judge_and_save로 판정 → eval/answer_report.render_report로
+# 리포트.
+# [연결] 판정 로직은 eval/judge.py, 판정 실행·기록은 eval/run_judge.py, 토크나이저는 eval/tokens.py, 두 팔
+# 나누기는 eval/generator_arms.py가 이 파일의 기록을 읽는다. tests/test_answer_eval.py가
+# generate_answer·generation_order·build_generator를 검증한다.
+
 from __future__ import annotations
 
 import argparse
@@ -32,6 +44,10 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
+# 앱 모듈(app.*)을 그대로 가져와 평가가 실제 서비스와 같은 설정·임베딩·검색·프롬프트를 쓰게 한다.
+# _build_user_message와 system_prompt_for는 생성 프롬프트의 토큰 수를 앱과 같은 문장으로 세려고 가져온다.
+# 평가 하네스 내부 모듈(eval.*): 리포트 렌더링, 데이터셋·기록 입출력, 판정 설정과 스키마, 저장 벡터 확인, 판정
+# 실행·Ollama 상태 기록, 모델별 토크나이저.
 from app.config import Settings, get_settings
 from app.db.session import async_session_maker
 from app.services.embedding import get_embedding_service
@@ -64,6 +80,9 @@ from eval.retrieval_checks import check_stored_vectors
 from eval.run_judge import default_label, judge_and_save, meta_path, model_digest, ollama_state
 from eval.tokens import counter_for_model
 
+# JUDGE_SCHEMA·JUDGE_TOOL·KANA_HAN_RE는 예전에 이 모듈에 정의돼 있다가 eval/judge.py와
+# app/services/generation.py로 옮겨졌다. __all__에 남겨 이전 import 경로가 계속 동작하게 하고, 이 파일에서
+# 직접 쓰지 않는 import가 린트(F401)에 걸리지 않게 한다.
 __all__ = [
     "JUDGE_SCHEMA",
     "JUDGE_TOOL",
@@ -78,9 +97,14 @@ __all__ = [
 # them, so in an answer they mean the model slipped into Japanese or Chinese (seen in
 # Korean answers from the 7B model). Counted anywhere in the answer, code included.
 
+# 생성 프롬프트 토큰 수를 세는 함수의 타입: (질문, 검색된 청크, 언어) → 토큰 수.
 GenerationPromptCounter = Callable[[str, list[RetrievedChunk], Language], int]
 
 
+# 평가용 생성기를 만든다. Ollama가 아니면(예: Claude) 앱의 생성기를 그대로 쓴다.
+# Ollama일 때는 앱과 같은 모델·think·언어 가드 설정으로 만들되 strict_citations=False를 준다. 앱은 인용 응답이
+# JSON이 아니면 실패하지만, 평가는 그 문항을 기록하고 계속 가야 v13처럼 인용 스키마 오류 수를 셀 수 있기
+# 때문이다.
 def build_generator(settings: Settings) -> GenerationService:
     """The configured generator; for Ollama, one that records a bad citation reply.
 
@@ -98,6 +122,9 @@ def build_generator(settings: Settings) -> GenerationService:
     )
 
 
+# 생성 순서를 정한다. 기본은 데이터셋 순서, --order shuffle이면 seed로 고정한 셔플 순서다.
+# v11에서 '순서를 바꿔 다시 생성해도 답이 같은가'(생성 노이즈 M4)를 재려고 넣었다. 같은 seed면 항상 같은
+# 순서가 나와 재현할 수 있다. 바뀌는 것은 생성 순서뿐이고, 기록·판정·리포트는 데이터셋 순서로 둔다.
 def generation_order(n: int, order: str, seed: int) -> list[int]:
     """Indices in the order to generate: the dataset's, or a shuffle fixed by the seed."""
     indices = list(range(n))
@@ -106,6 +133,10 @@ def generation_order(n: int, order: str, seed: int) -> list[int]:
     return indices
 
 
+# Ollama 답변 호출의 프롬프트(시스템 규칙 + 패시지 + 질문)를 토크나이저로 세는 함수를 만든다. 앱과 같은 시스템
+# 프롬프트·사용자 메시지를 만들어 채팅 템플릿째 센다.
+# 왜 세나: 생성 호출은 num_ctx 8192에서 truncate를 보내지 않으므로, 넘쳤다면 조용히 잘렸을 것이다. 문항마다
+# 토큰 수를 남겨 그런 일이 없었는지 기록으로 확인한다(docs/experiments.md v11·v13 CPU 확인).
 def ollama_answer_prompt_counter(count_tokens: TokenCounter) -> GenerationPromptCounter:
     """Counts the Ollama answer call's prompt (system rules + passages + question)."""
 
@@ -120,6 +151,11 @@ def ollama_answer_prompt_counter(count_tokens: TokenCounter) -> GenerationPrompt
     return count
 
 
+# 문항 하나를 검색 → 생성하고, 판정과 분석에 필요한 모든 것을 dict 한 줄(gen.jsonl의 한 행)로 돌려준다.
+# 입력의 embedder는 언어를 받아 그 언어의 임베딩 서비스를 돌려주는 함수다(앱처럼 질문마다 언어별 모델을
+# 고르려고). count_generation_prompt가 없으면 토큰 수는 None으로 남긴다.
+# 기록에는 검색된 청크의 id·순위·점수·본문까지 넣는다. 그래야 나중에 같은 패시지로 다시 판정하거나, 정답
+# 페이지가 컨텍스트에 있었는지를 다시 셀 수 있다.
 async def generate_answer(
     db,
     embedder,
@@ -139,10 +175,14 @@ async def generate_answer(
     v12); English questions always search English only. `score_floor` defaults to the floor
     of the model embedding the question.
     """
+    # 앱의 /query/ask와 같은 순서: 질문 언어 판별(한글이 있으면 ko) → 그 언어의 모델로 질문 임베딩. 교차언어
+    # 검색은 한국어 질문에만 적용한다.
     language = detect_language(q.question)
     query_model = embedder(language)
     query_vector = query_model.embed_query(q.question)
     crossed = cross_lingual and language == "ko"
+    # --score-floor를 주지 않으면 질문을 임베딩한 모델의 바닥값(SCORE_FLOORS, 없으면 0.3)을 써서 앱과 같게
+    # 한다.
     floor = score_floor if score_floor is not None else score_floor_for(query_model.model_name)
     retrieved = await retrieve(
         db,
@@ -155,14 +195,19 @@ async def generate_answer(
         score_floor=floor,
         cross_lingual=crossed,
     )
+    # 생성 시간은 검색을 뺀 생성 호출만 잰다(Ollama 두 단계 호출과 언어 가드 재시도 포함). v10·v13의 생성 지연
+    # 조건(중앙값 10초 이하)이 이 값을 쓴다. raw 팔에서는 eval/generator_arms.py가 재시도 시간을 뺀다.
     start = time.perf_counter()
     generation_result = await generator.answer(q.question, retrieved, language=language)
     generation_ms = (time.perf_counter() - start) * 1000
+    # Ollama 생성기가 채워 주는 호출별 진단. 다른 프로바이더는 비어 있으므로 빈 dict로 다룬다.
+    # unguarded_answer는 언어 가드가 다시 만들었을 때만 있는 첫 답이다.
     diagnostics = generation_result.diagnostics or {}
     unguarded = diagnostics.get("unguarded_answer")
 
     # A chunk of an expected page counts in any translation, as in run_retrieval_eval.
     expected_pages = {page_key(p) for p in q.expected_source_paths}
+    # 검색 결과 중 정답 페이지 청크가 처음 나온 순위. 컨텍스트에 정답이 있었는지 볼 때 쓴다(없으면 None).
     first_hit_rank = next(
         (
             rank
@@ -202,6 +247,8 @@ async def generate_answer(
         "generation_prompt_tokens_counted": (
             count_generation_prompt(q.question, retrieved, language) if count_generation_prompt else None
         ),
+        # 판정과 무관한 두 지표: 기대 키워드가 답에 들어 있는 비율, 그리고 답 어디에든(코드 포함) 가나·한자가
+        # 있는지(kana_han). kana_han은 v10~v13에서 '한국어 답에 일본어·중국어가 섞임'을 세는 결정 지표다.
         "keyword_coverage": keyword_coverage(generation_result.answer, q.must_include_keywords),
         "kana_han": bool(KANA_HAN_RE.search(generation_result.answer)),
         # v13: the language guard (the first answer when it regenerated) and per-call
@@ -222,6 +269,7 @@ async def generate_answer(
     }
 
 
+# 평가 한 번을 실행한다. 반환값은 판정 오류가 있으면 1, 없으면 0(명령의 종료 코드).
 async def main(args: argparse.Namespace) -> int:
     settings = get_settings()
     mode = args.mode or settings.retrieval_mode
@@ -230,18 +278,26 @@ async def main(args: argparse.Namespace) -> int:
     questions = load_dataset(args.dataset)
     ollama = settings.generation_provider == "ollama"
     model_in_use = settings.ollama_model_name if ollama else settings.claude_model_name
+    # --judge-model을 주지 않으면 생성 모델이 판정도 한다. v10부터는 생성 모델을 바꿔도 같은 채점자로
+    # 비교하려고 판정 모델을 qwen2.5:7b-instruct로 고정해 넘긴다(README 평가 절).
     judge_model = args.judge_model or model_in_use
+    # 토크나이저 수는 Ollama일 때만 센다(prompt_eval_count와 비교할 대상이 Ollama뿐이라서). 매핑된
+    # 토크나이저가 없는 모델이면 counter_for_model이 None을 돌려준다.
     use_counter = ollama and not args.no_token_count
     gen_counter = counter_for_model(model_in_use) if use_counter else None
     judge_counter = counter_for_model(judge_model) if use_counter and not args.skip_judge else None
 
+    # 교차언어 검색은 dense에만 구현돼 있으므로 다른 모드와 함께 주면 바로 멈춘다.
     if args.cross_lingual and mode != "dense":
         raise SystemExit("--cross-lingual is dense only")
     started = datetime.now(UTC).isoformat()
+    # 셔플 순서로 생성해도 기록은 데이터셋 자리(index)에 넣어, 파일과 판정이 항상 데이터셋 순서가 되게 한다.
     records: list[dict] = [{} for _ in questions]
     vector_checks: list[dict] = []
     languages = sorted({detect_language(q.question) for q in questions})
     async with async_session_maker() as db:
+        # 측정 전에 이 DB의 저장 벡터가 지금 설정된 모델로 만든 것인지 확인한다. 교차언어면 영어 청크도 한국어
+        # 모델로 만든 것이어야 한다.
         if not args.no_vector_check:  # see eval/retrieval_checks.py
             for language in languages:
                 vector_checks.append(await check_stored_vectors(db, embedder(language), language))
@@ -250,6 +306,8 @@ async def main(args: argparse.Namespace) -> int:
         for order_index, index in enumerate(generation_order(len(questions), args.order, args.seed)):
             q = questions[index]
             reranker = None
+            # rerank 모드의 재정렬 모델도 언어마다 다르다(영어 MiniLM, 한국어 다국어 모델, docs/experiments.md
+            # v9).
             if mode == "rerank":  # like the embedder, chosen by the question's language
                 reranker = get_reranker_service(detect_language(q.question))
             record = await generate_answer(
@@ -280,6 +338,10 @@ async def main(args: argparse.Namespace) -> int:
                 flush=True,
             )
 
+    # 문항별 생성 기록을 쓰고, 실행 조건을 옆의 .meta.json에 남긴다. 같은 태그로 다시 돌리면 덮어쓴다.
+    # meta에는 날짜, 커밋, DB 이름, 언어별 임베딩 모델 identity, 벡터 확인 결과, Ollama 버전, 실행 직후
+    # /api/ps(모델이 GPU에 다 올라갔는지 확인용), 모델 digest(태그만으로는 모델이 고정되지 않음), think·언어
+    # 가드 설정이 들어간다.
     gen_path = RUNS_DIR / f"{args.tag}.gen.jsonl"
     write_jsonl(gen_path, records)
     state = await ollama_state(settings.ollama_base_url) if ollama else {}
@@ -292,6 +354,8 @@ async def main(args: argparse.Namespace) -> int:
         "retrieval_mode": mode,
         "cross_lingual": bool(args.cross_lingual),
         "score_floor": args.score_floor,
+        # 접속 URL의 마지막 부분(DB 이름)만 남긴다. 복제 DB(ragdb_p1_<이름>) 중 어느 것을 쟀는지 알 수 있고,
+        # URL 앞쪽의 사용자·비밀번호는 기록에 들어가지 않는다.
         "database": settings.database_url.rsplit("/", 1)[-1],
         "embedding_models": {lang: embedder(lang).identity for lang in languages},
         "vector_checks": vector_checks,
@@ -311,12 +375,16 @@ async def main(args: argparse.Namespace) -> int:
     # Judge only after every answer exists. With a judge model other than the generator,
     # interleaving the two would make Ollama swap models on every question, and the
     # reload time would land in the generation timings.
+    # --skip-judge면 판정 없이 키워드 커버리지 등만으로 리포트를 만든다(빠르고 무료).
     judgments = judge_meta = None
     if not args.skip_judge:
+        # --judge-num-ctx 0은 None으로 바뀌어 v10까지의 판정 호출(num_ctx·truncate 없음)을 그대로 보낸다.
+        # 라벨을 주지 않으면 'legacy' 또는 'ctx8192' 같은 이름이 붙는다.
         num_ctx = args.judge_num_ctx or None
         config = JudgeConfig(
             model=judge_model, num_ctx=num_ctx, label=args.judge_label or default_label(num_ctx)
         )
+        # 판정 모델의 토크나이저가 없으면 판정은 하되 잘림 확인은 못 한다는 것을 알린다.
         if use_counter and judge_counter is None:
             print(f"warning: no tokenizer mapped for {judge_model}; truncation is not checked")
         judgments, judge_meta = await judge_and_save(
@@ -334,6 +402,8 @@ async def main(args: argparse.Namespace) -> int:
     path = write_report(f"answer_eval_{args.tag}_{timestamp}.md", report)  # before printing
     print(report)
     print(f"\nwritten to {path}")
+    # 판정 오류가 하나라도 있으면 리포트는 남기되 종료 코드 1로 알려, 자동 실행 스크립트가 알아챌 수 있게
+    # 한다.
     errors = sum(1 for j in judgments or [] if j["error"])
     if errors:
         print(f"{errors} judge errors; see the report", file=sys.stderr)
@@ -341,6 +411,8 @@ async def main(args: argparse.Namespace) -> int:
 
 
 if __name__ == "__main__":
+    # 명령행 옵션. 기본값은 앱 기본 동작(top-5, 설정의 검색 모드)과 v11 판정 설정(J1: num_ctx 8192)이다.
+    # --seed 20261003은 v11 규칙에 적힌 seed다.
     parser = argparse.ArgumentParser()
     parser.add_argument("--top-k", type=int, default=5)
     parser.add_argument("--tag", default="run")

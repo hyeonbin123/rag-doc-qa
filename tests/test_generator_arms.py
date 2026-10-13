@@ -7,15 +7,25 @@ generator with the guard ("lg"). These tests pin how the two arms are derived an
 No Ollama or database is needed.
 """
 
+# [테스트 묶음] v13 생성 모델 비교 도구(eval/generator_arms.py)의 단위 테스트: 한 번의 생성 기록을 raw/lg 두
+# 팔로 나누기, 문항별 지표, 관문(gate) 조건, 요약 표와 판정 공유.
+# [왜 중요한가] v13은 모든 선택·채택 생성을 언어 가드를 켠 채 한 번만 하고, 첫 답(가드 전)과 최종 답을 함께
+# 기록해 '생성기 단독'(raw)과 '생성기 + 가드'(lg) 두 조건을 얻는다(docs/experiments.md v13 '한 번의 생성으로
+# 두 팔'). 팔을 잘못 나누면 채택 결정의 숫자가 틀어지므로 나누는 규칙을 하나하나 고정한다.
+# [방법] Ollama·DB 없이, 가짜 생성 기록(gen)과 판정 기록을 tmp_path에 JSONL로 써서 검사한다.
+
 import json
 import uuid
 
+# pytest: 근사 비교, 예외 검사, parametrize.
 import pytest
 
+# 테스트 대상 모듈과 기록 파일 입출력 도우미.
 from eval import generator_arms
 from eval.common import read_json, read_jsonl, write_json, write_jsonl
 
 
+# 호출별 진단 목록을 만든다. done_reason을 여러 개 주면 그만큼의 답변 호출(첫 답, 가드 재시도)이 생긴다.
 def calls(*done_reasons, thinking=0, eval_count=50, prompt=1500):
     return [
         {
@@ -29,6 +39,8 @@ def calls(*done_reasons, thinking=0, eval_count=50, prompt=1500):
     ]
 
 
+# run_answer_eval의 gen.jsonl 한 행과 같은 모양의 가짜 기록. 기본은 가드가 걸리지 않은 한국어 문항이고, 1번
+# 패시지가 정답 페이지(docs/ko/docs/p1.md)라 인용·정답 페이지 지표가 맞게 나온다. extra로 필드를 덮어쓴다.
 def gen(item_id, answer="답입니다.", language="ko", dataset="qa_dev_ko.jsonl", **extra):
     record = {
         "id": item_id,
@@ -63,6 +75,8 @@ def gen(item_id, answer="답입니다.", language="ko", dataset="qa_dev_ko.jsonl
     return record
 
 
+# 가드가 걸린 문항의 필드: 첫 답에 중국어가 섞였고(length로 끝남), 재시도한 최종 답은 깨끗하다. 재시도 시간
+# 1200ms를 포함한 전체 생성 시간은 4200ms.
 GUARDED = dict(
     answer="`Query` 답입니다.",
     guard_applied=True,
@@ -75,6 +89,9 @@ GUARDED = dict(
 )
 
 
+# raw 팔은 첫 답변 호출이다: 답·섞임·키워드 커버리지를 첫 답으로 다시 계산하고, 생성 시간에서 재시도 시간을
+# 빼며(4200 − 1200), done_reason은 첫 호출의 것이다. 인용 호출은 최종 답을 보고 했으므로 raw 팔의 인용은
+# None(알 수 없음)이다.
 def test_the_raw_arm_is_the_first_answer_call():
     raw = generator_arms.unguarded_record(gen("k1", **GUARDED))
 
@@ -87,6 +104,8 @@ def test_the_raw_arm_is_the_first_answer_call():
     assert raw["cited_chunk_numbers"] is None  # the citation call saw the final answer
 
 
+# lg 팔은 최종 답 그대로이고 done_reason은 마지막 답변 호출의 것이다. 가드가 걸리지 않은 문항은 두 팔의 답과
+# 인용이 같다.
 def test_the_lg_arm_is_the_final_answer_and_unguarded_items_are_shared():
     lg = generator_arms.guarded_record(gen("k1", **GUARDED))
     plain = gen("k2")
@@ -100,6 +119,8 @@ def test_the_lg_arm_is_the_final_answer_and_unguarded_items_are_shared():
     assert raw2["cited_chunk_numbers"] == lg2["cited_chunk_numbers"] == [1]
 
 
+# split_file이 <tag>.raw.gen.jsonl과 <tag>.lg.gen.jsonl을 만들고, 팔 이름을 run_tag에 붙이며(두 팔의 판정
+# 리포트 이름이 겹치지 않게), 각 meta에 팔 이름과 원본 파일을 남기는지 확인한다.
 def test_split_writes_both_arm_files_with_their_run_notes(tmp_path):
     gen_path = tmp_path / "v13_unit_g0_qa_dev_ko.gen.jsonl"
     write_jsonl(gen_path, [gen("k1", **GUARDED), gen("k2")])
@@ -118,6 +139,7 @@ def test_split_writes_both_arm_files_with_their_run_notes(tmp_path):
     assert lg_meta["arm"] == "lg" and lg_meta["derived_from"].endswith("v13_unit_g0_qa_dev_ko.gen.jsonl")
 
 
+# 가드를 끄고 만든 실행은 팔이 하나뿐이므로 나누기를 거부해야 한다(가드 전 답이 기록되지 않았기 때문).
 def test_split_refuses_a_run_made_without_the_guard(tmp_path):
     gen_path = tmp_path / "x.gen.jsonl"
     write_jsonl(gen_path, [gen("k1")])
@@ -127,6 +149,8 @@ def test_split_refuses_a_run_made_without_the_guard(tmp_path):
         generator_arms.split_file(gen_path)
 
 
+# 문항 행의 인용 검사: 번호가 1~패시지 수 안인지, 정답 페이지 청크를 인용했는지. 범위를 벗어난 번호(7)가
+# 있으면 둘 다 False, raw 팔처럼 인용을 모르면 None이다. 판정 점수도 행에 옮겨지는지 본다.
 def test_item_row_checks_citations_against_the_passages():
     judgment = {"id": "k1", "correctness_score": 4, "faithfulness_score": 3, "hallucinated": False}
 
@@ -143,6 +167,9 @@ def test_item_row_checks_citations_against_the_passages():
     assert ok["correctness"] == 4 and ok["hallucinated"] is False
 
 
+# summarize가 전체·영어·한국어별로 정확도 합, 환각·섞임 수, 생성 시간 중앙값, length·추론 출력·인용 오류 수,
+# 인용 비율('맞음/알 수 있는 문항'), 가드 적용 수를 세는지 확인한다. 인용을 모르는 문항(None)은 비율의
+# 분모에서 빠진다.
 def test_summary_counts_by_language():
     rows = [
         {
@@ -206,6 +233,7 @@ def test_summary_counts_by_language():
     assert s["ko"]["guard_applied"] == 1
 
 
+# 관문 테스트용 생성 기록과 meta를 tmp_path에 쓰고 gen.jsonl 경로를 돌려준다.
 def write_gate_run(tmp_path, records, meta):
     gen_path = tmp_path / "v13_gate_x_qa_dev_ko.gen.jsonl"
     write_jsonl(gen_path, records)
@@ -213,6 +241,8 @@ def write_gate_run(tmp_path, records, meta):
     return gen_path
 
 
+# 모든 관문을 통과하는 meta: digest 일치, 가드 꺼짐, 실행 뒤 /api/ps에서 size == size_vram(모델이 GPU에 다
+# 올라감)이고 문맥 8192.
 GATE_META = {
     "model": "m:tag",
     "model_digest": "abc123",
@@ -221,6 +251,8 @@ GATE_META = {
 }
 
 
+# 깨끗한 실행(12문항, 프롬프트 토큰 수가 Ollama와 같음)은 관문을 통과한다. 처음 10문항 인용 조건 때문에 문항을
+# 10개보다 많이 만든다.
 def test_gate_passes_a_clean_run(tmp_path):
     records = [gen(f"k{i}", generation_prompt_tokens_counted=1500) for i in range(1, 13)]
     result = generator_arms.gate(write_gate_run(tmp_path, records, GATE_META), digest="abc123")
@@ -230,6 +262,9 @@ def test_gate_passes_a_clean_run(tmp_path):
     assert result["prompt_count"]["max_abs_diff"] == 0
 
 
+# 관문 조건을 하나씩만 어긴 실행이 정확히 그 조건 하나로만 떨어지는지 확인한다: 일부가 CPU에 올라감(size_vram
+# < size), digest 불일치, 추론 출력(thinking 글자 수나 답 안의 <think>), 처음 10문항 중 인용 스키마 오류,
+# length로 끝난 답 2개(한도 1개), 생성 시간 중앙값 10초 초과(docs/experiments.md v13 관문 1~6).
 @pytest.mark.parametrize(
     ("change", "failed"),
     [
@@ -269,6 +304,8 @@ def test_gate_fails_each_condition(tmp_path, change, failed):
     assert [name for name, c in result["checks"].items() if not c["ok"]] == [failed]
 
 
+# 관문 7(A.X 전용): Ollama가 읽은 프롬프트 토큰 수와 토크나이저 수가 다르면, 요구하지 않을 때는 차이만
+# 보고하고 요구할 때(require_prompt_match)는 떨어진다.
 def test_gate_can_require_ollama_and_tokenizer_prompt_counts_to_agree(tmp_path):
     records = [gen(f"k{i}", generation_prompt_tokens_counted=1500) for i in range(1, 13)]
     records[3]["generation_prompt_tokens_counted"] = 1460  # Ollama read 1500: 40 more than the template gives
@@ -282,6 +319,8 @@ def test_gate_can_require_ollama_and_tokenizer_prompt_counts_to_agree(tmp_path):
     assert strict["passed"] is False and strict["checks"]["prompt_match"]["ok"] is False
 
 
+# 허용 차이를 ±1로 좁혀야 '어시스턴트 머리말이 빠진 템플릿'(2토큰 차이)을 잡을 수 있다. 기본 허용치(잘림
+# 판정의 16토큰)로는 통과해 버리므로, v13 관문 7은 ±1로 돌렸다.
 def test_the_prompt_match_tolerance_catches_a_missing_assistant_header(tmp_path):
     # A Modelfile template that drops "<|im_start|><|assistant|>" reads 2 tokens fewer.
     records = [gen(f"k{i}", generation_prompt_tokens_counted=1500) for i in range(1, 13)]
@@ -295,6 +334,9 @@ def test_the_prompt_match_tolerance_catches_a_missing_assistant_header(tmp_path)
     assert within_1["checks"]["prompt_match"]["ok"] is False
 
 
+# 관문 리포트 표의 모든 줄이 머리와 같은 칸 수인지 확인한다. 2026-10-05 리포트는 첫 실행의 확인 항목으로
+# 머리를 만들어, 관문 7이 있는 G3 줄만 칸이 하나 많아 GitHub에서 표가 깨졌다(커밋 928349b). 없는 칸은 '-'로
+# 채운다.
 def test_gate_report_gives_every_row_the_header_s_columns(tmp_path):
     # Only the A.X run checks its prompt counts (rule 7). The 2026-10-05 report took its
     # header from the first run, so that row had one cell more than the header.
@@ -317,6 +359,8 @@ def test_gate_report_gives_every_row_the_header_s_columns(tmp_path):
     assert first[-1] == second[-1] == "12 items, median 0.0, max abs 0"
 
 
+# 팔 파일(<tag>.raw.gen.jsonl)을 같은 이름 규칙의 판정 파일(<tag>.raw.J1.judge.jsonl)과 문항별로 짝짓고,
+# 결과가 요약 JSON에 그대로 저장할 수 있는 단순 데이터인지 확인한다.
 def test_arm_files_pair_with_their_judgments(tmp_path):
     gen_path = tmp_path / "v13_sel_g0_qa_dev_ko.raw.gen.jsonl"
     write_jsonl(gen_path, [generator_arms.unguarded_record(gen("k1"))])
@@ -331,6 +375,9 @@ def test_arm_files_pair_with_their_judgments(tmp_path):
     assert json.loads(json.dumps(rows))  # plain data, kept in the summary JSON
 
 
+# v13 규칙 변경 2(2026-10-05)를 고정한다: 같은 답이라도 판정 순서의 다른 자리에서 판정되면 점수가 ±1 움직일 수
+# 있으므로, shares={"G0+LG": "G0"}(명령행의 --share)를 주면 가드가 걸리지 않은 문항은 lg 팔도 raw 팔의 판정을
+# 쓰고, 자기 판정과 다른 문항 수는 세기만 한다. 가드가 걸린 k1만 lg 자신의 점수(5)를 쓴다.
 def test_an_lg_arm_can_share_the_raw_judgments_of_items_the_guard_left_alone(tmp_path):
     # docs/experiments.md v13, rule change 2026-10-05: the same answer judged at another place
     # in the judge order can move by a point, so where the guard did not fire the lg arm takes
@@ -362,6 +409,8 @@ def test_an_lg_arm_can_share_the_raw_judgments_of_items_the_guard_left_alone(tmp
     assert shared["arms"]["G0+LG"]["vs_baseline"]["all"].startswith("+3")
 
 
+# 문항 행의 '생성 컨텍스트에 정답 페이지가 있었는가'(v13 단계 B 보고 항목, v12에서 손으로 센 36/39를 표에
+# 넣으려고 추가). 다른 번역의 같은 페이지도 맞음으로 세고, 패시지가 없으면 False다.
 def test_item_row_says_whether_the_answer_s_passages_held_an_expected_page():
     # docs/experiments.md v13 stage B compares two Korean embedders with one generator and
     # reports how many answers were written from passages that held an expected page (v12
@@ -379,6 +428,8 @@ def test_item_row_says_whether_the_answer_s_passages_held_an_expected_page():
     assert no_passages["context_has_expected_page"] is False
 
 
+# 요약 표에 'passages hold an expected page' 열이 생기고, 그 줄의 칸 수가 머리와 같으며 값이 '1/2'인지
+# 확인한다.
 def test_the_summary_reports_answers_written_from_an_expected_page(tmp_path):
     records = [gen("k1"), gen("k2", expected_source_paths=["docs/ko/docs/p9.md"])]
     gen_path = tmp_path / "v13b_unit.gen.jsonl"
