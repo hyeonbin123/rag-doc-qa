@@ -32,8 +32,10 @@ import tiktoken
 # - TARGET_TOKENS: 일반 줄을 쌓다가 이 값에 닿으면 청크를 끊는다.
 # - MIN_TOKENS: 마지막 청크가 이 값의 절반(150) 미만이면 앞 청크에 합친다.
 # - MAX_TOKENS: 코드 블록을 붙였을 때 이 값을 넘으면 먼저 지금까지를 끊고 코드 블록을 새 청크로 시작한다.
-# - OVERLAP_TOKENS: 다음 청크 앞에 이전 청크 끝 약 50토큰을 겹쳐 넣으려는 값. 단, 아래 chunk_markdown 주석처럼
-#   지금 코드에서는 실제로 적용되지 않는다.
+# - OVERLAP_TOKENS: 목표 크기에서 끊을 때, 앞 청크 끝에서 이 값을 넘지 않는 만큼의 줄을 다음 청크 앞에
+#   겹쳐 넣는다. 줄 단위라 끝 줄 하나가 이보다 길면(한 줄짜리 긴 문단) 겹치는 줄이 없다.
+#   CHUNKER_VERSION 3까지는 겹칠 줄을 버퍼를 비운 뒤에 골라 실제로는 한 번도 겹치지 않았다(v4에서 고침,
+#   docs/experiments.md v14).
 # - HARD_CAP_TOKENS: 이보다 긴 코드 블록은 어쩔 수 없이 빈 줄 기준으로 쪼갠다.
 TARGET_TOKENS = 400
 MIN_TOKENS = 300
@@ -108,7 +110,9 @@ class ChunkResult:
 # 청커 버전. 적재 해시에 들어가므로 청킹·정제 로직을 바꾸면 이 값을 올려야 한다. 원문만 해시하면 청커를 바꿔도
 # 모든 문서가 '변경 없음'으로 건너뛰어져 예전 청크로 측정하게 되는 잠재 버그가 있었다(docs/experiments.md
 # v1→v3).
-CHUNKER_VERSION = 3
+# 4: OVERLAP_TOKENS 겹침이 실제로 적용되게 고침. 3까지의 청크는 서로 겹치지 않았고, v1~v13의 모든 측정은 그
+# 청크로 했다(docs/experiments.md v14).
+CHUNKER_VERSION = 4
 
 # 정제용 정규식들(MkDocs 문법).
 # - _HEADING_ANCHOR_RE: 헤딩 끝의 앵커 ID 표기(중괄호 안에 # 아이디). 그대로 두면 제목이 임베딩에 두 번
@@ -180,11 +184,13 @@ def clean_markdown(raw_text: str) -> str:
 
 
 # 정제 → 헤딩 경로 표시 → 토큰 수 기준으로 줄을 모아 청크를 만든다.
-# - 일반 줄: 버퍼에 쌓다가 TARGET_TOKENS에 닿으면 끊는다.
+# - 일반 줄: 버퍼에 쌓다가 TARGET_TOKENS에 닿으면 끊고, 끊은 청크 끝의 줄 일부(OVERLAP_TOKENS 이하)를 다음
+#   청크 앞에 겹쳐 넣는다.
 # - 코드 블록: 여는 펜스부터 닫는 펜스까지를 한 덩어리로 다룬다. 버퍼에 붙여 MAX_TOKENS를 넘으면 먼저 끊는다.
 #   HARD_CAP_TOKENS보다 길면 따로 빈 줄 기준으로 쪼갠다.
 # - 마지막 청크가 너무 작으면 앞 청크에 합친다.
-# 청크의 heading_path는 그 청크 첫 줄의 절이다. 여러 절에 걸친 청크도 첫 절 경로만 갖는다.
+# 청크의 heading_path는 그 청크 첫 줄의 절이다(겹쳐 넣은 줄이 있으면 그 뒤 새 줄의 절). 여러 절에 걸친 청크도
+# 그 경로 하나만 갖는다.
 def chunk_markdown(raw_text: str) -> list[ChunkResult]:
     """Chunk a single markdown document into ChunkResult entries."""
     annotated = _annotate_heading_paths(clean_markdown(raw_text))
@@ -192,20 +198,25 @@ def chunk_markdown(raw_text: str) -> list[ChunkResult]:
         return []
 
     chunks: list[ChunkResult] = []
+    # 청크마다 앞 청크에서 겹쳐 온 줄을 뺀 본문. 끝의 작은 청크를 앞 청크에 합칠 때 겹친 줄이 두 번 들어가지
+    # 않게 쓴다.
+    fresh_contents: list[str] = []
     buffer_lines: list[str] = []
     buffer_tokens = 0
+    # 버퍼 맨 앞의 몇 줄이 앞 청크에서 겹쳐 온 줄인지.
+    overlap_lines = 0
     buffer_heading_path = annotated[0].heading_path
     in_code_block = False
     code_block_lines: list[str] = []
 
-    # 버퍼의 줄을 하나의 청크로 확정하고 버퍼를 비운다. 앞뒤 빈 줄은 떼고, 공백뿐이면 청크를 만들지 않는다.
-    # 토큰 수는 합친 본문으로 다시 센다.
+    # 버퍼의 줄을 하나의 청크로 확정하고 버퍼를 비운다. 앞뒤 빈 줄은 떼고, 토큰 수는 합친 본문으로 다시 센다.
+    # 겹쳐 온 줄 말고 새 내용이 없으면(공백뿐이거나 겹친 줄만 남았으면) 청크를 만들지 않는다. 그렇지 않으면
+    # 앞 청크 끝을 되풀이하기만 하는 청크가 생긴다.
     def flush_buffer() -> None:
-        nonlocal buffer_lines, buffer_tokens
-        if not buffer_lines:
-            return
-        content = "\n".join(buffer_lines).strip("\n")
-        if content.strip():
+        nonlocal buffer_lines, buffer_tokens, overlap_lines
+        fresh = "\n".join(buffer_lines[overlap_lines:]).strip("\n")
+        if fresh.strip():
+            content = "\n".join(buffer_lines).strip("\n")
             chunks.append(
                 ChunkResult(
                     content=content,
@@ -213,8 +224,10 @@ def chunk_markdown(raw_text: str) -> list[ChunkResult]:
                     token_count=count_tokens(content),
                 )
             )
+            fresh_contents.append(fresh)
         buffer_lines = []
         buffer_tokens = 0
+        overlap_lines = 0
 
     # 줄 목록의 끝에서부터 OVERLAP_TOKENS를 넘지 않을 만큼의 줄을 돌려준다(다음 청크 앞머리로 겹쳐 넣을 부분).
     def overlap_tail(lines: list[str]) -> list[str]:
@@ -262,6 +275,7 @@ def chunk_markdown(raw_text: str) -> list[ChunkResult]:
                                 token_count=count_tokens(piece),
                             )
                         )
+                        fresh_contents.append(piece)
                 continue
 
             # 코드 블록을 붙이면 너무 커질 때: 지금까지를 끊고, 코드 블록이 새 청크의 시작이 되며 그 헤딩
@@ -277,15 +291,16 @@ def chunk_markdown(raw_text: str) -> list[ChunkResult]:
         buffer_lines.append(line.text)
         buffer_tokens += count_tokens(line.text)
 
-        # 목표 크기에 닿으면 끊고, 다음 청크의 헤딩 경로를 다음 줄의 경로로 바꾼다.
-        # 주의: flush_buffer()가 이미 buffer_lines를 비운 뒤라 overlap_tail에 넘길 줄이 없어 tail은 항상 빈
-        # 목록이다. 그래서 OVERLAP_TOKENS 겹침은 실제로 적용되지 않고, 모듈 docstring의 'overlapping chunks'와
-        # 다르다. 고치면 청크가 바뀌므로 CHUNKER_VERSION을 올리고 재적재·재측정해야 한다.
+        # 목표 크기에 닿으면 끊고, 끊은 청크 끝의 줄을 다음 청크 앞머리로 남긴 뒤, 다음 청크의 헤딩 경로를
+        # 다음 줄의 경로로 바꾼다.
+        # 겹칠 줄은 flush_buffer()가 버퍼를 비우기 전에 골라야 한다. CHUNKER_VERSION 3까지는 비운 뒤에 골라
+        # 겹치는 줄이 늘 없었다.
         if buffer_tokens >= TARGET_TOKENS:
+            tail = overlap_tail(buffer_lines)
             flush_buffer()
-            tail = overlap_tail(buffer_lines) if buffer_lines else []
             buffer_lines = tail
             buffer_tokens = sum(count_tokens(tail_line) for tail_line in tail)
+            overlap_lines = len(tail)
             buffer_heading_path = annotated[min(i + 1, len(annotated) - 1)].heading_path
 
         i += 1
@@ -294,11 +309,13 @@ def chunk_markdown(raw_text: str) -> list[ChunkResult]:
 
     # Merge a final tiny trailing chunk into the previous one, if any.
     # 문서 끝에 150토큰 미만의 작은 청크가 남으면 앞 청크에 합친다. 내용이 거의 없는 청크가 따로 검색되는 것을
-    # 막는다. 합친 청크는 앞 청크의 헤딩 경로를 쓴다.
+    # 막는다. 합친 청크는 앞 청크의 헤딩 경로를 쓴다. 앞 청크 끝과 겹치는 줄은 이미 앞 청크에 있으므로 빼고
+    # 붙인다.
     if len(chunks) >= 2 and chunks[-1].token_count < MIN_TOKENS // 2:
-        last = chunks.pop()
+        chunks.pop()
+        last_fresh = fresh_contents.pop()
         prev = chunks.pop()
-        merged_content = prev.content + "\n\n" + last.content
+        merged_content = prev.content + "\n\n" + last_fresh
         chunks.append(
             ChunkResult(
                 content=merged_content,

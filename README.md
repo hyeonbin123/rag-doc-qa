@@ -13,7 +13,7 @@ FastAPI 공식 문서(영어 원문 154개, 한국어 번역 123개, 청크 1,53
 | AI | 언어별 로컬 임베딩(영어 `BAAI/bge-small-en-v1.5`, 한국어 `ibm-granite/granite-embedding-311m-multilingual-r2`를 384차원으로 잘라 씀. v13 단계 B에서 `intfloat/multilingual-e5-small` 대신 채택), 로컬 LLM A.X-4.0-Light(Qwen2.5-7B 계열의 한국어 특화 모델을 직접 4비트 GGUF로 변환, Ollama. v13에서 Qwen2.5-7B 대신 채택) 또는 Claude API, 언어별 cross-encoder 재정렬 |
 | 검색 모드 | `dense` / `hybrid`(벡터 + SQL로 계산한 BM25, 가중 RRF) / `rerank`(cross-encoder 재채점). 기본값은 `dense` (영어는 아래 v7, 한국어는 v9) |
 | 평가 | 질문셋 9개(영어: 테스트 30, 튜닝용 32, 새 테스트 43문항 / 한국어: 튜닝용 32·40, 테스트 43·40, 다음 단계용 40문항 / 다음 단계용 40문항의 영어판), Hit@k·MRR·검색 지연, LLM 판정 답변 정확도 |
-| 품질 관리 | pytest 194개(통합 테스트는 실제 Postgres + pgvector 사용), push마다 CI에서 ruff + pytest |
+| 품질 관리 | pytest 208개(통합 테스트는 실제 Postgres + pgvector 사용), push마다 CI에서 ruff + pytest |
 | 응답 시간 | 답변 생성 중앙값 약 9초 (v13 채택 측정: 영어 10.2초, 한국어 7.6초. 로컬 A.X-4.0-Light, RTX 2080 Ti, 데스크톱 앱이 GPU를 약 25% 쓰던 부하 조건). v12까지의 Qwen2.5-7B는 약 4~5초 (v10: 영어 5.3초, 한국어 4.3초) |
 
 ## 구조
@@ -76,6 +76,8 @@ flowchart LR
 
 ## 핵심 결과
 
+아래 수치는 모두 청크 겹침(`OVERLAP_TOKENS`)이 실제로는 적용되지 않던 청커(`CHUNKER_VERSION` 3까지)로 낸 값임. 겹침을 고친 청커(4)로 다시 잴 예정이고, 계획과 판정 규칙은 [docs/experiments.md](docs/experiments.md) v14에 측정 전에 적어 둠.
+
 | 단계 | 한 일 | 결과 |
 |---|---|---|
 | v1 → v3 | 문서 마크업 노이즈 정제 (헤딩 앵커, include 지시문, HTML) | MRR 0.828 → 0.933 |
@@ -134,6 +136,8 @@ flowchart LR
 cp .env.example .env
 # .env를 열어 ANTHROPIC_API_KEY 등을 채운다
 ```
+관리자 적재 API(`POST /admin/documents/ingest`, `X-Admin-Token` 헤더)는 `ADMIN_INGEST_TOKEN`이 비어 있으면(기본값) 꺼져 있고 403을 돌려준다. 예전 예시 값 `change-me-admin-token`도 공개된 값이라 같은 취급을 한다. 쓰려면 `python -c "import secrets; print(secrets.token_urlsafe(32))"`로 만든 값을 넣는다. 아래 3단계의 CLI 적재는 이 토큰이 필요 없다.
+
 호스트의 5432 포트를 쓸 수 없으면 `.env`의 `POSTGRES_HOST_PORT`와 `DATABASE_URL`의 포트를 같이 바꾼다(테스트용 `TEST_DATABASE_URL`도 마찬가지). 로컬에 Postgres가 이미 떠 있는 경우도 있지만, Windows에서는 Hyper-V/WSL이 부팅할 때 이 포트를 예약 범위에 넣는 경우도 있다(`netsh interface ipv4 show excludedportrange protocol=tcp`로 확인).
 
 ### 2. 전체 스택 실행
@@ -148,7 +152,7 @@ DB 헬스체크 통과 후 API가 마이그레이션(`alembic upgrade head`)을 
 ```bash
 docker compose exec api python -m scripts.ingest_fastapi_docs
 ```
-FastAPI 공식 문서를 가져와 청킹·임베딩 후 DB에 적재한다. 처음 적재는 CPU로 임베딩해서 약 8분 걸린다(데스크톱 CPU 기준, 문서 277개·청크 1,535개. v13 단계 B에서 한국어 임베딩 모델이 커져 한국어 적재가 77초에서 256초로 늘어난 것을 v12 측정값으로 더한 추정). 대상은 GitHub `tiangolo/fastapi`의 영어 원문(`docs/en/docs/`)과 한국어 번역(`docs/ko/docs/`)이고, 언어마다 정해진 임베딩 모델을 쓴다(`--languages en`처럼 일부 언어만 적재할 수도 있음). 재실행해도 내용이 바뀐 문서만 다시 처리한다(content hash 기반 idempotent). `--limit` 없이 전체를 적재하면, 적재한 언어에서 GitHub 트리에 더 이상 없는 문서(상류에서 지워지거나 이름이 바뀐 페이지, 새로 제외 대상이 된 페이지)를 청크와 함께 DB에서도 지운다. 그래서 `--commit`으로 예전 커밋을 주면 그 뒤에 추가된 페이지는 지워진다. 해시에 청커 버전(`CHUNKER_VERSION`)과 임베딩 모델 이름이 들어 있어서, 청킹 로직이나 임베딩 모델을 바꾸면 해당 문서가 자동으로 다시 처리된다. 그래서 v13 단계 B 전(한국어 모델이 e5-small일 때)에 적재한 DB는 `--languages ko`로 한국어를 한 번 다시 적재해야 한다. 그 전까지는 한국어 질문이 다른 모델로 만든 문서 벡터와 비교되어 검색이 제대로 되지 않는다. 바뀌거나 지워진 문서가 있으면 적재 후 `VACUUM (ANALYZE)`를 실행해, 지워진 이전 청크가 벡터 검색 품질을 떨어뜨리지 않게 한다. 컨테이너 안에서는 `uv run` 대신 `python -m`으로 실행한다. `uv run`은 실행할 때마다 dev 의존성까지 설치하려고 하기 때문이다.
+FastAPI 공식 문서를 가져와 청킹·임베딩 후 DB에 적재한다. 처음 적재는 CPU로 임베딩해서 약 8분 걸린다(데스크톱 CPU 기준, 문서 277개·청크 1,535개. 청크 수는 겹침을 고치기 전 청커 기준이고, 지금 청커(`CHUNKER_VERSION` 4)로는 1,606개. v13 단계 B에서 한국어 임베딩 모델이 커져 한국어 적재가 77초에서 256초로 늘어난 것을 v12 측정값으로 더한 추정). 대상은 GitHub `tiangolo/fastapi`의 영어 원문(`docs/en/docs/`)과 한국어 번역(`docs/ko/docs/`)이고, 언어마다 정해진 임베딩 모델을 쓴다(`--languages en`처럼 일부 언어만 적재할 수도 있음). 재실행해도 내용이 바뀐 문서만 다시 처리한다(content hash 기반 idempotent). `--limit` 없이 전체를 적재하면, 적재한 언어에서 GitHub 트리에 더 이상 없는 문서(상류에서 지워지거나 이름이 바뀐 페이지, 새로 제외 대상이 된 페이지)를 청크와 함께 DB에서도 지운다. 그래서 `--commit`으로 예전 커밋을 주면 그 뒤에 추가된 페이지는 지워진다. 해시에 청커 버전(`CHUNKER_VERSION`)과 임베딩 모델 이름이 들어 있어서, 청킹 로직이나 임베딩 모델을 바꾸면 해당 문서가 자동으로 다시 처리된다. 그래서 v13 단계 B 전(한국어 모델이 e5-small일 때)에 적재한 DB는 `--languages ko`로 한국어를 한 번 다시 적재해야 한다. 그 전까지는 한국어 질문이 다른 모델로 만든 문서 벡터와 비교되어 검색이 제대로 되지 않는다. 바뀌거나 지워진 문서가 있으면 적재 후 `VACUUM (ANALYZE)`를 실행해, 지워진 이전 청크가 벡터 검색 품질을 떨어뜨리지 않게 한다. 컨테이너 안에서는 `uv run` 대신 `python -m`으로 실행한다. `uv run`은 실행할 때마다 dev 의존성까지 설치하려고 하기 때문이다.
 
 ### 4. 데모 사용자 생성 및 질문
 ```bash

@@ -346,7 +346,8 @@ async def lexical_search(
 # 배경: v4는 ts_rank(IDF 없음)로 테스트셋 MRR이 0.933 → 0.898로 떨어졌고, v5에서 BM25로 바꿔도 테스트셋에서
 # dense보다 낮아 기본값이 되지 못했다. RRF는 두 목록이 함께 올린 결과를 한 목록만 1위로 올린 결과보다 높게
 # 치는 구조라, BM25로만 찾히는 정답(q017)이 밀리는 한계도 v5에서 확인했다.
-# 질문에 영문·숫자 단어가 없으면(예: 한글만 있는 질문) dense 검색으로 대신한다.
+# 질문에 영문·숫자 단어가 없으면(예: 한글만 있는 질문) dense 검색으로 대신하고, 그때는 받은 바닥값
+# score_floor(임베딩 모델별 값)를 dense 검색처럼 적용한다.
 async def hybrid_search(
     db: AsyncSession,
     question: str,
@@ -354,6 +355,7 @@ async def hybrid_search(
     top_k: int,
     lexical_weight: float = LEXICAL_WEIGHT,
     language: Language = "en",
+    score_floor: float = SCORE_FLOOR,
 ) -> list[RetrievedChunk]:
     """Fuse the dense and BM25 rankings with weighted Reciprocal Rank Fusion.
 
@@ -361,11 +363,12 @@ async def hybrid_search(
     raw scores because cosine similarity and BM25 live on unrelated scales. `score`
     stays the cosine similarity so it means the same thing in both modes.
     SCORE_FLOOR is not applied: a passage that only matched lexically can have a low
-    cosine score, and surfacing exactly those passages is the point of this mode.
+    cosine score, and surfacing exactly those passages is the point of this mode. A
+    question with no searchable words falls back to dense search, under `score_floor`.
     """
     words = _search_words(question)
     if not words:
-        return await similarity_search(db, query_embedding, top_k, language)
+        return await similarity_search(db, query_embedding, top_k, language, score_floor)
 
     result = await db.execute(
         text(
@@ -411,14 +414,20 @@ async def hybrid_search(
 
 
 # 재정렬 후보: dense 상위 pool개와 BM25 상위 pool개의 합집합(UNION이라 겹치면 한 번만). 순서는 의미 없고
-# score는 일단 코사인 유사도다. 영문·숫자 단어가 없으면 dense 후보만 쓴다(이때는 기본 바닥값이 적용된다).
+# score는 일단 코사인 유사도다. 영문·숫자 단어가 없으면 dense 후보만 쓰고, 그때는 받은 바닥값
+# score_floor(임베딩 모델별 값)를 적용한다.
 async def _rerank_candidates(
-    db: AsyncSession, question: str, query_embedding: list[float], pool: int, language: Language
+    db: AsyncSession,
+    question: str,
+    query_embedding: list[float],
+    pool: int,
+    language: Language,
+    score_floor: float = SCORE_FLOOR,
 ) -> list[RetrievedChunk]:
     """The union of the dense top `pool` and the BM25 top `pool`, in no particular order."""
     words = _search_words(question)
     if not words:
-        return await similarity_search(db, query_embedding, pool, language)
+        return await similarity_search(db, query_embedding, pool, language, score_floor)
 
     result = await db.execute(
         text(
@@ -462,17 +471,19 @@ async def rerank_search(
     reranker: "RerankerService",
     pool: int | None = None,
     language: Language = "en",
+    score_floor: float = SCORE_FLOOR,
 ) -> list[RetrievedChunk]:
     """Re-score the union of the dense and BM25 candidates with a cross-encoder.
 
     Unlike RRF, a candidate that only one list found is judged on its own text rather
     than on how many lists agreed on it. `score` becomes the reranker's relevance
-    probability. `pool` defaults to the language's RERANK_POOLS entry.
+    probability. `pool` defaults to the language's RERANK_POOLS entry. `score_floor` applies
+    when the question has no searchable words and the candidates are dense only.
     """
     # pool을 주지 않으면(평가의 --rerank-pool 생략, 앱) 질문 언어의 기본 후보 수를 쓴다. 후보마다
     # cross-encoder 입력은 적재 임베딩과 같은 '헤딩 경로 + 본문' 형식이다.
     pool = pool or RERANK_POOLS[language]
-    candidates = await _rerank_candidates(db, question, query_embedding, pool, language)
+    candidates = await _rerank_candidates(db, question, query_embedding, pool, language, score_floor)
     passages = [build_embedding_text(c.heading_path or "", c.content) for c in candidates]
     # The model call is CPU-bound; the model thread keeps the event loop free meanwhile.
     scores = await run_model(reranker.score, question, passages)
@@ -486,8 +497,10 @@ async def rerank_search(
 # 검색 진입점. 언어를 정하고(없으면 질문에서 판별) 모드에 맞는 함수로 보낸다.
 # - cross_lingual은 dense에서만 허용하고 평가 전용이다.
 # - rerank 모드인데 재정렬 모델이 없으면 설정 오류이므로 바로 예외를 낸다.
-# - 바닥값(score_floor)은 dense에만 넘긴다. hybrid는 docstring처럼 어휘로만 걸린 낮은 코사인 점수의 청크를
-#   살리는 것이 목적이라 바닥값을 쓰지 않는다.
+# - 바닥값(score_floor)은 dense 검색에 쓴다. hybrid·rerank는 docstring처럼 어휘로만 걸린 낮은 코사인 점수의
+#   청크를 살리는 것이 목적이라 바닥값을 쓰지 않지만, 질문에 영문·숫자 단어가 없어 dense로 대신할 때는 같은
+#   바닥값을 쓴다. 예전에는 이 대신 경로만 모델별 바닥값이 아닌 공통 SCORE_FLOOR를 썼다(SCORE_FLOORS가
+#   비어 있는 동안은 같은 값).
 async def retrieve(
     db: AsyncSession,
     question: str,
@@ -504,7 +517,8 @@ async def retrieve(
 ) -> list[RetrievedChunk]:
     """Search the docs translation matching `language`, detected from the question if None.
 
-    `score_floor` applies to dense search. `cross_lingual` (dense only) searches every
+    `score_floor` applies to dense search, including the dense fallback of the hybrid and
+    rerank modes for a question with no searchable words. `cross_lingual` (dense only) searches every
     translation instead, the question's own first; see cross_lingual_search.
     """
     language = language or detect_language(question)
@@ -519,10 +533,10 @@ async def retrieve(
         if reranker is None:
             raise ValueError("retrieval mode 'rerank' needs a reranker")
         return await rerank_search(
-            db, question, query_embedding, top_k, reranker, rerank_pool, language
+            db, question, query_embedding, top_k, reranker, rerank_pool, language, score_floor
         )
     if mode == "hybrid":
         return await hybrid_search(
-            db, question, query_embedding, top_k, lexical_weight, language
+            db, question, query_embedding, top_k, lexical_weight, language, score_floor
         )
     return await similarity_search(db, query_embedding, top_k, language, score_floor)

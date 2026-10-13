@@ -70,10 +70,10 @@ class Settings(BaseSettings):
     # 커밋은 요청·명령의 commit_sha(또는 --commit)로 정하고, 없으면 tiangolo/fastapi master 브랜치의 최신
     # 커밋을 쓴다(app/services/ingestion.py의 resolve_commit_sha).
     # admin_ingest_token: 관리자 적재 API(/admin/documents/ingest)의 X-Admin-Token 헤더와 비교하는
-    # 값(app/dependencies.py의 require_admin_token). 기본값은 공개된 예시 문자열이므로 실제로 띄울 때는
-    # .env에서 반드시 바꿔야 한다.
+    # 값(app/dependencies.py의 require_admin_token). 기본값은 비어 있고, 비어 있거나 예전 공개 예시
+    # 값('change-me-admin-token')이면 관리자 적재 API가 꺼진다(403). 쓰려면 .env에 추측할 수 없는 값을 넣는다.
     fastapi_docs_commit_sha: str = ""
-    admin_ingest_token: str = "change-me-admin-token"
+    admin_ingest_token: str = ""
 
     # 질문·문서 언어 → 임베딩 모델 이름. 'ko'만 한국어 모델이고 나머지는 영어 모델이다.
     # get_embedding_service(app/services/embedding.py)가 이것으로 어느 모델을 올릴지 정한다.

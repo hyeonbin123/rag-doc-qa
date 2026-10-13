@@ -24,7 +24,7 @@ language, with paired bootstrap intervals against a baseline arm.
 Usage:
     python -m eval.generator_arms split eval/runs/v13_sel_g0_qa_dev.gen.jsonl [...]
     python -m eval.generator_arms gate eval/runs/v13_gate_g1_qa_dev_ko.gen.jsonl --digest <sha256>
-        [--max-p50-ms 10000] [--require-prompt-match MODEL] [--prompt-tolerance 16]
+        [--max-p50-ms 10000] [--require-prompt-match MODEL] [--prompt-tolerance 1]
     python -m eval.generator_arms summary --tag v13_sel --label J1 --baseline G0
         --arm G0=eval/runs/v13_sel_g0_qa_dev.raw.gen.jsonl,eval/runs/v13_sel_g0_qa_dev_ko.raw.gen.jsonl
         --arm G1=... [--share G0+LG=G0]
@@ -50,7 +50,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 # 앱의 섞임 정규식(KANA_HAN_RE)과 페이지 키(page_key)를 그대로 써서 평가와 앱의 정의가 어긋나지 않게 한다.
-# 판정 기록 경로·bootstrap·잘림 허용치·답 해시는 다른 평가 모듈과 공유한다.
+# 판정 기록 경로·bootstrap·답 해시는 다른 평가 모듈과 공유한다.
 from app.services.generation import KANA_HAN_RE
 from app.services.retrieval import page_key
 from eval.answer_report import display_path
@@ -64,7 +64,7 @@ from eval.common import (
     write_report,
 )
 from eval.compare_judgments import paired_bootstrap_ci
-from eval.judge import TRUNCATION_TOLERANCE, answer_sha1
+from eval.judge import answer_sha1
 from eval.run_judge import judged_path, meta_path
 
 # 관문 기준(docs/experiments.md v13 관문 4~6): 인용 스키마를 보는 처음 문항 수 10, 출력
@@ -72,6 +72,10 @@ from eval.run_judge import judged_path, meta_path
 GATE_FIRST_ITEMS = 10
 GATE_MAX_LENGTH_STOPS = 1
 GATE_MAX_P50_MS = 10_000.0
+# 관문 7: Ollama가 읽은 프롬프트 토큰 수와 공식 템플릿으로 센 수의 허용 차이(±1). 어시스턴트 머리말이 빠진
+# 템플릿은 2토큰 차이라 이 값이어야 잡힌다. 예전 기본값은 잘림 판정 허용치(16)라, 규칙대로 보려면
+# --prompt-tolerance 1을 따로 줘야 했다(기록된 관문 실행은 1을 줬다).
+PROMPT_MATCH_TOLERANCE = 1
 
 
 # 문항 기록에서 답변 호출들의 진단 목록(첫 답, 가드가 걸렸으면 재시도). 진단이 없는 옛 기록이면 빈 목록.
@@ -262,16 +266,15 @@ def _loaded(meta: dict) -> dict | None:
 # - no_thinking, citations_first_10, done_length, p50: 위 기준값.
 # - prompt_match(지정한 모델만): Ollama가 읽은 프롬프트 토큰 수와 공식 채팅 템플릿으로 센 수의 차이. 직접
 #   변환한 A.X 모델의 템플릿이 공식 템플릿과 같은지 보는 관문 7이다.
-# 주의: 관문 7 규칙은 차이 ±1인데 허용치 기본값은 TRUNCATION_TOLERANCE(16)라, 규칙대로 보려면
-# --prompt-tolerance 1을 줘야 한다. 기록된 관문 실행에서는 32문항 모두 차이가 없었다(docs/experiments.md v13
-# 관문 결과).
+# 허용치 기본값은 관문 7 규칙의 ±1(PROMPT_MATCH_TOLERANCE)이다. 기록된 관문 실행에서는 32문항 모두 차이가
+# 없었다(docs/experiments.md v13 관문 결과).
 def gate(
     gen_path: Path,
     *,
     digest: str | None,
     max_p50_ms: float = GATE_MAX_P50_MS,
     require_prompt_match: bool = False,
-    prompt_tolerance: int = TRUNCATION_TOLERANCE,
+    prompt_tolerance: int = PROMPT_MATCH_TOLERANCE,
 ) -> dict:
     meta = read_json(meta_path(gen_path))
     records = sorted(read_jsonl(gen_path), key=lambda r: r.get("dataset_index") or 0)
@@ -517,8 +520,8 @@ def main() -> int:
     gp.add_argument(
         "--prompt-tolerance",
         type=int,
-        default=TRUNCATION_TOLERANCE,
-        help="allowed |Ollama - tokenizer| tokens",
+        default=PROMPT_MATCH_TOLERANCE,
+        help="allowed |Ollama - tokenizer| tokens (gate 7 rule: 1)",
     )
     su = sub.add_parser("summary")
     su.add_argument("--tag", required=True)

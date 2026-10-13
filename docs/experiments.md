@@ -1,8 +1,10 @@
-# 검색·답변 품질 실험 기록 (v1 ~ v13)
+# 검색·답변 품질 실험 기록 (v1 ~ v14)
 
 README의 측정 결과 요약에 대한 자세한 기록. 각 리포트 원본은 `eval/reports/`에 있음.
 
 표기 정리 (2026-10-09): 측정 조건 기록(v11, v12, v13)에 적혀 있던 게임과 데스크톱 앱의 제품 이름을 '게임', '배경화면 앱', '게임 런처'로 바꿨음. 문장의 뜻과 수치·결과·결정은 바꾸지 않았음.
+
+수정 전 코드로 낸 값 (2026-10-13): v1~v13의 모든 검색·답변 수치는 청크 겹침(`OVERLAP_TOKENS`)이 실제로는 한 번도 적용되지 않던 청커(`CHUNKER_VERSION` 1~3)로 낸 값임. 겹침을 고친 청커(4)로 다시 재는 계획은 v14 절에 있음. 아래 수치와 결정은 고치지 않았음.
 
 ## 평가 방식
 
@@ -1120,6 +1122,119 @@ dev = qa_dev_ko 32 + qa_dev2_ko 40, 72문항 한 번에. 복제 DB `ragdb_p1_<�
 - **확인 (규칙의 마지막 항목)**: 본 DB에서 `qa_dev_ko` MRR 0.831, `qa_dev2_ko` 0.915 (72문항 0.877, Hit@5 0.958, short 0) → v12 dev의 P 값과 같음. 72문항 모두 상위 10개의 페이지 순서와 점수가 v12 dev 실행(`v12_dev_g311`)과 같았음(점수 차 최대 0). 저장 벡터 확인 최소 cos 1.0. 새로 빌드한 이미지 안에서 같은 평가를 돌려도 0.831 / 0.915, 최소 cos 1.0
 - 리포트 `retrieval_eval_v13b_adopt_dev_main_*`, `retrieval_compare_v12_dev_g311_vs_v13b_adopt_dev_main_*`(DB가 달라 청크 id가 다르므로 '같은 상위 10개 청크' 0은 의미 없음), 기록 `eval/runs/v13b_adopt_dev_main.retrieval.jsonl`
 - 되돌리기: `EMBEDDING_MODEL_NAME_KO=intfloat/multilingual-e5-small`로 두고 한국어를 다시 적재함 (이미지를 다시 빌드할 필요 없음)
+
+## v14: 청크 겹침 버그 수정과 재측정 (규칙만, 아직 측정 안 함)
+
+이 절의 규칙은 2026-10-13에 측정 전에 기록함. 새 설정을 고르는 단계가 아니라, 청커 버그를 고친 뒤 지금 기본 구성으로 다시 재고 청크 겹침을 켜 둘지 끌지 정하는 단계임.
+
+**무엇이 잘못됐었나**
+- `app/services/chunking.py`의 `chunk_markdown`은 목표 크기(400토큰)에서 청크를 끊을 때 앞 청크 끝의 줄을 `OVERLAP_TOKENS`(50토큰) 안에서 다음 청크 앞에 겹쳐 넣도록 쓰여 있었음(모듈 docstring "overlapping chunks"). 그런데 `flush_buffer()`가 버퍼를 비운 다음에 `overlap_tail(buffer_lines)`를 불러서, 겹칠 줄이 늘 빈 목록이었음
+- 첫 커밋(2026-09-11)부터 그랬음. 그래서 **v1~v13의 모든 청크는 서로 겹치지 않았고, 이 문서와 README의 검색·답변 수치는 모두 겹침 없는 청커(`CHUNKER_VERSION` 1~3)로 낸 값임**. 그 수치와 결정은 측정한 그대로의 시스템(겹침 없음)에 대해서는 맞음. 틀린 것은 코드가 설명과 다르게 돌았다는 점임
+- v1 → v3의 청커 버전 변경(마크업 정제)은 이 버그와 관계없음
+
+**코드 변경** (이 규칙과 함께 넣음, `CHUNKER_VERSION` 3 → 4)
+- 겹칠 줄을 버퍼를 비우기 전에 고름
+- 겹쳐 온 줄만 남은 버퍼는 청크로 만들지 않음. 문서가 목표 크기에 닿는 줄에서 끝나면 앞 청크 끝만 되풀이하는 청크가 생기고, 그 청크가 끝의 작은 청크 합치기에 걸리면 한 청크 안에 같은 줄이 두 번 들어가기 때문
+- 끝의 작은 청크(150토큰 미만)를 앞 청크에 합칠 때 겹친 줄은 빼고 붙임
+- 회귀 테스트 3개(`tests/test_chunking.py`). 겹침 테스트는 고치기 전 코드에서 실패하는 것을, 나머지 둘은 위 두 경우를 막지 않은 수정(겹칠 줄만 먼저 고른 수정)에서 실패하는 것을 확인함
+- 적재 해시에 청커 버전이 들어 있으므로 다음 적재 때 모든 문서가 다시 청킹·임베딩됨
+
+**CPU 확인** (2026-10-13, 임베딩 없음. 고치기 전 청커와 고친 청커로 커밋 50113da 문서를 나눠 셈. 문서는 적재와 같은 선택으로 영어 154, 한국어 123개)
+
+| | 청크 수 v3 → v4 | 청크가 바뀐 문서 | v3에 없던 청크 | 앞 청크 끝 줄로 시작하는 청크 | 청크 토큰 합 v3 → v4 |
+|---|---|---|---|---|---|
+| 영어 | 914 → 956 | 82 / 154 | 710 / 956 | 437 | 367,516 → 385,144 (+4.8%) |
+| 한국어 | 621 → 650 | 87 / 123 | 389 / 650 | 267 | 255,877 → 265,865 (+3.9%) |
+
+- 고치기 전 청커의 청크 수(914, 621)는 지금 본 DB와 같음
+- 겹치는 부분의 중앙값은 영어 44, 한국어 39토큰. 줄 단위로만 겹치므로, 문단이 한 줄로 길게 쓰여 끝 줄 하나가 50토큰을 넘는 곳은 겹치지 않음
+- 청크 최대 길이는 821토큰 그대로이고, 중앙값은 422 → 421토큰
+- 앞 청크 끝만 되풀이하는 청크는 0개
+- `OVERLAP_TOKENS = 0`으로 두면 두 언어의 모든 문서에서 청크(본문, 헤딩 경로, 토큰 수)가 고치기 전과 같음. 아래 결정에서 겹침을 끌 때 이 값을 씀
+
+**영향받는 기존 수치** (지우지 않고 '수정 전 코드로 낸 값'으로 둠)
+- v1~v13의 모든 검색 지표(Hit@k, MRR, 검색 지연)와 답변 지표(판정 정확도·충실도, 환각 판정, 섞인 답, 키워드 커버리지, 생성 시간). README의 핵심 결과 표, 응답 예시, 응답 시간
+- 코퍼스 크기 "청크 1,535개"(영어 914, 한국어 621), README의 첫 적재 시간(약 8분), v12 관문 G2의 적재 시간, v13 단계 B 채택 반영의 재적재 시간
+- v11 CPU 확인의 판정·생성 프롬프트 길이 (패시지가 조금 길어짐. 청크 최대 길이는 그대로)
+- 영향 없음: 질문셋과 정답 라벨(페이지 단위), 판정 설정 J1, 이전 단계의 결정 규칙
+
+**구성**
+- C3: 본 DB `ragdb` 그대로 (v3 청크. 영어 `BAAI/bge-small-en-v1.5`, 한국어 granite-311m@384, v13 단계 B 채택 반영 뒤 상태)
+- C4: `ragdb`를 복사한 `ragdb_c4`에 v4 청커로 다시 적재 (같은 문서 커밋 50113da, 같은 임베딩 모델)
+- 나머지는 지금 기본값: dense, 바닥값 0.3, 생성 `a.x-4.0-light:q4_k_m`(digest `a874a70d…`, `think` 보내지 않음), `LANGUAGE_GUARD=true`, 답변 top-5, 판정 J1(`qwen2.5:7b-instruct`, digest `845dbda0…`, `num_ctx` 8192, `truncate: false`), Ollama 0.35.1(CUDA)
+
+**절차와 명령** (저장소 루트, DB 호스트 포트 55432, `PG=postgresql+asyncpg://raguser:ragpass@localhost:55432`)
+
+0. 확인: 작업 트리가 이 규칙의 커밋과 같음, 다른 GPU 작업 없음, Ollama `/api/ps` 비어 있음, `/api/version` 0.35.1, 두 모델의 digest
+1. C4 만들기 (CPU, GitHub에서 문서 277개를 다시 받음)
+   ```bash
+   docker compose exec -T db createdb -U raguser -T ragdb ragdb_c4
+   DATABASE_URL=$PG/ragdb_c4 uv run --no-sync python -m scripts.ingest_fastapi_docs --commit 50113da16fec53b66b80d75e80a89296de4fa5a5
+   docker compose exec -T db psql -U raguser -d ragdb_c4 -Atc "SELECT language, count(*) FROM chunks GROUP BY 1 ORDER BY 1"
+   ```
+   처리한 문서 277, 지운 문서 0, 청크 영어 956·한국어 650(위 CPU 확인)이어야 함
+2. 검색 (CPU, 결정에 씀): 튜닝용 셋, 조건마다 한 번, dense, top_k 10
+   ```bash
+   for c in c3:ragdb c4:ragdb_c4; do tag=${c%%:*}; db=${c#*:}
+     DATABASE_URL=$PG/$db uv run --no-sync python -m eval.run_retrieval_eval --mode dense \
+       --dataset eval/qa_dev.jsonl --tag v14_dev_en_$tag
+     DATABASE_URL=$PG/$db uv run --no-sync python -m eval.run_retrieval_eval --mode dense \
+       --dataset eval/qa_dev_ko.jsonl eval/qa_dev2_ko.jsonl --tag v14_dev_ko_$tag
+   done
+   for l in en ko; do uv run --no-sync python -m eval.retrieval_runs compare \
+     eval/runs/v14_dev_${l}_c3.retrieval.jsonl eval/runs/v14_dev_${l}_c4.retrieval.jsonl; done
+   ```
+   C3은 `qa_dev` MRR 0.858, 한국어 72문항 0.877(`qa_dev_ko` 0.831, `qa_dev2_ko` 0.915)이 나와야 함 (v13 단계 B 채택 반영의 확인 값)
+3. 답변 (GPU): 튜닝용 셋 104문항(`qa_dev` 32, `qa_dev_ko` 32, `qa_dev2_ko` 40). 셋마다 C3 → C4 순서로 한 번씩, 데이터셋 순서로 생성하고 split함. 결정 팔은 lg(가드 켬, 지금 기본값). 여섯 lg 파일을 한 번의 `run_judge`로 아래 순서대로 판정함
+   ```bash
+   for set in qa_dev qa_dev_ko qa_dev2_ko; do for c in c3:ragdb c4:ragdb_c4; do tag=${c%%:*}; db=${c#*:}
+     env -u OLLAMA_THINK DATABASE_URL=$PG/$db OLLAMA_MODEL_NAME=a.x-4.0-light:q4_k_m LANGUAGE_GUARD=true \
+       uv run --no-sync python -m eval.run_answer_eval --dataset eval/$set.jsonl --mode dense \
+       --score-floor 0.3 --skip-judge --order dataset --tag v14_${tag}_$set
+     uv run --no-sync python -m eval.generator_arms split eval/runs/v14_${tag}_$set.gen.jsonl
+   done; done
+   uv run --no-sync python -m eval.run_judge --label J1 --model qwen2.5:7b-instruct \
+     eval/runs/v14_c3_qa_dev.lg.gen.jsonl eval/runs/v14_c4_qa_dev.lg.gen.jsonl \
+     eval/runs/v14_c3_qa_dev_ko.lg.gen.jsonl eval/runs/v14_c4_qa_dev_ko.lg.gen.jsonl \
+     eval/runs/v14_c3_qa_dev2_ko.lg.gen.jsonl eval/runs/v14_c4_qa_dev2_ko.lg.gen.jsonl
+   uv run --no-sync python -m eval.generator_arms summary --tag v14 --label J1 --baseline C3 \
+     --arm C3=eval/runs/v14_c3_qa_dev.lg.gen.jsonl,eval/runs/v14_c3_qa_dev_ko.lg.gen.jsonl,eval/runs/v14_c3_qa_dev2_ko.lg.gen.jsonl \
+     --arm C4=eval/runs/v14_c4_qa_dev.lg.gen.jsonl,eval/runs/v14_c4_qa_dev_ko.lg.gen.jsonl,eval/runs/v14_c4_qa_dev2_ko.lg.gen.jsonl
+   uv run --no-sync python -m eval.compare_judgments truncation --tag v14_J1 eval/runs/v14_*.lg.J1.judge.jsonl
+   ```
+4. 결정 뒤 (CPU, 보고만, 결정에 쓰지 않음): 테스트셋 검색을 C3와 C4에서 한 번씩. `qa_dataset`, `qa_test2`(영어), `qa_test2_ko`, `qa_test3a_ko`, `qa_test3b_ko`(한국어). 위 2번과 같은 명령에서 `--dataset`과 태그(`v14_test_<셋>_<c3|c4>`)만 바꿈. 시스템을 고르는 데 쓰지 않으므로 테스트셋 사용 횟수로 세지 않음 (v11과 같은 이유)
+
+**판정 규칙**
+- 멈춤 (결정하지 않음): 판정 오류나 잘린 판정 프롬프트가 하나라도 있을 때(v11 이후 모두 0이었음), C3 검색이 2번의 값과 다를 때(DB가 바뀐 것), C4 청크 수가 CPU 확인과 다를 때. v13 규칙 변경 4의 100% GPU 조건도 그대로 씀
+- **겹침을 켜 둠(v4 유지)**: 아래를 모두 만족할 때
+  1. 검색, 언어별(영어 `qa_dev` 32, 한국어 72): MRR(C4) ≥ MRR(C3) − 0.02 이고, Hit@5로 맞힌 문항 수 C4 ≥ C3 − 1. 0.02는 32문항에서 한 문항이 1위에서 2위로 내려갈 때의 변화(약 0.016)를 덮는 폭으로, README의 "문항 하나가 순위 한 칸 바뀌면 MRR이 0.02 안팎"과 같음
+  2. 답변, 언어별 J1 정확도 합(영어 32, 한국어 72): C4 ≥ C3 − 2 (v11 D3, v12, v13 단계 B와 같은 허용 폭)
+  3. 한국어 72문항 결정 팔의 섞인 답(`kana_han`): C4 ≤ C3 (v13 단계 B B2 조건 2와 같음)
+- **하나라도 떨어지면 겹침을 끔**: `OVERLAP_TOKENS = 0`(CPU 확인대로 고치기 전과 같은 청크), `CHUNKER_VERSION` 5, 모듈 docstring과 주석을 "겹치지 않는 청크"로 고침. 이때는 v1~v13 수치가 그대로 지금 시스템의 값이 됨
+- 이 단계는 겹침을 켤지 끌지만 정함. 겹침 크기(50토큰)나 다른 청커 값을 고르지 않음. 고르려면 새 단계로 규칙을 먼저 적음
+- 보고만: Hit@3/10, 문항별 순위가 오르고 내린 문항, 정확도 차이의 대응표본 bootstrap 90% 구간(10,000회, seed 20261003), 환각 판정 수, 충실도 합, 생성 컨텍스트에 정답 페이지가 들어간 문항 수, raw 팔의 섞인 답, 생성 시간(부하 조건과 함께), 4번 테스트셋 검색
+
+**결정 뒤 할 일** (별도 커밋)
+- 켜 둘 때: 본 DB `ragdb`를 v4로 다시 적재(`DATABASE_URL=$PG/ragdb uv run --no-sync python -m scripts.ingest_fastapi_docs --commit 50113da16fec53b66b80d75e80a89296de4fa5a5`)하고, 청크 수와 2번 검색 결과가 C4와 같은지 확인. README의 청크 수, 첫 적재 시간, 핵심 결과 표에 v14 줄
+- 끌 때: 위 코드 변경을 겹침 없는 동작에 맞게 고치고 테스트도 맞춤. 본 DB는 다음 적재 때 같은 청크로 다시 임베딩됨
+- 어느 쪽이든 v1~v13의 수치는 고치지 않음. `ragdb_c4`는 결과를 기록한 뒤 지워도 됨
+
+**측정 조건** (v13 규칙 변경 1~4를 따름)
+- 모든 GPU 실행이 정확도 실행이라 유휴를 기다리지 않음. 시작 상태와 실행 중 10초 간격 감시(생성과 판정 모두)를 기록함
+- 다른 GPU 작업과 겹치지 않을 때 시작함 (GPU 메모리 11GB를 함께 쓰면 공유 메모리로 넘쳐 크게 느려짐). 적재와 검색(CPU)은 GPU 작업과 겹쳐도 되지만, 그때는 적재 시간을 보고하지 않음
+- 생성기와 판정 모델은 올린 뒤와 실행 뒤 `size_vram == size`, `context_length` 8192여야 함
+
+**비용 예상**
+- 내려받기: 모델 0. 적재가 GitHub에서 문서 원문 277개를 다시 받음
+- CPU: C4 적재 약 8분(README 첫 적재 추정과 같은 규모, 문서 277개를 모두 다시 임베딩), 검색 평가 4번 각 1분 안팎, 결정 뒤 테스트셋 검색 10번
+- GPU: 약 0.85시간. 생성 208회(104문항 × 2)와 판정 208회로, v13 단계 B B2 실측(생성·판정 80회씩 0.32시간)을 문항 수로 늘린 값. A.X의 영어 답이 한국어보다 길어(v13 채택: 생성 중앙값 영어 10.2초, 한국어 7.6초) 조금 더 걸릴 수 있음
+- 켜 둘 때 본 DB 재적재 약 8분(CPU)
+
+**위험** (결정을 바꾸지 않음)
+- 튜닝용 셋은 v5~v13에서 여러 번 썼음. 이번에는 값을 고르지 않고 켜고 끄는 두 가지만 보므로 과적합 여지는 작음
+- 판정은 같은 답에서도 문항 몇 개가 ±1 움직임(v11, v13). 허용 폭 −2는 이전 단계와 같음
+- 섞인 답은 같은 요청에서도 실행마다 ±1문항 바뀔 수 있음(v13 주의 사항). A.X는 v13과 v13 단계 B에서 섞인 답이 0이었음
+- 겹침은 줄 단위라, 한 줄 문단이 많은 페이지에서는 거의 생기지 않음. 효과가 작으면 조건 1~3은 노이즈 안에서 정해질 수 있음
 
 ## 기타 관찰
 

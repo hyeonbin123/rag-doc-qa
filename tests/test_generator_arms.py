@@ -319,19 +319,20 @@ def test_gate_can_require_ollama_and_tokenizer_prompt_counts_to_agree(tmp_path):
     assert strict["passed"] is False and strict["checks"]["prompt_match"]["ok"] is False
 
 
-# 허용 차이를 ±1로 좁혀야 '어시스턴트 머리말이 빠진 템플릿'(2토큰 차이)을 잡을 수 있다. 기본 허용치(잘림
-# 판정의 16토큰)로는 통과해 버리므로, v13 관문 7은 ±1로 돌렸다.
+# 허용 차이가 ±1이어야 '어시스턴트 머리말이 빠진 템플릿'(2토큰 차이)을 잡을 수 있다. 관문 7 규칙이 ±1이므로
+# 기본 허용치도 1이다. 예전 기본값(잘림 판정의 16토큰)으로는 통과해 버려서, 규칙대로 보려면
+# --prompt-tolerance 1을 따로 줘야 했다.
 def test_the_prompt_match_tolerance_catches_a_missing_assistant_header(tmp_path):
     # A Modelfile template that drops "<|im_start|><|assistant|>" reads 2 tokens fewer.
     records = [gen(f"k{i}", generation_prompt_tokens_counted=1500) for i in range(1, 13)]
     records[0]["generation_prompt_tokens_counted"] = 1502
     path = write_gate_run(tmp_path, records, GATE_META)
 
-    within_16 = generator_arms.gate(path, digest="abc123", require_prompt_match=True)
-    within_1 = generator_arms.gate(path, digest="abc123", require_prompt_match=True, prompt_tolerance=1)
+    by_default = generator_arms.gate(path, digest="abc123", require_prompt_match=True)
+    within_16 = generator_arms.gate(path, digest="abc123", require_prompt_match=True, prompt_tolerance=16)
 
+    assert by_default["checks"]["prompt_match"]["ok"] is False
     assert within_16["checks"]["prompt_match"]["ok"] is True
-    assert within_1["checks"]["prompt_match"]["ok"] is False
 
 
 # 관문 리포트 표의 모든 줄이 머리와 같은 칸 수인지 확인한다. 2026-10-05 리포트는 첫 실행의 확인 항목으로

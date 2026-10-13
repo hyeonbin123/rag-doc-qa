@@ -87,17 +87,17 @@ async def test_similarity_search_returns_closest_chunk(db_session):
     assert results[0].content == "relevant content"
 
 
-# 결과가 top_k개를 넘지 않는지 확인한다.
+# 결과가 top_k개로 잘리는지 확인한다. 다섯 청크 모두 바닥값(0.3)을 넘는 점수라, 결과 수를 줄이는 것은
+# top_k뿐이다. 예전 테스트는 질문 벡터가 영벡터였는데, pgvector는 영벡터와의 코사인 거리를 NaN으로 내서 모든
+# 결과가 바닥값 비교에서 빠졌다. 결과 0개로도 'len <= 2'가 통과해 top_k를 확인하지 못했다.
 @pytest.mark.asyncio
 async def test_similarity_search_respects_top_k(db_session):
-    for i in range(5):
-        vector = [float(i)] + [0.0] * (EMBEDDING_DIM - 1)
-        await _seed_document_with_chunk(db_session, vector, f"content {i}")
+    for i, cosine in enumerate((0.9, 0.8, 0.7, 0.6, 0.5)):
+        await _seed_document_with_chunk(db_session, _at_similarity(cosine), f"content {i}")
 
-    query_vector = [0.0] * EMBEDDING_DIM
-    results = await similarity_search(db_session, query_vector, top_k=2)
+    results = await similarity_search(db_session, _unit(1.0), top_k=2)
 
-    assert len(results) <= 2
+    assert [r.content for r in results] == ["content 0", "content 1"]
 
 
 # dense에서는 코사인 0이라 바닥값에 잘리는 청크도, 질문 단어가 본문에 있으면 hybrid(벡터 + BM25를 가중 RRF로
@@ -382,6 +382,25 @@ async def test_retrieve_passes_the_score_floor_to_dense_search(db_session):
     lowered = await retrieve(
         db_session, "질문", _unit(1.0), 5, "dense", language="ko", score_floor=0.2
     )
+    assert [r.content for r in lowered] == ["ko a"]
+
+
+# hybrid·rerank 모드에서 질문에 영문·숫자 단어가 없으면 dense로 대신하는데, 그때도 retrieve가 받은
+# 바닥값(앱에서는 임베딩 모델별 값)을 써야 한다. 예전에는 이 경로만 공통 SCORE_FLOOR(0.3)를 써서, 모델별
+# 바닥값을 0.2로 두어도 점수 0.25 청크가 잘렸다.
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["hybrid", "rerank"])
+async def test_the_dense_fallback_of_hybrid_and_rerank_uses_the_given_score_floor(db_session, mode):
+    await _seed_page_chunk(db_session, "docs/ko/docs/a.md", _at_similarity(0.25), "ko a")
+    reranker = KeywordReranker("ko") if mode == "rerank" else None
+
+    # "질문" has no [A-Za-z0-9] word, so both modes search with the dense list alone.
+    shared = await retrieve(db_session, "질문", _unit(1.0), 5, mode, language="ko", reranker=reranker)
+    lowered = await retrieve(
+        db_session, "질문", _unit(1.0), 5, mode, language="ko", reranker=reranker, score_floor=0.2
+    )
+
+    assert shared == []
     assert [r.content for r in lowered] == ["ko a"]
 
 

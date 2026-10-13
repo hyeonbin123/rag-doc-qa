@@ -5,6 +5,7 @@
 # [import] SQLAlchemy func·select는 사용자 행 수를 직접 세는 데 쓴다.
 
 import pytest
+from pydantic import ValidationError
 from sqlalchemy import func, select
 
 # 예전 형식의 행을 직접 넣을 사용자 모델과 해시 함수, 테스트 대상 seed_user.
@@ -52,4 +53,15 @@ async def test_seed_finds_a_row_an_older_seed_stored_as_typed(db_session):
 async def test_seed_rejects_a_value_that_is_not_an_email(db_session):
     with pytest.raises(ValueError):
         await seed_user(db_session, "not-an-email", "password123")
+    assert await db_session.scalar(select(func.count()).select_from(User)) == 0
+
+
+# 비밀번호도 가입 API와 같은 규칙으로 DB를 건드리기 전에 거부한다: 8자 미만(예전에는 그대로 계정이 생김)과
+# UTF-8 72바이트 초과(한글 25자 = 75바이트, 예전에는 bcrypt 5의 ValueError traceback). pydantic
+# ValidationError인지 보는 것은 bcrypt가 내는 일반 ValueError와 구분하려는 것이다.
+@pytest.mark.asyncio
+@pytest.mark.parametrize("password", ["short", "가" * 25])
+async def test_seed_refuses_a_password_registration_refuses(db_session, password):
+    with pytest.raises(ValidationError):
+        await seed_user(db_session, "ivan@example.com", password)
     assert await db_session.scalar(select(func.count()).select_from(User)) == 0

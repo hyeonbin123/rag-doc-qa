@@ -4,7 +4,7 @@
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 # NulFreeStr: DB에 저장되는 문자열에서 NUL(U+0000)을 422로 거부하는 타입(app/schemas/text.py).
 from app.schemas.text import NulFreeStr
@@ -24,13 +24,16 @@ class IngestRequest(BaseModel):
 
 # 적재 결과 요약. documents_deleted는 트리에서 사라져 지운 문서 수다(전에 없던 필드라 기본값 0).
 # chunks_skipped는 해시가 같아 건너뛴 '문서' 수를 센다(이름과 달리 청크 수가 아님, ingestion.py에서 문서마다
-# 1씩 더함). elapsed_ms는 전체 소요 시간.
+# 1씩 더함). 응답 필드 이름을 바꾸면 API를 쓰는 쪽이 깨지므로 이름은 두고, OpenAPI 설명에 뜻을 적는다.
+# elapsed_ms는 전체 소요 시간.
 class IngestResult(BaseModel):
     documents_processed: int
     documents_deleted: int = 0
     chunks_created: int
     chunks_updated: int
-    chunks_skipped: int
+    chunks_skipped: int = Field(
+        description="Documents (not chunks) skipped because their content hash was unchanged."
+    )
     elapsed_ms: int
 
 

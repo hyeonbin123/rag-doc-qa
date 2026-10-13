@@ -4,6 +4,7 @@
 # app.dependency_overrides로 가짜 임베딩·생성기·토큰 검사를 끼워 넣어 실제 모델이나 외부 API 없이 돌 수
 # 있다(tests/conftest.py, tests/test_query.py, tests/test_documents.py).
 
+import secrets
 from collections.abc import Callable
 
 # FastAPI 의존성 도구와 OAuth2 Bearer 토큰 추출기, 그리고 앱 내부의 설정·DB 세션·서비스 조회 함수들을
@@ -79,14 +80,29 @@ def get_reranker(
     return get_reranker_service
 
 
+# 관리자 토큰으로 받지 않는 값: 비어 있음(설정 기본값)과 예전 기본값이자 .env.example에 있던 공개 예시 문자열.
+# 누구나 아는 값이므로 이 값이면 관리자 적재 API를 끈다. CLI 적재(scripts/ingest_fastapi_docs.py)는 이 토큰을
+# 쓰지 않으므로 로컬 개발 흐름은 그대로다.
+PLACEHOLDER_ADMIN_TOKENS = frozenset({"", "change-me-admin-token"})
+
+
 # 관리자 적재 API(/admin/documents/ingest)를 지키는 의존성. X-Admin-Token 헤더가 설정의 admin_ingest_token과
 # 같아야 통과한다. Header(...)라 헤더가 아예 없으면 FastAPI가 422를, 값이 다르면 403을 돌려준다.
 # 적재는 GitHub 접속, DB 변경, 사라진 문서 삭제까지 하는 작업이라 일반 JWT 사용자와 분리된 별도 토큰으로
 # 막는다.
-# 주의: 일반 문자열 비교(!=)라 상수 시간 비교는 아니다.
+# - 설정값이 비었거나 공개 예시 값이면 어떤 헤더가 와도 403이다(API 포트는 compose가 모든 인터페이스에 연다).
+# - 비교는 secrets.compare_digest로 해 일치하는 앞부분 길이에 따라 응답 시간이 달라지지 않게 한다. 바이트로
+#   바꿔 넘기는 이유: 헤더는 latin-1로 풀리므로 ASCII 밖 문자가 올 수 있는데, compare_digest는 ASCII 밖
+#   문자가 든 str을 받으면 TypeError(500)를 낸다.
 async def require_admin_token(
     x_admin_token: str = Header(...),
     settings: Settings = Depends(get_settings),
 ) -> None:
-    if x_admin_token != settings.admin_ingest_token:
+    expected = settings.admin_ingest_token
+    if expected.strip() in PLACEHOLDER_ADMIN_TOKENS:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin ingest is disabled: set ADMIN_INGEST_TOKEN to a secret value",
+        )
+    if not secrets.compare_digest(x_admin_token.encode("utf-8"), expected.encode("utf-8")):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid admin token")

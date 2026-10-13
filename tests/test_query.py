@@ -208,3 +208,16 @@ async def test_ask_rejects_a_lone_surrogate(authed_client):
 
     assert resp.status_code == 422
     assert resp.json()["detail"][0]["loc"] == ["body", "question"]
+
+
+# 채팅 화면(app/web/static/chat.js)은 질문 422의 거부 이유(type)로 안내 문구를 고른다: string_too_long이면
+# 길이 안내, 그 밖에는 '보낼 수 없는 문자' 안내. 예전 화면은 NUL 문자 422에도 '2000자 이내' 안내를 보였다.
+# 화면이 기대는 서버 응답의 type을 고정한다.
+@pytest.mark.asyncio
+async def test_a_too_long_question_and_a_nul_character_differ_in_the_422_type(authed_client):
+    too_long = await authed_client.post("/query/ask", json={"question": "x" * 2001})
+    with_nul = await authed_client.post("/query/ask", json={"question": "What is\x00FastAPI?"})
+
+    assert too_long.status_code == with_nul.status_code == 422
+    assert [d["type"] for d in too_long.json()["detail"]] == ["string_too_long"]
+    assert "string_too_long" not in [d["type"] for d in with_nul.json()["detail"]]

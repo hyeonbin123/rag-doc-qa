@@ -5,6 +5,8 @@
 # 1위에서 3위로 떨어졌다(docs/experiments.md v1 → v3). 이 테스트들이 그 동작을 고정한다.
 
 from app.services.chunking import (
+    OVERLAP_TOKENS,
+    TARGET_TOKENS,
     build_embedding_text,
     chunk_markdown,
     clean_markdown,
@@ -145,3 +147,56 @@ def test_clean_markdown_keeps_definition_text_from_dfn_and_abbr():
     assert 'extra steps (also called "cleanup code")' in cleaned
     assert "ORM (Object Relational Mapper)" in cleaned
     assert "<" not in cleaned
+
+
+# --- 청크 겹침 (CHUNKER_VERSION 4, docs/experiments.md v14) ---
+
+# 서로 다른 짧은 줄(줄마다 약 11토큰). 줄이 모두 달라서 어느 줄이 어느 청크에 몇 번 들어갔는지 셀 수 있다.
+SHORT_LINES = [f"Line {i:03d} says one short thing about path parameters." for i in range(200)]
+
+
+# 줄을 앞에서부터 쌓아 토큰 합이 처음으로 TARGET_TOKENS에 닿는 줄 수. 청커는 줄마다 센 토큰을 더해 끊을 때를
+# 정하므로 같은 방식으로 센다.
+def _lines_to_reach_target() -> int:
+    total = 0
+    for n, line in enumerate(SHORT_LINES, start=1):
+        total += count_tokens(line)
+        if total >= TARGET_TOKENS:
+            return n
+    raise AssertionError("SHORT_LINES is too short")
+
+
+# 목표 크기에서 끊긴 청크 다음 청크는 앞 청크 끝의 줄(OVERLAP_TOKENS 이하)로 시작해야 한다. CHUNKER_VERSION
+# 3까지는 겹칠 줄을 버퍼를 비운 뒤에 골라 다음 청크가 늘 새 줄로 시작했다.
+def test_a_chunk_cut_at_the_target_size_overlaps_the_next_one():
+    chunks = chunk_markdown("\n".join(SHORT_LINES))
+
+    assert len(chunks) >= 3
+    for prev, cur in zip(chunks, chunks[1:], strict=False):
+        prev_lines = prev.content.split("\n")
+        lead = [line for line in cur.content.split("\n") if line in prev_lines]
+        assert lead, "the next chunk repeats none of the previous chunk's lines"
+        assert prev_lines[-len(lead) :] == lead == cur.content.split("\n")[: len(lead)]
+        assert sum(count_tokens(line) for line in lead) <= OVERLAP_TOKENS
+
+
+# 문서가 목표 크기에 닿는 줄에서 바로 끝나면, 겹쳐 둔 줄만 남는다. 그 줄들로 청크를 만들면 앞 청크 끝을
+# 되풀이할 뿐이고(끝의 작은 청크로 합쳐지면 한 청크 안에 같은 줄이 두 번 들어간다) 새 내용이 없으므로 청크를
+# 만들지 않는다.
+def test_overlap_lines_alone_never_make_a_chunk():
+    lines = SHORT_LINES[: _lines_to_reach_target()]
+
+    chunks = chunk_markdown("\n".join(lines))
+
+    assert [c.content.split("\n") for c in chunks] == [lines]
+
+
+# 끝에 남은 작은 청크(150토큰 미만)를 앞 청크에 합칠 때, 앞 청크 끝과 겹치는 줄은 다시 붙이지 않는다. 합친
+# 청크에는 문서의 줄이 순서대로 한 번씩만 들어 있어야 한다.
+def test_a_small_trailing_chunk_merges_without_repeating_the_overlap():
+    lines = SHORT_LINES[: _lines_to_reach_target() + 3]
+
+    chunks = chunk_markdown("\n".join(lines))
+
+    assert len(chunks) == 1
+    assert [line for line in chunks[0].content.split("\n") if line] == lines

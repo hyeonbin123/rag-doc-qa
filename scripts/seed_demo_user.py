@@ -19,27 +19,30 @@ import asyncio
 # SQLAlchemy 비동기 세션 타입. seed_user가 테스트의 세션도 받을 수 있게 인자로 받는다.
 from sqlalchemy.ext.asyncio import AsyncSession
 
-# 앱의 세션·사용자 모델과 함께, 가입과 같은 정규화(normalize_email), 같은 bcrypt 해시(hash_password), 로그인과
-# 같은 조회(find_user_by_email)를 가져와 앱과 다른 규칙이 생기지 않게 한다.
+# 앱의 세션·사용자 모델과 함께, 가입과 같은 정규화(normalize_email)와 비밀번호 규칙(UserRegister), 같은 bcrypt
+# 해시(hash_password), 로그인과 같은 조회(find_user_by_email)를 가져와 앱과 다른 규칙이 생기지 않게 한다.
 from app.db.session import async_session_maker
 from app.models.user import User
-from app.schemas.auth import normalize_email
-from app.services.security import hash_password
+from app.schemas.auth import MIN_PASSWORD_LENGTH, UserRegister, normalize_email
+from app.services.security import MAX_PASSWORD_BYTES, hash_password
 from app.services.users import find_user_by_email
 
 
 # 계정을 만들거나 이미 있는 계정을 찾아 (사용자, 새로 만들었는지)를 돌려준다.
 # 이미 있으면 비밀번호를 바꾸지 않고 그 행을 그대로 돌려준다. 예전 스크립트가 입력 그대로 저장한 행도 찾으므로
 # 같은 사람의 계정이 두 개 생기지 않는다.
-# 주의: 가입 API의 비밀번호 규칙(8자 이상, UTF-8 72바이트 이하)은 여기서 검사하지 않는다.
+# 비밀번호는 가입 API와 같은 규칙(8자 이상, UTF-8 72바이트 이하)으로 먼저 검사한다. 예전에는 검사하지 않아
+# 짧은 비밀번호 계정이 만들어졌고, 72바이트를 넘으면 bcrypt 5의 ValueError traceback으로 끝났다.
 async def seed_user(db: AsyncSession, email: str, password: str) -> tuple[User, bool]:
     """Return (user, created). The address is stored the way /auth/register stores it.
 
     The existing-user check goes through the same lookup as login, so it also finds a
     row an earlier version of this script stored exactly as typed.
     """
-    # 먼저 정규화부터 해서, 주소가 아니면 DB를 건드리기 전에 ValueError로 끝낸다.
+    # 먼저 정규화와 비밀번호 검사부터 해서, 가입이 거부할 값이면 DB를 건드리기 전에 ValueError(pydantic
+    # ValidationError)로 끝낸다.
     stored_email = normalize_email(email)  # ValueError if it is not an address
+    UserRegister(email=stored_email, password=password)  # ValueError if /auth/register would refuse it
     existing = await find_user_by_email(db, email)
     if existing is not None:
         return existing, False
@@ -68,9 +71,17 @@ if __name__ == "__main__":
     parser.add_argument("email")
     parser.add_argument("password")
     args = parser.parse_args()
-    # 주소 형식이 틀리면 traceback 대신 argparse의 사용법 오류로 친절하게 끝낸다.
+    # 주소 형식이나 비밀번호가 가입 규칙에 맞지 않으면 traceback 대신 argparse의 사용법 오류로 친절하게
+    # 끝낸다.
     try:
-        normalize_email(args.email)
+        email = normalize_email(args.email)
     except ValueError:
         parser.error(f"not a valid email address: {args.email!r}")
+    try:
+        UserRegister(email=email, password=args.password)
+    except ValueError:
+        parser.error(
+            f"the password must be at least {MIN_PASSWORD_LENGTH} characters and at most "
+            f"{MAX_PASSWORD_BYTES} bytes in UTF-8, as /auth/register requires"
+        )
     asyncio.run(main(args.email, args.password))
