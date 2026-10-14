@@ -1,13 +1,12 @@
 #!/usr/bin/env bash
-# Run zap/automation.yaml with a ZAP release (cross-platform package, Java 17 or later) against the scan target
-# (docs/security-scan.md): the api image started with zap/compose.scan.yml.
+# ZAP 릴리스(크로스플랫폼 패키지, Java 17 이상)로 zap/automation.yaml을 스캔 대상(docs/security-scan.md)에 대고
+# 실행한다. 스캔 대상은 zap/compose.scan.yml로 띄운 api 이미지다.
 #
-#   ZAP_DIR=<folder with zap-2.17.0.jar> ACCESS_TOKEN=<access token of a user of the scanned database> \
+#   ZAP_DIR=<zap-2.17.0.jar가 있는 폴더> ACCESS_TOKEN=<스캔하는 DB에 있는 사용자의 접근 토큰> \
 #     zap/run_zap.sh <name>
 #
-# The target must already be running on TARGET (default http://127.0.0.1:8000). The reports <name>.json and
-# <name>.md, the ZAP log and a fresh ZAP home folder go to work/zap/<name>/. Output goes to files only, never
-# to a pipe.
+# 대상은 TARGET(기본 http://127.0.0.1:8000)에서 이미 실행 중이어야 한다. 리포트 <name>.json과 <name>.md, ZAP
+# 로그, 새로 만든 ZAP 홈 폴더는 work/zap/<name>/에 생긴다. 출력은 파이프로 보내지 않고 파일로만 받는다.
 # [파일 역할] 서비스 코드를 바꾼 뒤 실행하는 OWASP ZAP 스캔 실행기. Docker 없이 ZAP 공식 크로스플랫폼
 # 패키지(jar)를 Java로 직접 돌리고, 스캔 내용은 zap/automation.yaml 하나에 정한다(docs/security-scan.md).
 # [왜 이렇게 하나] 위 설명대로 스캐너 출력은 파이프가 아니라 파일로만 받는다. 차수마다 리포트·로그·ZAP 홈
@@ -26,9 +25,9 @@ root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 : "${ACCESS_TOKEN:?set ACCESS_TOKEN to an access token from POST /auth/login on the target}"
 
 # 경로를 절대 경로로 바꾸고, Git Bash(Windows)에서는 cygpath -m으로 Java가 이해하는 'C:/...' 형태로 바꾼다.
-# Linux처럼 cygpath가 없으면 절대 경로 그대로 쓴다.
-native() { # the absolute path in a form Java understands (the Windows form under Git Bash). ZAP resolves a
-  # relative path against the plan's folder (zap/), not the working directory.
+# Linux처럼 cygpath가 없으면 절대 경로 그대로 쓴다. 상대 경로를 넘기지 않는 이유는 ZAP이 상대 경로를 작업
+# 폴더가 아니라 계획 파일의 폴더(zap/) 기준으로 풀기 때문이다.
+native() {
   local abs
   abs=$(cd "$(dirname "$1")" && pwd)/$(basename "$1")
   if command -v cygpath > /dev/null; then cygpath -m "$abs"; else printf '%s\n' "$abs"; fi
@@ -50,7 +49,7 @@ mkdir -p "$out"
 # 붙지 않게).
 export TARGET=${TARGET:-http://127.0.0.1:8000}
 host=${TARGET#*://}
-# ZAP adds this header to every request for the target host (see zap/automation.yaml).
+# ZAP은 대상 호스트로 가는 모든 요청에 이 헤더를 붙인다(zap/automation.yaml 참고).
 export ZAP_AUTH_HEADER=Authorization ZAP_AUTH_HEADER_VALUE="Bearer $ACCESS_TOKEN" ZAP_AUTH_HEADER_SITE=${host%%[:/]*}
 export REPORT_DIR REPORT_NAME=$name
 REPORT_DIR=$(native "$out")

@@ -1,27 +1,24 @@
-"""Arms, gate and summaries for the generation-model comparison (docs/experiments.md v13).
+"""생성 모델 비교(docs/experiments.md v13)에 쓰는 팔(arm) 나누기, 관문 검사, 요약.
 
-Selection and adoption runs generate with the language guard on (LANGUAGE_GUARD=true).
-eval/run_answer_eval.py then records the final answer and, when the guard regenerated,
-the first answer too. One run therefore gives two arms:
+선택 실행과 채택 실행은 언어 가드를 켠 채(LANGUAGE_GUARD=true) 생성한다. 그러면 eval/run_answer_eval.py가
+최종 답을 기록하고, 가드가 다시 생성했으면 첫 답도 함께 기록한다. 그래서 실행 한 번에서 두 팔이 나온다:
 
-- raw: the generator alone, i.e. the first answer call, which is what a run without the
-  guard returns (same request; the guard's extra call comes after it)
-- lg: the generator with the guard, i.e. the final answer
+- raw: 생성기만 쓴 팔, 즉 첫 답변 호출. 가드 없이 돌린 실행이 돌려줄 답과 같다(요청이 같고, 가드의 추가
+  호출은 그 뒤에 온다)
+- lg: 가드를 붙인 생성기, 즉 최종 답
 
-`split` writes them as <stem>.raw.gen.jsonl and <stem>.lg.gen.jsonl next to the run, so
-eval/run_judge.py judges each like any other run. In the raw arm an item the guard
-regenerated has no citations (the citation call saw the final answer) and its generation
-time leaves out the retry.
+`split`은 두 팔을 실행 파일 옆에 <stem>.raw.gen.jsonl과 <stem>.lg.gen.jsonl로 써서, eval/run_judge.py가 각각을
+다른 실행처럼 판정하게 한다. raw 팔에서 가드가 다시 생성한 문항은 인용이 없고(인용 호출은 최종 답을 봤다),
+생성 시간에서 재시도 시간을 뺀다.
 
-`gate` checks a guard-off run of one candidate against the v13 smoke gate: the model fully
-on the GPU, its pinned digest, no reasoning output, schema-valid citation replies on the
-first 10 items, at most one answer cut by the output limit, and the generation p50.
+`gate`는 후보 하나를 가드를 끄고 돌린 실행이 v13 스모크 관문을 통과하는지 본다: 모델이 GPU에 다 올라갔는지,
+고정한 digest인지, 추론 출력이 없는지, 처음 10문항의 인용 응답이 스키마대로인지, 출력 상한에서 잘린 답이
+1개 이하인지, 생성 시간 p50.
 
-`summary` lines up arms over the same items: J1 correctness, hallucination flags,
-kana/han answers, generation p50, stop reasons, citation checks, guard counts, by
-language, with paired bootstrap intervals against a baseline arm.
+`summary`는 같은 문항에서 여러 팔을 나란히 놓고 언어별로 J1 정확도, 환각 표시, 가나·한자가 섞인 답, 생성
+시간 p50, 멈춘 이유, 인용 지표, 가드 횟수를 집계하며, 기준 팔과의 차이를 대응표본 bootstrap 구간으로 낸다.
 
-Usage:
+사용법:
     python -m eval.generator_arms split eval/runs/v13_sel_g0_qa_dev.gen.jsonl [...]
     python -m eval.generator_arms gate eval/runs/v13_gate_g1_qa_dev_ko.gen.jsonl --digest <sha256>
         [--max-p50-ms 10000] [--require-prompt-match MODEL] [--prompt-tolerance 1]
@@ -87,14 +84,14 @@ def _calls(record: dict) -> list[dict]:
 # 계산하며, 생성 시간에서 재시도 시간을 뺀다. 인용 호출은 최종 답을 보고 했으므로 이 문항의 인용은
 # 없음(None)으로 둔다. 가드가 걸리지 않은 문항은 그대로다.
 def unguarded_record(record: dict) -> dict:
-    """The raw arm: what the generator returned before the guard looked at it."""
+    """raw 팔: 가드가 보기 전에 생성기가 돌려준 답."""
     out = dict(record)
     calls = _calls(record)
     if record.get("guard_applied"):
         answer = record["unguarded_answer"]
         out.update(
             answer=answer,
-            cited_chunk_numbers=None,  # the citation call saw the final answer
+            cited_chunk_numbers=None,  # 인용 호출은 최종 답을 봤다
             generation_ms=record["generation_ms"] - (record.get("guard_retry_ms") or 0.0),
             keyword_coverage=keyword_coverage(answer, record.get("must_include_keywords") or []),
             kana_han=bool(KANA_HAN_RE.search(answer)),
@@ -106,7 +103,7 @@ def unguarded_record(record: dict) -> dict:
 
 # lg 팔 기록: 원래 기록(최종 답) 그대로에 팔 이름과 마지막 답변 호출의 끝난 이유만 더한다.
 def guarded_record(record: dict) -> dict:
-    """The lg arm: the final answer, as the app with the guard on would return it."""
+    """lg 팔: 가드를 켠 앱이 돌려줄 최종 답."""
     out = dict(record)
     calls = _calls(record)
     out["answer_done_reason"] = calls[-1]["done_reason"] if calls else None
@@ -130,14 +127,14 @@ def split_file(gen_path: Path) -> tuple[Path, Path]:
     paths = []
     for arm, derive in (("raw", unguarded_record), ("lg", guarded_record)):
         out = _arm_path(gen_path, arm)
-        # The arm goes into the run tag, so the two arms' judge reports never share a name.
+        # 팔 이름을 실행 태그에 넣어, 두 팔의 판정 리포트 이름이 겹치지 않게 한다.
         write_jsonl(out, [{**derive(r), "run_tag": f"{r.get('run_tag')}.{arm}"} for r in records])
         write_json(meta_path(out), {**meta, "arm": arm, "derived_from": display_path(gen_path)})
         paths.append(out)
     return paths[0], paths[1]
 
 
-# --- per-item metrics ------------------------------------------------------------------
+# --- 문항별 지표 ---
 
 
 # 추론 출력이 있었는지: 어느 호출에서든 thinking 글자가 나왔거나 답에 think 태그가 섞였으면 True. 관문 3은
@@ -184,7 +181,7 @@ def item_row(record: dict, judgment: dict | None) -> dict:
         "citation_error": record.get("citation_schema_error") is not None if cited is not None else None,
         "citations_in_range": in_range,
         "cites_expected_page": cites_expected,
-        # Retrieval's share: the generator saw a passage of an expected page (any translation).
+        # 검색의 몫: 생성기가 정답 페이지(번역 무관)의 문단을 받았는지.
         "context_has_expected_page": any(page_key(c["source_path"]) in expected for c in chunks),
         "guard_applied": bool(record.get("guard_applied")),
         "guard_retry_ms": record.get("guard_retry_ms"),
@@ -248,7 +245,7 @@ def arm_rows(gen_paths: list[Path], label: str | None) -> list[dict]:
     return rows
 
 
-# --- the smoke gate --------------------------------------------------------------------
+# --- 스모크 관문 ---
 
 
 # 생성이 끝난 뒤 기록해 둔 Ollama /api/ps에서 이 실행의 모델 항목을 찾는다.
@@ -337,7 +334,7 @@ def gate(
     }
 
 
-# --- reports ---------------------------------------------------------------------------
+# --- 리포트 ---
 
 
 # 기준 팔과 다른 팔의 같은 문항(셋, id)끼리 정확도 차이를 모아 '차이 합 (평균 [bootstrap 90% 구간])'으로 쓴다.
@@ -367,14 +364,13 @@ JUDGMENT_FIELDS = ("correctness", "faithfulness", "hallucinated", "judged")
 
 # 가드가 걸리지 않은 문항은 lg 팔의 답이 raw 팔과 같은 글이므로 raw 팔의 판정을 그대로 쓴다. 같은 답이라도
 # 판정 순서의 다른 자리에 놓이면 J1 점수가 1점 달라질 수 있어서, 그 판정 노이즈가 가드 효과로 잘못 잡히지 않게
-# 하려는 규칙 변경(docstring)이다. lg 팔 자신의 판정이 달랐던 문항 수는 보고용으로 센다.
+# 하려는 규칙 변경이다. lg 팔 자신의 판정이 달랐던 문항 수는 보고용으로 센다.
 def share_unguarded_judgments(lg_rows: list[dict], raw_rows: list[dict], raw_name: str) -> dict:
-    """Give the lg arm the raw arm's judgment wherever the guard did not fire.
+    """가드가 걸리지 않은 문항마다 lg 팔에 raw 팔의 판정을 준다.
 
-    Those answers are the same text in both arms, yet J1 can score the same answer a point
-    apart when it sits at another place in the judge order (docs/experiments.md v13, rule
-    change 2026-10-05). Sharing keeps that noise out of the guard's effect; the lg arm's own
-    differing judgments are only counted.
+    그런 문항의 답은 두 팔에서 같은 글인데도, 판정 순서의 다른 자리에 놓이면 J1이 같은 답에 1점 다른 점수를
+    줄 수 있다(docs/experiments.md v13, 2026-10-05 규칙 변경). 판정을 공유하면 그 노이즈가 가드의 효과에
+    섞이지 않는다. lg 팔 자신의 판정이 달랐던 경우는 세기만 한다.
     """
     by_key = {(r["dataset"], r["id"]): r for r in raw_rows}
     shared = differs = 0
@@ -462,8 +458,8 @@ def summary_report(
 
 # gate 리포트: 실행마다 한 줄, 검사마다 ok/FAIL과 값, 프롬프트 토큰 수 차이 요약.
 def gate_report(results: list[dict]) -> str:
-    # Runs can have different checks (only the A.X run checks its prompt counts), so the
-    # columns are every check any run has; a run without one gets "-" there.
+    # 실행마다 검사 항목이 다를 수 있다(프롬프트 토큰 수는 A.X 실행만 검사한다). 그래서 열은 어느 실행에든
+    # 있는 모든 검사이고, 그 검사가 없는 실행은 그 칸에 "-"를 쓴다.
     names = list(dict.fromkeys(name for r in results for name in r["checks"]))
     lines = [
         "# Generation smoke gate (docs/experiments.md v13)",
@@ -512,30 +508,30 @@ def main() -> int:
     gp = sub.add_parser("gate")
     gp.add_argument("paths", type=Path, nargs="+")
     gp.add_argument("--tag", required=True)
-    gp.add_argument("--digest", action="append", default=[], help="model=sha256, one per model")
+    gp.add_argument("--digest", action="append", default=[], help="모델=sha256 형식, 모델마다 하나씩")
     gp.add_argument("--max-p50-ms", type=float, default=GATE_MAX_P50_MS)
     gp.add_argument(
-        "--require-prompt-match", action="append", default=[], help="model whose counts must agree"
+        "--require-prompt-match", action="append", default=[], help="프롬프트 토큰 수가 맞아야 하는 모델"
     )
     gp.add_argument(
         "--prompt-tolerance",
         type=int,
         default=PROMPT_MATCH_TOLERANCE,
-        help="allowed |Ollama - tokenizer| tokens (gate 7 rule: 1)",
+        help="허용하는 |Ollama - 토크나이저| 토큰 수 차이(관문 7 규칙: 1)",
     )
     su = sub.add_parser("summary")
     su.add_argument("--tag", required=True)
     su.add_argument("--label", default="J1")
     su.add_argument("--baseline", default=None)
-    su.add_argument("--arm", action="append", required=True, help="NAME=gen1,gen2,...")
+    su.add_argument("--arm", action="append", required=True, help="이름=생성기록1,생성기록2,... 형식")
     su.add_argument(
         "--share",
         action="append",
         default=[],
-        help="LG=RAW: the LG arm takes RAW's judgment where the guard did not fire",
+        help="LG=RAW 형식: 가드가 걸리지 않은 문항에서 LG 팔이 RAW 팔의 판정을 쓴다",
     )
     args = parser.parse_args()
-    sys.stdout.reconfigure(errors="backslashreplace")  # see eval/run_answer_eval.py
+    sys.stdout.reconfigure(errors="backslashreplace")  # 이유는 eval/run_answer_eval.py 참고
 
     if args.command == "split":
         for path in args.paths:

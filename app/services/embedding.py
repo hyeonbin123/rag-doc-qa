@@ -1,10 +1,9 @@
-"""Wraps the local sentence-transformers model.
+"""로컬 sentence-transformers 모델을 감싼다.
 
-Retrieval embedding models are asymmetric: queries and passages get different
-markers (an instruction prefix for BGE and Qwen3, "query: " / "passage: " for E5). Getting
-this backwards silently degrades retrieval quality, so the two embedding paths are
-kept as separate methods rather than one generic `embed()` to make the asymmetry
-impossible to miss at call sites.
+검색용 임베딩 모델은 비대칭이다. 질문과 문서(passage)에 서로 다른 표시를 붙인다(BGE와 Qwen3는 질문에
+지시문 접두사, E5는 "query: " / "passage: "). 이것을 뒤바꾸면 오류 없이 검색 품질만 조용히 떨어진다.
+그래서 범용 `embed()` 하나 대신 두 임베딩 경로를 별도 메서드로 나눠, 호출하는 곳에서 이 비대칭을 놓칠
+수 없게 했다.
 """
 
 # [파일 역할] 로컬 sentence-transformers 임베딩 모델을 감싸, 질문 벡터(embed_query)와 문서 청크
@@ -40,11 +39,10 @@ from app.services.language import Language
 class EmbeddingSpec:
     query_prefix: str
     passage_prefix: str
-    # Hub commit to load. The models added for the v12 comparison are pinned; the two in
-    # use since v8 were never pinned and stay that way, so their stored vectors still match.
+    # 불러올 허브 커밋(리비전). v12 비교 때 더한 모델은 리비전을 고정했다. v8부터 쓰던 두 모델은 처음부터
+    # 고정하지 않았고 지금도 그대로 둔다. 그래야 이미 저장된 벡터와 계속 맞는다.
     revision: str | None = None
-    # Matryoshka models trained to be cut: keep the first `truncate_dim` components so the
-    # vectors fit the vector(384) column.
+    # 잘라 쓰도록 학습된 Matryoshka 모델: 앞쪽 `truncate_dim`개 성분만 남겨 vector(384) 열에 맞춘다.
     truncate_dim: int | None = None
 
 
@@ -62,8 +60,8 @@ EMBEDDING_MODELS: dict[str, EmbeddingSpec] = {
         "Represent this sentence for searching relevant passages: ", ""
     ),
     "intfloat/multilingual-e5-small": EmbeddingSpec("query: ", "passage: "),
-    # Korean candidates measured in docs/experiments.md v12. Granite R2 takes no prefixes;
-    # Qwen3 instructs the query side with the prompt its model card ships as "query".
+    # docs/experiments.md v12에서 잰 한국어 후보들. Granite R2는 접두사를 쓰지 않는다. Qwen3는 모델 카드가
+    # "query" 프롬프트로 제공하는 지시문을 질문 쪽에만 붙인다.
     "ibm-granite/granite-embedding-97m-multilingual-r2": EmbeddingSpec(
         "", "", revision="835ad14087e140460703cf0fae09f97d469d65c2"
     ),
@@ -101,7 +99,7 @@ def prefixes_for(model_name: str) -> tuple[str, str]:
 # 임베딩 모델 하나. 생성자가 모델을 올리므로 비싸고, 아래 _load가 모델 이름별로 한 번만 만든다. 테스트의 가짜
 # 서비스(tests/conftest.py의 FakeEmbeddingService)는 이 클래스를 상속하되 생성자를 건너뛴다.
 class EmbeddingService:
-    # Class-level defaults, so test doubles that skip __init__ still have them.
+    # 클래스 수준 기본값. __init__을 건너뛰는 테스트 대역도 이 속성을 갖게 한다.
     revision: str | None = None
     truncate_dim: int | None = None
 
@@ -111,9 +109,8 @@ class EmbeddingService:
         self.revision = spec.revision
         self.truncate_dim = spec.truncate_dim
         self._query_prefix, self._passage_prefix = spec.query_prefix, spec.passage_prefix
-        # float32 explicitly: transformers 5 otherwise loads a checkpoint in the dtype it
-        # was saved in, which for the Granite R2 models is bfloat16 (slow and less exact
-        # on a CPU). The e5 and bge checkpoints are float32 already.
+        # float32를 명시한다: 그러지 않으면 transformers 5는 체크포인트를 저장된 dtype 그대로 올리는데,
+        # Granite R2 모델은 bfloat16이라 CPU에서 느리고 덜 정확하다. e5와 bge 체크포인트는 이미 float32다.
         self._model = SentenceTransformer(
             model_name,
             revision=spec.revision,
@@ -133,10 +130,10 @@ class EmbeddingService:
     # 형태라, 같은 모델이라도 리비전이나 자르기가 바뀌면 해시가 달라져 문서가 다시 임베딩된다.
     @property
     def identity(self) -> str:
-        """What ingestion hashes as "the model": a different revision or cut re-embeds.
+        """적재가 '모델'로 해시하는 값. 리비전이나 자르기 차원이 다르면 문서를 다시 임베딩한다.
 
-        The bare model name for the models in use since v8, so documents ingested before
-        this field existed keep their content hash.
+        v8부터 쓰던 모델은 리비전·자르기가 없어 모델 이름만 돌려준다. 그래서 이 속성이 생기기 전에
+        적재한 문서도 내용 해시가 그대로 유지된다.
         """
         identity = self.model_name
         if self.revision:
@@ -170,9 +167,9 @@ def _load(model_name: str) -> EmbeddingService:
 # 언어 → 그 언어의 임베딩 서비스. app/dependencies.py의 get_embedder가 이 함수 자체를 주입하고, app/main.py가
 # 시작할 때 두 언어 모델을 미리 올린다.
 def get_embedding_service(language: Language = "en") -> EmbeddingService:
-    """The embedding model for one docs language.
+    """문서 언어 하나에 쓰는 임베딩 모델.
 
-    Each language's chunks are embedded with that language's model (see
-    Settings.embedding_model_for), so a question has to be embedded with the same one.
+    각 언어의 청크는 그 언어의 모델로 임베딩되므로(Settings.embedding_model_for 참고), 질문도 반드시
+    같은 모델로 임베딩해야 한다.
     """
     return _load(get_settings().embedding_model_for(language))

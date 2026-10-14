@@ -1,7 +1,7 @@
-"""Markdown report for an answer-eval run: aggregates and a per-question table.
+"""답변 평가 한 번의 마크다운 리포트: 집계와 문항별 표.
 
-Used by eval/run_answer_eval.py (generate + judge) and eval/run_judge.py (judge stored
-answers). The per-item JSONL files the report names hold everything shown here.
+eval/run_answer_eval.py(생성 + 판정)와 eval/run_judge.py(저장된 답을 판정)가 쓴다. 리포트에 보이는 내용은
+모두 리포트가 이름을 적어 두는 문항별 JSONL 파일에 들어 있다.
 """
 
 # [파일 역할] 답변 평가 한 번의 결과를 마크다운 리포트로 만든다: 실행 조건(모델, digest, 판정 설정, 검색 모드,
@@ -76,7 +76,7 @@ def summarize(records: list[dict], judgments: list[dict] | None) -> dict:
 # - reasoning output: 추론 출력이 나왔거나 답에 think 태그가 섞인 수.
 # - 인용 응답이 스키마를 어긴 수.
 def generation_notes(gen_meta: dict, records: list[dict]) -> list[str]:
-    """v13 run notes: the model digest, think and guard settings, per-call stop reasons."""
+    """v13에서 더한 실행 메모: 모델 digest, think·언어 가드 설정, 호출마다 멈춘 이유."""
     n = len(records)
     calls = [r.get("generation_calls") for r in records]
     lines = []

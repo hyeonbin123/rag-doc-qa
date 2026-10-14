@@ -1,12 +1,11 @@
-"""Token counts for chat prompts, to tell a truncated prompt from a complete one.
+"""채팅 프롬프트의 토큰 수. 잘린 프롬프트와 온전한 프롬프트를 구별하는 데 쓴다.
 
-Ollama reports prompt_eval_count, the number of prompt tokens the model actually read.
-Counting the same chat prompt with the model's own tokenizer and chat template gives the
-number it should have read. A prompt Ollama cut comes back far short: on Ollama 0.35.1 an
-over-long prompt keeps its first 4 tokens and roughly the last half of the context window.
+Ollama는 prompt_eval_count, 즉 모델이 실제로 읽은 프롬프트 토큰 수를 알려 준다. 같은 채팅 프롬프트를 그
+모델의 토크나이저와 채팅 템플릿으로 세면 읽었어야 할 수가 나온다. Ollama가 자른 프롬프트는 이보다 훨씬
+적게 돌아온다: Ollama 0.35.1에서 너무 긴 프롬프트는 처음 4토큰과 문맥 창의 뒤쪽 절반쯤만 남는다.
 
-Only the tokenizer files are downloaded (tens of MB, into the Hugging Face cache), and
-only when a run asks for a count; tests pass their own counter.
+토크나이저 파일만 내려받고(수십 MB, Hugging Face 캐시로), 그것도 실행이 토큰 수를 요청할 때만 받는다.
+테스트는 자체 계수기를 넘긴다.
 """
 
 # [파일 역할] Ollama 모델 태그마다 같은 모델의 Hugging Face 토크나이저(리비전 고정)를 대응시키고, 채팅
@@ -30,34 +29,33 @@ from functools import lru_cache
 class TokenizerSpec:
     repo: str
     revision: str
-    # "auto": AutoTokenizer. "gpt2": the GPT-2 tokenizer the repo declares (tokenizer.json),
-    # for repos that transformers would otherwise load with another model type's
-    # pre-tokenizer (see the A.X entry).
+    # "auto": AutoTokenizer. "gpt2": 저장소가 선언한 GPT-2 토크나이저(tokenizer.json). transformers가 그대로
+    # 두면 다른 모델 종류의 사전 분할기로 불러오는 저장소에 쓴다(아래 A.X 항목 참고).
     loader: str = "auto"
-    # Extra chat-template arguments matching how the model is called.
+    # 모델을 호출하는 방식에 맞춘 채팅 템플릿 추가 인자.
     template_kwargs: dict = field(default_factory=dict)
 
 
-# Ollama tag -> Hugging Face repo and pinned revision of the same model's tokenizer.
+# Ollama 태그 → 같은 모델 토크나이저의 Hugging Face 저장소와 고정 리비전.
 # 판정 모델(qwen2.5:7b-instruct)과 v13 생성 후보 세 모델(qwen3.5:9b, gemma4:12b-it-qat, A.X-4.0-Light)의
 # 토크나이저. 여기에 없는 모델은 토큰 수를 세지 않는다(counter_for_model이 None).
 TOKENIZERS = {
-    # Ollama's qwen2.5 template renders a lone user message with the same default system
-    # prompt as the Hugging Face chat template ("You are Qwen, created by Alibaba Cloud...").
+    # Ollama의 qwen2.5 템플릿은 사용자 메시지 하나만 있으면 Hugging Face 채팅 템플릿과 같은 기본 시스템
+    # 프롬프트("You are Qwen, created by Alibaba Cloud...")를 붙여 렌더링한다.
     "qwen2.5:7b-instruct": TokenizerSpec(
         "Qwen/Qwen2.5-7B-Instruct", "a09a35458c702b33eeacc393d103063234e8bc28"
     ),
-    # v13 candidates (docs/experiments.md). qwen3.5 runs with think=false, which both
-    # Ollama's renderer and the Hugging Face template render as an empty think block.
+    # v13 후보들(docs/experiments.md). qwen3.5는 think=false로 돌리는데, Ollama의 렌더러와 Hugging Face
+    # 템플릿 모두 이를 빈 think 블록으로 렌더링한다.
     "qwen3.5:9b": TokenizerSpec(
         "Qwen/Qwen3.5-9B",
         "c202236235762e1c871ad0ccb60c8ee5ba337b9a",
         template_kwargs={"enable_thinking": False},
     ),
     "gemma4:12b-it-qat": TokenizerSpec("google/gemma-4-12B-it", "707f0a3b8a3c7ad586ed01e27eafbad8a27dd0f7"),
-    # transformers 5.17 loads this repo as Qwen2Tokenizer (from config.json's model_type)
-    # and pre-tokenizes with Qwen2's regex; the repo declares GPT2Tokenizer and ships a
-    # tokenizer.json with the GPT-2 byte-level regex, which the GGUF conversion follows.
+    # transformers 5.17은 이 저장소를 (config.json의 model_type을 보고) Qwen2Tokenizer로 불러와 Qwen2의
+    # 정규식으로 사전 분할한다. 하지만 저장소는 GPT2Tokenizer를 선언하고 GPT-2 바이트 수준 정규식이 든
+    # tokenizer.json을 함께 내놓으며, GGUF 변환도 이쪽을 따른다.
     "a.x-4.0-light:q4_k_m": TokenizerSpec(
         "skt/A.X-4.0-Light", "ba21c20ea1b31ded1ec3e2fb432335077dc4be98", loader="gpt2"
     ),
@@ -67,7 +65,7 @@ TOKENIZERS = {
 # 메시지 목록을 모델의 채팅 템플릿으로 문자열로 만든 뒤 토큰 수를 센다. Ollama가 실제로 읽는 것도 템플릿을
 # 거친 프롬프트이므로 같은 형태로 세야 비교가 된다.
 class ChatTokenCounter:
-    """Counts the tokens of a chat prompt rendered with the model's chat template."""
+    """모델의 채팅 템플릿으로 렌더링한 채팅 프롬프트의 토큰 수를 센다."""
 
     def __init__(self, tokenizer, template_kwargs: dict | None = None) -> None:
         self._tokenizer = tokenizer
@@ -96,7 +94,7 @@ def tokenizer_source(model: str) -> tuple[str, str] | None:
 # Qwen2Tokenizer가 되어 사전 분할이 달라지기 때문이다(docs/experiments.md v13 'A.X-4.0-Light 변환').
 def load_tokenizer(spec: TokenizerSpec):
     if spec.loader == "gpt2":
-        from transformers import GPT2TokenizerFast  # heavy import, only when counting
+        from transformers import GPT2TokenizerFast  # 무거운 import라 셀 때만 한다
 
         return GPT2TokenizerFast.from_pretrained(spec.repo, revision=spec.revision)
     from transformers import AutoTokenizer
@@ -108,7 +106,7 @@ def load_tokenizer(spec: TokenizerSpec):
 # 않는다. 매핑이 없으면 None.
 @lru_cache
 def counter_for_model(model: str) -> ChatTokenCounter | None:
-    """A counter for an Ollama model tag, or None when its tokenizer is not mapped."""
+    """Ollama 모델 태그에 맞는 토큰 계수기. 그 토크나이저가 매핑돼 있지 않으면 None."""
     spec = TOKENIZERS.get(model)
     if spec is None:
         return None

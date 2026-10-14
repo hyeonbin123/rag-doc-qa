@@ -57,8 +57,6 @@ async def get_current_user(
 # 핸들러가 언어를 정한 뒤 이 함수로 모델을 고른다. 적재 API도 문서 언어마다 이 함수를
 # 쓴다(app/routers/documents.py).
 def get_embedder() -> Callable[[Language], EmbeddingService]:
-    # Returns the per-language lookup rather than one model: the question's language
-    # decides which model embeds it.
     return get_embedding_service
 
 
@@ -69,12 +67,10 @@ def get_generator() -> GenerationService:
 
 # rerank 모드일 때만 '언어 → cross-encoder' 함수를, 아니면 None을 돌려준다. None이면 /query/ask가 재정렬 없이
 # 검색한다. 재정렬 모델은 CPU에서 후보마다 돌려야 하는 비싼 모델이라(README '재정렬의 비용 관리') 쓰지 않는
-# 모드에서는 올리지도 않는다.
+# 모드에서는 올리지도 않는다. 임베딩 모델(get_embedder)과 마찬가지로 모델 하나가 아니라 언어별 조회 함수다.
 def get_reranker(
     settings: Settings = Depends(get_settings),
 ) -> Callable[[Language], RerankerService] | None:
-    # Only load a cross-encoder when the configured mode actually uses it. Like the
-    # embedder, this is a per-language lookup.
     if settings.retrieval_mode != "rerank":
         return None
     return get_reranker_service

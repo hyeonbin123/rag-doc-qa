@@ -68,8 +68,8 @@ def test_each_language_has_its_own_reranker_model():
 # 한다. 모든 질문에 언어 규칙을 넣었더니 로컬 7B가 영어 질문에도 한국어로 답해 영어 정확도가 4.60 → 4.19로
 # 떨어졌다(docs/experiments.md v8).
 def test_only_korean_questions_get_a_language_rule_in_the_prompt():
-    # The English prompt must stay byte-for-byte the original: a general language
-    # rule made the local model answer English questions in Korean.
+    # 영어 프롬프트는 원래 문장과 바이트 단위까지 같아야 한다: 일반 언어 규칙은 로컬 모델이 영어 질문에도
+    # 한국어로 답하게 만들었다.
     assert system_prompt_for(OLLAMA_ANSWER_PROMPT, "en") == OLLAMA_ANSWER_PROMPT
     assert "Korean" not in OLLAMA_ANSWER_PROMPT
     assert "Korean" in system_prompt_for(OLLAMA_ANSWER_PROMPT, "ko")

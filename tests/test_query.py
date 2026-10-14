@@ -20,7 +20,7 @@ from tests.conftest import EMBEDDING_DIM, FakeEmbeddingService, FakeGenerationSe
 # 생성기가 불리는 순간에 요청의 DB 세션이 트랜잭션 안에 있는지, 풀에서 빌려 간 연결이 몇 개인지를 기록하는
 # 가짜 생성기.
 class TransactionProbeGenerator(FakeGenerationService):
-    """Records whether the request's DB session still holds a connection while generating."""
+    """생성하는 동안 요청의 DB 세션이 아직 연결을 쥐고 있는지 기록한다."""
 
     def __init__(self, session) -> None:
         self.session = session
@@ -98,8 +98,6 @@ async def test_ask_persists_query_log(authed_client, db_session):
 # 그 뒤 짧은 트랜잭션으로 따로 저장된다.
 @pytest.mark.asyncio
 async def test_ask_releases_db_connection_during_generation(authed_client, db_session):
-    # Generation takes seconds and Ollama answers one request at a time, so a question
-    # that kept its pooled connection through it would starve every other endpoint.
     probe = TransactionProbeGenerator(db_session)
     app.dependency_overrides[get_generator] = lambda: probe
 
@@ -108,7 +106,7 @@ async def test_ask_releases_db_connection_during_generation(authed_client, db_se
     assert resp.status_code == 200
     assert probe.in_transaction is False
     assert probe.connections_checked_out == 0
-    # The query log is still written afterwards, in its own short transaction.
+    # 질문 기록은 그 뒤에 따로 짧은 트랜잭션으로 저장된다.
     log_resp = await authed_client.get(f"/logs/{resp.json()['query_log_id']}")
     assert log_resp.status_code == 200
 
@@ -116,7 +114,7 @@ async def test_ask_releases_db_connection_during_generation(authed_client, db_se
 # 모든 질문을 첫 번째 축 단위 벡터로 만드는 가짜 임베딩. 그러면 청크의 코사인 점수가 그 청크 벡터의 첫 성분과
 # 같아져, 점수를 원하는 값으로 정확히 맞출 수 있다.
 class AxisEmbeddingService(FakeEmbeddingService):
-    """Embeds every question as the first axis, so a chunk's score is its first component."""
+    """모든 질문을 첫 번째 축으로 임베딩한다. 그래서 청크의 점수가 그 벡터의 첫 성분과 같다."""
 
     def __init__(self) -> None:
         self.model_name = "axis-embedding"
@@ -147,7 +145,7 @@ async def test_ask_uses_the_score_floor_of_the_embedding_model(authed_client, db
             token_count=5,
             # 단위 벡터를 유지하도록 두 번째 성분을 sqrt(1 − 0.25²)로 둔다. 첫 성분 0.25가 곧 질문 벡터와의
             # 코사인이다.
-            embedding=[0.25, (1 - 0.25**2) ** 0.5] + [0.0] * (EMBEDDING_DIM - 2),  # cosine 0.25
+            embedding=[0.25, (1 - 0.25**2) ** 0.5] + [0.0] * (EMBEDDING_DIM - 2),  # 코사인 0.25
         )
     )
     await db_session.commit()
@@ -179,8 +177,6 @@ class CountingGenerator(FakeGenerationService):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("question", ["What is\x00FastAPI?", "경로 매개변수는\x00 어떻게 선언하나요?"])
 async def test_ask_rejects_a_nul_character_before_answering(authed_client, question):
-    # PostgreSQL text cannot hold U+0000, so such a question could not be logged: the
-    # request used to fail with 500 at the final commit, after the LLM had answered.
     generator = CountingGenerator()
     app.dependency_overrides[get_generator] = lambda: generator
 
@@ -197,9 +193,9 @@ async def test_ask_rejects_a_nul_character_before_answering(authed_client, quest
 # 있다.
 @pytest.mark.asyncio
 async def test_ask_rejects_a_lone_surrogate(authed_client):
-    # JSON can spell half of a UTF-16 pair, which has no UTF-8 form, so it could be neither
-    # embedded nor stored. Pydantic refuses it as a string, but the 422 body echoes the
-    # input, and encoding that as UTF-8 used to turn the rejection into a 500.
+    # JSON은 UTF-16 쌍의 반쪽도 적을 수 있는데, 이것은 UTF-8로 나타낼 수 없어 임베딩도 저장도 할 수 없다.
+    # Pydantic은 이를 문자열로 받지 않지만, 422 본문이 입력을 되돌려 주므로 그것을 UTF-8로 인코딩하던 예전
+    # 처리에서는 거부 응답이 500이 되었다.
     resp = await authed_client.post(
         "/query/ask",
         content=rb'{"question": "What is \ud800 FastAPI?"}',

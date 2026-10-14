@@ -1,10 +1,8 @@
-"""The v13 generation-model comparison: guard arms, per-item metrics, the gate, summaries.
+"""v13 생성 모델 비교: 가드 팔(arm), 문항별 지표, 관문, 요약을 검증한다.
 
-docs/experiments.md v13 runs every selection and adoption generation with the language
-guard on and records the first (unguarded) answer next to the final one, so one run gives
-two arms: the generator alone ("raw", what a run without the guard returns) and the
-generator with the guard ("lg"). These tests pin how the two arms are derived and counted.
-No Ollama or database is needed.
+docs/experiments.md v13은 모든 선택·채택 생성을 언어 가드를 켠 채 돌리고, 첫 답(가드 전)을 최종 답 옆에
+기록한다. 그래서 실행 한 번에서 두 팔이 나온다: 생성기만 쓴 팔("raw", 가드 없이 돌린 실행이 돌려줄 답)과
+가드를 붙인 팔("lg"). 이 테스트들은 두 팔을 어떻게 만들고 세는지 고정한다. Ollama나 DB가 필요 없다.
 """
 
 # [테스트 묶음] v13 생성 모델 비교 도구(eval/generator_arms.py)의 단위 테스트: 한 번의 생성 기록을 raw/lg 두
@@ -99,9 +97,9 @@ def test_the_raw_arm_is_the_first_answer_call():
     assert raw["answer"] == "답입니다. 中文으로 다시"
     assert raw["kana_han"] is True
     assert raw["keyword_coverage"] == 0.0
-    assert raw["generation_ms"] == pytest.approx(3000.0)  # the retry is not part of this arm
+    assert raw["generation_ms"] == pytest.approx(3000.0)  # 재시도 시간은 이 팔에 들어가지 않는다
     assert raw["answer_done_reason"] == "length"
-    assert raw["cited_chunk_numbers"] is None  # the citation call saw the final answer
+    assert raw["cited_chunk_numbers"] is None  # 인용 호출은 최종 답을 봤다
 
 
 # lg 팔은 최종 답 그대로이고 done_reason은 마지막 답변 호출의 것이다. 가드가 걸리지 않은 문항은 두 팔의 답과
@@ -131,7 +129,7 @@ def test_split_writes_both_arm_files_with_their_run_notes(tmp_path):
     assert raw_path.name == "v13_unit_g0_qa_dev_ko.raw.gen.jsonl"
     assert lg_path.name == "v13_unit_g0_qa_dev_ko.lg.gen.jsonl"
     assert [r["answer"] for r in read_jsonl(raw_path)] == ["답입니다. 中文으로 다시", "답입니다."]
-    # The arm is part of the run tag, so the two arms' judge reports never share a name.
+    # 팔 이름이 실행 태그에 들어가므로 두 팔의 판정 리포트 이름은 겹치지 않는다.
     assert {r["run_tag"] for r in read_jsonl(raw_path)} == {"unit.raw"}
     assert {r["run_tag"] for r in read_jsonl(lg_path)} == {"unit.lg"}
     assert read_json(tmp_path / "v13_unit_g0_qa_dev_ko.raw.gen.meta.json")["arm"] == "raw"
@@ -308,7 +306,7 @@ def test_gate_fails_each_condition(tmp_path, change, failed):
 # 보고하고 요구할 때(require_prompt_match)는 떨어진다.
 def test_gate_can_require_ollama_and_tokenizer_prompt_counts_to_agree(tmp_path):
     records = [gen(f"k{i}", generation_prompt_tokens_counted=1500) for i in range(1, 13)]
-    records[3]["generation_prompt_tokens_counted"] = 1460  # Ollama read 1500: 40 more than the template gives
+    records[3]["generation_prompt_tokens_counted"] = 1460  # Ollama가 읽은 수 1500은 템플릿 기준보다 40 많다
 
     loose = generator_arms.gate(write_gate_run(tmp_path, records, GATE_META), digest="abc123")
     strict = generator_arms.gate(
@@ -323,7 +321,7 @@ def test_gate_can_require_ollama_and_tokenizer_prompt_counts_to_agree(tmp_path):
 # 기본 허용치도 1이다. 예전 기본값(잘림 판정의 16토큰)으로는 통과해 버려서, 규칙대로 보려면
 # --prompt-tolerance 1을 따로 줘야 했다.
 def test_the_prompt_match_tolerance_catches_a_missing_assistant_header(tmp_path):
-    # A Modelfile template that drops "<|im_start|><|assistant|>" reads 2 tokens fewer.
+    # "<|im_start|><|assistant|>"를 빠뜨린 Modelfile 템플릿은 2토큰 적게 읽는다.
     records = [gen(f"k{i}", generation_prompt_tokens_counted=1500) for i in range(1, 13)]
     records[0]["generation_prompt_tokens_counted"] = 1502
     path = write_gate_run(tmp_path, records, GATE_META)
@@ -339,8 +337,8 @@ def test_the_prompt_match_tolerance_catches_a_missing_assistant_header(tmp_path)
 # 머리를 만들어, 관문 7이 있는 G3 줄만 칸이 하나 많아 GitHub에서 표가 깨졌다(커밋 928349b). 없는 칸은 '-'로
 # 채운다.
 def test_gate_report_gives_every_row_the_header_s_columns(tmp_path):
-    # Only the A.X run checks its prompt counts (rule 7). The 2026-10-05 report took its
-    # header from the first run, so that row had one cell more than the header.
+    # 프롬프트 토큰 수는 A.X 실행만 검사한다(규칙 7). 2026-10-05 리포트는 첫 실행으로 머리를 만들어서, 그
+    # 줄만 칸이 머리보다 하나 많았다.
     records = [gen(f"k{i}", generation_prompt_tokens_counted=1500) for i in range(1, 13)]
     path = write_gate_run(tmp_path, records, GATE_META)
     results = [
@@ -373,16 +371,13 @@ def test_arm_files_pair_with_their_judgments(tmp_path):
     rows = generator_arms.arm_rows([gen_path], "J1")
 
     assert rows[0]["correctness"] == 5 and rows[0]["dataset"] == "qa_dev_ko.jsonl"
-    assert json.loads(json.dumps(rows))  # plain data, kept in the summary JSON
+    assert json.loads(json.dumps(rows))  # 요약 JSON에 그대로 들어가는 평범한 데이터
 
 
 # v13 규칙 변경 2(2026-10-05)를 고정한다: 같은 답이라도 판정 순서의 다른 자리에서 판정되면 점수가 ±1 움직일 수
 # 있으므로, shares={"G0+LG": "G0"}(명령행의 --share)를 주면 가드가 걸리지 않은 문항은 lg 팔도 raw 팔의 판정을
 # 쓰고, 자기 판정과 다른 문항 수는 세기만 한다. 가드가 걸린 k1만 lg 자신의 점수(5)를 쓴다.
 def test_an_lg_arm_can_share_the_raw_judgments_of_items_the_guard_left_alone(tmp_path):
-    # docs/experiments.md v13, rule change 2026-10-05: the same answer judged at another place
-    # in the judge order can move by a point, so where the guard did not fire the lg arm takes
-    # the raw arm's judgment; its own differing judgments are only counted.
     records = [gen("k1", **GUARDED), gen("k2"), gen("k3")]
     paths = {}
     for arm, derive in (("raw", generator_arms.unguarded_record), ("lg", generator_arms.guarded_record)):
@@ -405,7 +400,7 @@ def test_an_lg_arm_can_share_the_raw_judgments_of_items_the_guard_left_alone(tmp
 
     assert own["arms"]["G0+LG"]["summary"]["all"]["correctness_sum"] == 13
     lg = shared["arms"]["G0+LG"]
-    assert lg["summary"]["all"]["correctness_sum"] == 5 + 4 + 5  # k1 its own, k2 and k3 from G0
+    assert lg["summary"]["all"]["correctness_sum"] == 5 + 4 + 5  # k1은 자기 판정, k2·k3은 G0의 판정
     assert lg["shared"] == {"from": "G0", "items": 2, "own_judgment_differs": 1}
     assert shared["arms"]["G0+LG"]["vs_baseline"]["all"].startswith("+3")
 
@@ -413,10 +408,10 @@ def test_an_lg_arm_can_share_the_raw_judgments_of_items_the_guard_left_alone(tmp
 # 문항 행의 '생성 컨텍스트에 정답 페이지가 있었는가'(v13 단계 B 보고 항목, v12에서 손으로 센 36/39를 표에
 # 넣으려고 추가). 다른 번역의 같은 페이지도 맞음으로 세고, 패시지가 없으면 False다.
 def test_item_row_says_whether_the_answer_s_passages_held_an_expected_page():
-    # docs/experiments.md v13 stage B compares two Korean embedders with one generator and
-    # reports how many answers were written from passages that held an expected page (v12
-    # counted 36 vs 39 of 40). A page counts in any translation, as a retrieval hit does.
-    hit = generator_arms.item_row(gen("k1"), None)  # passage 1 is docs/ko/docs/p1.md
+    # docs/experiments.md v13 단계 B는 생성기 하나로 한국어 임베딩 모델 두 개를 비교하며, 정답 페이지가 든
+    # 문단으로 쓴 답이 몇 개인지 보고한다(v12에서는 40개 중 36 대 39로 셌다). 검색의 맞음과 같이 페이지는
+    # 번역과 상관없이 센다.
+    hit = generator_arms.item_row(gen("k1"), None)  # 1번 문단은 docs/ko/docs/p1.md
     other_translation = generator_arms.item_row(
         gen("k2", expected_source_paths=["docs/en/docs/p2.md"]), None
     )

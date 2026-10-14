@@ -1,34 +1,33 @@
-"""Convert skt/A.X-4.0-Light to a bf16 GGUF with llama.cpp's converter (docs/experiments.md v13).
+"""llama.cpp 변환기로 skt/A.X-4.0-Light를 bf16 GGUF로 변환한다(docs/experiments.md v13).
 
-This is how the v13 candidate G3 (`a.x-4.0-light:q4_k_m`) was built; the repo had no official
-GGUF on 2026-10-04.
+v13 후보 G3(`a.x-4.0-light:q4_k_m`)를 이렇게 만들었다. 2026-10-04 기준으로 저장소에 공식 GGUF가 없었다.
 
-Why a wrapper: transformers 5.x's AutoTokenizer loads this repo as Qwen2Tokenizer (from
-config.json's model_type qwen2) and pre-tokenizes with Qwen2's regex, so the converter's check
-text hashes to 261dca7f... and the converter stops. The repo declares tokenizer_class
-GPT2Tokenizer and ships a tokenizer.json with a ByteLevel GPT-2 pre-tokenizer. Loaded as
-declared (GPT2TokenizerFast, i.e. tokenizer.json) the check text hashes to b0a6b1c0..., which
-llama.cpp registers as "a.x-4.0". The wrapper only hands the converter that tokenizer.
+래퍼가 필요한 이유: transformers 5.x의 AutoTokenizer는 이 저장소를 (config.json의 model_type qwen2를 보고)
+Qwen2Tokenizer로 불러와 Qwen2의 정규식으로 사전 분할한다. 그러면 변환기의 확인 문장 해시가 261dca7f...가
+되어 변환기가 멈춘다. 저장소는 tokenizer_class로 GPT2Tokenizer를 선언하고 ByteLevel GPT-2 사전 분할기가 든
+tokenizer.json을 함께 내놓는다. 선언대로(GPT2TokenizerFast, 즉 tokenizer.json으로) 불러오면 확인 문장 해시가
+b0a6b1c0...가 되는데, llama.cpp는 이를 "a.x-4.0"으로 등록해 두었다. 래퍼는 변환기에 그 토크나이저를 넘겨
+주는 일만 한다.
 
-The whole build (each step as run for v13):
+전체 빌드 과정(각 단계는 v13 때 실행한 그대로):
 
-1. llama.cpp checkout at 81bc6b83f827df746eb129235488d325c49cae52, then from this repo's root:
+1. llama.cpp를 81bc6b83f827df746eb129235488d325c49cae52로 checkout한 뒤, 이 저장소 루트에서:
        uv run --no-sync --with sentencepiece==0.2.2 python scripts/ax40_light/convert.py \
            --llama-cpp <checkout> A.X-4.0-Light-bf16.gguf
-2. llama.cpp release b11255's llama-quantize:
+2. llama.cpp 릴리스 b11255의 llama-quantize로 양자화:
        llama-quantize A.X-4.0-Light-bf16.gguf A.X-4.0-Light-Q4_K_M.gguf Q4_K_M
-3. Drop the GGUF's jinja chat template, so Ollama uses the Modelfile's template (Ollama 0.35.1
-   prefers a GGUF template that supports tools over the Modelfile's and ignores the latter):
+3. GGUF 안의 jinja 채팅 템플릿을 지워 Ollama가 Modelfile의 템플릿을 쓰게 한다(Ollama 0.35.1은 도구를
+   지원하는 GGUF 템플릿을 Modelfile 템플릿보다 우선해, Modelfile 쪽을 무시한다):
        python <checkout>/gguf-py/gguf/scripts/gguf_new_metadata.py --force \
            --remove-metadata tokenizer.chat_template \
            A.X-4.0-Light-Q4_K_M.gguf A.X-4.0-Light-Q4_K_M-gotmpl.gguf
-   v13's file had sha256 330634890beb44ac970bc7c12f96294e9be2d2a3111fe43101b65f330235d79b.
-4. With scripts/ax40_light/Modelfile copied next to that file, in that folder:
+   v13 때 이 파일의 sha256은 330634890beb44ac970bc7c12f96294e9be2d2a3111fe43101b65f330235d79b였다.
+4. scripts/ax40_light/Modelfile을 그 파일 옆에 복사하고, 그 폴더에서:
        ollama create a.x-4.0-light:q4_k_m -f Modelfile
-   v13's model had digest a874a70d2c09d0b718662cc3f52e38a85c34eacfb29284996530edfbc23d8661.
+   v13 때 이 모델의 digest는 a874a70d2c09d0b718662cc3f52e38a85c34eacfb29284996530edfbc23d8661이었다.
 
-Without --snapshot the pinned revision is taken from the Hugging Face cache (HF_HOME) or
-downloaded (about 14.5 GB of safetensors).
+--snapshot이 없으면 고정 리비전을 Hugging Face 캐시(HF_HOME)에서 가져오거나 내려받는다(safetensors 약
+14.5GB).
 """
 
 # [파일 역할] v13 생성 후보 G3(A.X-4.0-Light)를 Ollama에서 쓰려고 Hugging Face 원본을 bf16 GGUF로 바꾸는
@@ -56,7 +55,7 @@ from transformers import GPT2TokenizerFast
 # 스냅숏을 받게 한다.
 REPO = "skt/A.X-4.0-Light"
 REVISION = "ba21c20ea1b31ded1ec3e2fb432335077dc4be98"
-FILES = ["*.json", "*.safetensors", "merges.txt", "LICENSE", "README.md"]  # as downloaded for v13
+FILES = ["*.json", "*.safetensors", "merges.txt", "LICENSE", "README.md"]  # v13 때 받은 그대로
 
 
 # AutoTokenizer.from_pretrained 자리에 들어갈 대체 함수. 어떤 경로로 불려도 저장소가 선언한
@@ -72,10 +71,10 @@ def declared_tokenizer(path, *args, **kwargs):
 # 공개한 래퍼가 처음 변환과 같은 결과를 내는지 확인할 때 썼다.
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("outfile", help="the bf16 GGUF to write")
-    parser.add_argument("--llama-cpp", required=True, type=Path, help="llama.cpp checkout (81bc6b8)")
-    parser.add_argument("--snapshot", type=Path, help="local copy of the pinned revision")
-    parser.add_argument("--vocab-only", action="store_true", help="write the tokenizer metadata only")
+    parser.add_argument("outfile", help="쓸 bf16 GGUF 파일 경로")
+    parser.add_argument("--llama-cpp", required=True, type=Path, help="llama.cpp checkout 경로(81bc6b8)")
+    parser.add_argument("--snapshot", type=Path, help="고정 리비전의 로컬 사본 경로")
+    parser.add_argument("--vocab-only", action="store_true", help="토크나이저 메타데이터만 쓴다")
     args = parser.parse_args()
 
     # --snapshot이 없으면 고정 리비전을 HF 캐시에서 찾거나 받는다(safetensors 약 14.5GB).

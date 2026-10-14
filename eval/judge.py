@@ -1,19 +1,14 @@
-"""LLM-as-judge for the answer eval.
+"""답변 평가의 LLM 판정(LLM-as-judge).
 
-The judge reads the question, the retrieved passages, the model's answer and the
-reference answer, and returns faithfulness and correctness scores (1-5) and a
-hallucination flag.
+판정 모델은 질문, 검색된 문단, 모델의 답, 참고 답안을 읽고 충실도·정확도 점수(1~5)와 환각 여부를 돌려준다.
 
-Until v10 the Ollama judge call set only temperature 0, so it ran in Ollama's default
-context: 4096 tokens on this machine's 11 GB GPU (Ollama 0.35 picks the default by
-VRAM). A judge prompt carries five passages, an answer of up to 1024 tokens and the
-reference answer, and Ollama cuts an over-long prompt with only a server-log warning:
-0.35.1 keeps the first 4 tokens and roughly the last half of the window, so the question
-and the first passages are what disappear. The v11 judge (docs/experiments.md) asks for
-8192 tokens with truncate=false, checks before the first call that every prompt fits, and
-keeps Ollama's prompt_eval_count next to a tokenizer count of the same prompt, so a cut
-prompt shows up in the per-item record. The old call stays available as the "legacy"
-judge (num_ctx=None) to measure how often it was cut.
+v10까지 Ollama 판정 호출은 temperature 0만 지정해서 Ollama 기본 문맥으로 돌았다. 실험 PC의 11GB GPU에서는
+4096토큰이다(Ollama 0.35는 VRAM 크기로 기본값을 정한다). 판정 프롬프트에는 문단 5개, 최대 1024토큰의 답,
+참고 답안이 들어가는데, Ollama는 너무 긴 프롬프트를 서버 로그 경고 하나만 남기고 잘라 버린다. 0.35.1은
+처음 4토큰과 창의 뒤쪽 절반쯤을 남기므로, 사라지는 것은 질문과 앞쪽 문단이다. v11 판정(docs/experiments.md)은
+truncate=false로 8192토큰을 요청하고, 첫 호출 전에 모든 프롬프트가 들어가는지 확인하며, Ollama의
+prompt_eval_count를 같은 프롬프트를 토크나이저로 센 수와 나란히 남겨 잘린 프롬프트가 문항별 기록에 드러나게
+한다. 예전 호출은 얼마나 자주 잘렸는지 재려고 "legacy" 판정(num_ctx=None)으로 남겨 둔다.
 """
 
 # [파일 역할] 답변 평가의 LLM 판정(LLM-as-judge). 질문·검색된 문단·생성된 답·참고 답안을 판정 모델에게 보여
@@ -81,10 +76,10 @@ JUDGE_TOOL = {
 # 정상이면 몇 토큰 차이지만 잘리면 문맥 창의 절반쯤이 빠지므로 16이면 충분히 구분된다(v11 측정에서 차이는
 # 750회 모두 0이었다, docs/experiments.md v11).
 DEFAULT_JUDGE_NUM_CTX = 8192
-# Context left for the judge's reply, a JSON object of about 40 tokens.
+# REPLY_RESERVE_TOKENS: 판정 응답(약 40토큰짜리 JSON 객체)을 위해 남겨 두는 문맥.
 REPLY_RESERVE_TOKENS = 256
-# prompt_eval_count and a tokenizer count of the same prompt agree to a few tokens; a cut
-# prompt comes back about half a window short.
+# prompt_eval_count와 같은 프롬프트를 토크나이저로 센 수는 몇 토큰 안에서 일치하고, 잘린 프롬프트는 창의
+# 절반쯤 적게 돌아온다.
 TRUNCATION_TOLERANCE = 16
 
 # JudgeCall: 프롬프트 하나를 받아 판정 결과를 돌려주는 비동기 함수(제공자별로 judge_call_for가 만든다.
@@ -99,8 +94,8 @@ TokenCounter = Callable[[list[dict]], int]
 @dataclass(frozen=True)
 class JudgeConfig:
     model: str
-    # None sends no num_ctx and no truncate flag: the pre-v11 call (Ollama's default
-    # context, over-long prompts cut silently).
+    # None이면 num_ctx와 truncate 플래그를 보내지 않는다: v11 이전 호출과 같다(Ollama 기본 문맥, 너무 긴
+    # 프롬프트는 조용히 잘림).
     num_ctx: int | None = DEFAULT_JUDGE_NUM_CTX
     label: str = "J1"
 
@@ -127,7 +122,7 @@ class JudgeOutcome:
 # 보내기 전 길이 확인에서 들어가지 않는 프롬프트가 있을 때 내는 예외. 한 건도 보내지 않으므로 실행이 일부만
 # 판정된 채로 남지 않는다.
 class JudgeContextError(RuntimeError):
-    """Some judge prompts do not fit in the configured context; nothing was sent."""
+    """설정한 문맥에 들어가지 않는 판정 프롬프트가 있다. 아무것도 보내지 않았다."""
 
 
 # 판정 프롬프트 문장. 이 문장이 바뀌면 이전 판정과 비교할 수 없으므로 테스트(tests/test_answer_eval.py)가 글자
@@ -150,7 +145,7 @@ def judge_messages(prompt: str) -> list[dict]:
 # 판정에 보여 줄 문단: 생성 기록에 저장된 청크 본문을 순위 순서로 이은 것(헤딩·번호 없이). 예전 판정과 같은
 # 입력을 유지하려는 것이다.
 def judge_context(record: dict) -> str:
-    """The passages as the judge has always seen them: contents only, in rank order."""
+    """판정 모델이 늘 보아 온 형태의 문단: 본문만, 순위 순서대로."""
     return "\n\n".join(chunk["content"] for chunk in record["chunks"])
 
 
@@ -166,7 +161,7 @@ def ollama_judge_payload(prompt: str, config: JudgeConfig) -> dict:
     }
     if not config.legacy:
         payload["options"]["num_ctx"] = config.num_ctx
-        # Without this, Ollama cuts an over-long prompt and answers anyway.
+        # 이것이 없으면 Ollama는 너무 긴 프롬프트를 잘라 낸 채로 그냥 답한다.
         payload["truncate"] = False
     return payload
 
@@ -174,7 +169,7 @@ def ollama_judge_payload(prompt: str, config: JudgeConfig) -> dict:
 # 점수가 1~5 밖이면 오류를 낸다. 스키마로 강제해도 제공자가 범위를 지키지 않을 수 있어 코드에서 한 번 더
 # 확인한다.
 def validate_scores(result: dict) -> None:
-    # An out-of-range score would silently skew every average, so fail loudly instead.
+    # 범위를 벗어난 점수는 모든 평균을 조용히 비틀므로, 그 대신 분명하게 실패시킨다.
     for key in ("faithfulness_score", "correctness_score"):
         if not 1 <= result[key] <= 5:
             raise ValueError(f"judge returned {key}={result[key]}, outside the 1-5 scale")
@@ -213,7 +208,7 @@ async def judge_with_ollama(
     if response.status_code >= 400:
         message = _error_message(response)
         if is_context_error(message):
-            # Kept as a per-item error so a run can count them; scores stay empty.
+            # 문항별 오류로 남겨 한 실행에서 몇 건인지 셀 수 있게 한다. 점수는 비워 둔다.
             return JudgeOutcome(judge_ms=elapsed_ms, error=f"HTTP {response.status_code}: {message}")
         response.raise_for_status()
 
@@ -290,10 +285,10 @@ async def judge_items(
     call: JudgeCall,
     count_tokens: TokenCounter | None = None,
 ) -> list[dict]:
-    """Judge stored answers in the given order; one judgment record per item.
+    """저장된 답들을 받은 순서대로 판정한다. 문항마다 판정 기록 하나를 만든다.
 
-    With a counter and a fixed context, every prompt is checked before the first call,
-    so a run either fits completely or sends nothing.
+    토큰 수를 세는 함수와 고정 문맥이 있으면 첫 호출 전에 모든 프롬프트를 확인하므로, 한 실행은 모두
+    들어가거나 아무것도 보내지 않는다.
     """
     # 검색 결과가 있는 문항만 프롬프트를 만든다. 토크나이저가 있으면 모든 프롬프트의 토큰 수를 먼저 세고,
     # legacy가 아니면 하나라도 문맥에 안 들어갈 때 아무것도 보내지 않고 멈춘다. legacy는 잘림을 재는 것이
@@ -319,7 +314,7 @@ async def judge_items(
     # 문항마다 판정하고, 판정 설정·순서·답 해시·토큰 수·잘림 상태를 함께 기록한다. dataset, run_tag는 어느
     # 셋·어느 생성 실행의 문항인지 남긴다(eval/run_judge.py는 생성 파일 여러 개를 한 번에 판정할 수 있다).
     for order_index, r in enumerate(records):
-        # Nothing retrieved: there is nothing to judge faithfulness against (as before v11).
+        # 검색된 것이 없으면 충실도를 판단할 근거가 없으므로 판정하지 않는다(v11 이전과 같음).
         outcome = await call(prompts[r["id"]]) if r["id"] in prompts else JudgeOutcome()
         counted = counts.get(r["id"])
         truncation = (
@@ -342,7 +337,7 @@ async def judge_items(
                 "truncation": truncation,
             }
         )
-        # One line per item, so a long run's log shows progress (and a stall).
+        # 문항마다 한 줄씩 출력해, 오래 걸리는 실행의 로그에서 진행 상황(과 멈춤)이 보이게 한다.
         print(
             f"[judge {config.label} {order_index + 1}/{len(records)}] {r['id']} "
             f"read={outcome.prompt_eval_count} counted={counted} {truncation}"

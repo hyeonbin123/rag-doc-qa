@@ -1,12 +1,11 @@
-"""A stand-in for Ollama's /api/chat, so a security scan can drive the API without a GPU.
+"""Ollama /api/chat의 대역. 보안 스캔이 GPU 없이 API를 두드릴 수 있게 한다.
 
-An active scan sends hundreds of questions to POST /query/ask; with the real generator each one takes
-seconds of GPU time. This answers at once with a fixed reply in the shape the app reads
-(app/services/generation.py): plain text for the answer call, the citations JSON when the request
-carries a `format` schema. The rest of the request path (auth, validation, language detection, the
-embedding model, retrieval, the query log) runs for real. Standard library only.
+액티브 스캔은 POST /query/ask에 질문을 수백 개 보내는데, 실제 생성기라면 하나마다 몇 초씩 GPU를 쓴다. 이
+대역은 앱이 읽는 모양(app/services/generation.py)의 고정 응답을 바로 돌려준다: 답변 호출에는 평범한 글,
+요청에 `format` 스키마가 있으면 인용 JSON. 요청 경로의 나머지(인증, 입력 검증, 언어 판별, 임베딩 모델, 검색,
+질문 기록)는 실제로 돈다. 표준 라이브러리만 쓴다.
 
-    python ollama_stub.py [port]     # default 11434
+    python ollama_stub.py [port]     # 기본 포트 11434
 """
 
 # [파일 역할] OWASP ZAP 보안 스캔(DAST) 때 실제 Ollama 대신 띄우는 가짜 생성기 서버. zap/compose.scan.yml이 이

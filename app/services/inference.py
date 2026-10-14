@@ -1,17 +1,15 @@
-"""Worker threads for CPU-bound model calls.
+"""CPU를 쓰는 모델 호출용 작업 스레드.
 
-Model calls (embeddings, the cross-encoder) are too slow to run on the event loop:
-while one runs, every other request the server is handling waits. With six questions
-sent at once, a static page request waited up to 0.7 s. They run on a pool of
-MODEL_THREADS worker threads instead.
+모델 호출(임베딩, cross-encoder)은 이벤트 루프에서 돌리기에는 너무 느리다. 하나가 도는 동안 서버가 처리
+중인 다른 요청이 모두 기다린다. 질문 6개를 한꺼번에 보내자 정적 페이지 요청 하나가 최대 0.7초 기다렸다.
+그래서 모델 호출은 MODEL_THREADS개의 작업 스레드 풀에서 돌린다.
 
-The default of 6 was measured against 1 on the running stack (six concurrent
-questions while a static page was requested every 20 ms, four rounds each):
-- 1 thread: calls never compete for CPU cores, but queued embeddings waited up to
-  2.5 s and one page request still took 242 ms.
-- 6 threads: every page request stayed under the 200 ms budget, and each embedding
-  took a steady 0.5-0.6 s. Total response times were about the same (mostly
-  generation), 10.6 s against 10.0 s on average.
+기본값 6은 실제로 띄운 스택에서 1과 비교해 정했다(질문 6개를 동시에 보내면서 정적 페이지를 20ms마다
+요청, 각 4회):
+- 스레드 1개: 호출끼리 CPU 코어를 다투지는 않지만, 줄 선 임베딩이 최대 2.5초 기다렸고 페이지 요청
+  하나는 여전히 242ms 걸렸다.
+- 스레드 6개: 페이지 요청이 모두 200ms 예산 안에 들었고, 임베딩은 한 번에 0.5~0.6초로 고르게 걸렸다.
+  전체 응답 시간은 거의 같았다(대부분 생성 시간). 평균 10.6초 대 10.0초.
 """
 
 # [파일 역할] CPU를 오래 쓰는 동기 모델 호출(임베딩, cross-encoder)을 전용 스레드 풀에서 돌리는 한
@@ -51,5 +49,5 @@ def _model_threads() -> ThreadPoolExecutor:
 # run_in_executor에는 partial로 함수와 인자를 묶어 넘긴다. 예외가 나면 그대로 호출한 쪽의 await에서 다시
 # 올라온다.
 async def run_model(fn: Callable[..., T], *args) -> T:
-    """Run `fn(*args)` on a model thread, queued if all of them are busy."""
+    """`fn(*args)`를 모델 스레드에서 실행한다. 스레드가 모두 바쁘면 대기열에서 차례를 기다린다."""
     return await asyncio.get_running_loop().run_in_executor(_model_threads(), partial(fn, *args))

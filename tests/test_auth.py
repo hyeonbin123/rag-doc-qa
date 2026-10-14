@@ -36,9 +36,8 @@ async def test_register_then_login_returns_token_pair(client):
 # 화면은 가입 직후 같은 입력으로 자동 로그인하므로 이게 깨지면 가입 직후 401이 난다(커밋 bdece46).
 @pytest.mark.asyncio
 async def test_login_accepts_the_email_exactly_as_typed_at_registration(client):
-    # Registration stores the validator's normalized form (lower-cased domain); login
-    # must look the typed address up the same way, or the chat page's automatic login
-    # right after "create account" fails.
+    # 가입은 검증기가 정규화한 형태(도메인 소문자)로 저장하므로, 로그인도 입력한 주소를 같은 방식으로 찾아야
+    # 한다. 그렇지 않으면 채팅 화면에서 "계정 만들기" 직후의 자동 로그인이 실패한다.
     typed = "Grace@Example.COM"
     register_resp = await client.post(
         "/auth/register", json={"email": typed, "password": "supersecret1"}
@@ -56,8 +55,8 @@ async def test_login_accepts_the_email_exactly_as_typed_at_registration(client):
 # 정규화를 넣은 뒤 이 경우가 401이 됐던 문제를 막는다(커밋 1d520fb).
 @pytest.mark.asyncio
 async def test_login_still_finds_a_row_stored_with_the_email_as_typed(client, db_session):
-    # scripts/seed_demo_user.py used to store the command-line address as typed, so a
-    # row can hold a spelling EmailStr would normalize differently ("Example.COM").
+    # scripts/seed_demo_user.py는 예전에 명령행으로 받은 주소를 입력 그대로 저장했으므로, EmailStr이 다르게
+    # 정규화할 철자("Example.COM")를 담은 행이 있을 수 있다.
     db_session.add(
         User(email="Demo@Example.COM", hashed_password=hash_password("supersecret1"))
     )
@@ -73,9 +72,9 @@ async def test_login_still_finds_a_row_stored_with_the_email_as_typed(client, db
 # 입력 그대로 저장된 행이 우선이므로 'Ivan@Example.COM' + 가입 때 비밀번호는 401이다.
 @pytest.mark.asyncio
 async def test_login_prefers_the_row_stored_exactly_as_typed(client, db_session):
-    # A raw row and a registered (normalized) row can both exist, since registering
-    # "Ivan@Example.COM" stores "Ivan@example.com". Each spelling must keep reaching
-    # the row it reached before login normalized anything.
+    # 원래 철자 행과 가입으로 만든(정규화된) 행이 함께 있을 수 있다. "Ivan@Example.COM"으로 가입하면
+    # "Ivan@example.com"이 저장되기 때문이다. 각 철자는 로그인이 정규화를 하기 전에 닿던 행에 계속 닿아야
+    # 한다.
     db_session.add(User(email="Ivan@Example.COM", hashed_password=hash_password("raw-row-pw")))
     await db_session.commit()
     register_resp = await client.post(
@@ -135,8 +134,8 @@ async def test_login_wrong_password_returns_401(client):
 @pytest.mark.parametrize(
     "password",
     [
-        "short1",  # under 8 characters
-        "가" * 25,  # 25 characters but 75 bytes in UTF-8, over bcrypt's 72-byte input limit
+        "short1",  # 8자 미만
+        "가" * 25,  # 25자지만 UTF-8로 75바이트라 bcrypt 입력 한도 72바이트를 넘는다
     ],
 )
 async def test_register_rejects_passwords_outside_the_rules(client, password):
@@ -150,7 +149,7 @@ async def test_register_rejects_passwords_outside_the_rules(client, password):
 # 경계값: 정확히 72바이트(한글 24자)는 가입과 로그인 모두 성공해야 한다.
 @pytest.mark.asyncio
 async def test_a_72_byte_password_registers_and_logs_in(client):
-    password = "가" * 24  # exactly 72 bytes
+    password = "가" * 24  # 정확히 72바이트
     register_resp = await client.post(
         "/auth/register", json={"email": "erin@example.com", "password": password}
     )
@@ -174,8 +173,8 @@ async def test_register_rejects_a_malformed_email(client, email):
 # 로그인 이름에 NUL이 있으면 DB까지 가지 않고 401이어야 한다(조회 함수가 미리 걸러 냄).
 @pytest.mark.asyncio
 async def test_login_with_a_nul_character_in_the_username_returns_401(client):
-    # No stored address holds U+0000 (registration refuses it), and PostgreSQL rejects it
-    # in a query parameter, so the lookup must not reach the database (it used to be a 500).
+    # 저장된 주소에는 U+0000이 없고(가입이 거부한다) PostgreSQL은 질의 파라미터에 든 U+0000을 거부하므로,
+    # 조회가 DB까지 가면 안 된다(예전에는 500이 났다).
     await client.post(
         "/auth/register", json={"email": "gina@example.com", "password": "supersecret1"}
     )
@@ -189,7 +188,7 @@ async def test_login_with_a_nul_character_in_the_username_returns_401(client):
 # bcrypt 5의 ValueError로 500이 났다(커밋 b9bdf04).
 @pytest.mark.asyncio
 async def test_login_with_an_overlong_password_is_rejected_not_a_server_error(client):
-    # bcrypt 5 raises on input over 72 bytes; login must answer 401, not crash with 500.
+    # bcrypt 5는 72바이트를 넘는 입력에서 예외를 낸다. 로그인은 500으로 죽지 않고 401로 답해야 한다.
     await client.post(
         "/auth/register", json={"email": "frank@example.com", "password": "supersecret1"}
     )

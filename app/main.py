@@ -38,7 +38,7 @@ from app.services.reranking import get_reranker_service
 async def lifespan(app: FastAPI):
     configure_logging()
     rerank = get_settings().retrieval_mode == "rerank"
-    for language in SUPPORTED_LANGUAGES:  # load each language's models once at startup
+    for language in SUPPORTED_LANGUAGES:  # 시작할 때 언어마다 모델을 한 번씩 올린다
         get_embedding_service(language)
         if rerank:
             get_reranker_service(language)
@@ -54,23 +54,24 @@ app = FastAPI(title="RAG Doc QA API", lifespan=lifespan)
 # 다르다. 그러면 UTF-8로 인코딩할 수 없는 고립 서로게이트가 입력에 섞여 와도 응답 본문을 만들 수 있다.
 @app.exception_handler(RequestValidationError)
 async def validation_error(request: Request, exc: RequestValidationError) -> Response:
-    """FastAPI's 422, written as ASCII JSON.
+    """FastAPI의 422 응답을 ASCII만 쓰는 JSON으로 만든다.
 
-    The errors echo the input, and JSON can spell a lone UTF-16 surrogate ("\\ud800") that
-    has no UTF-8 form, so encoding the body as UTF-8 turned the 422 into a 500.
+    오류 목록은 입력값을 그대로 되돌려 주는데, JSON 문자열에는 UTF-8로 나타낼 수 없는 고립 UTF-16
+    서로게이트("\\ud800")도 적을 수 있다. 그래서 본문을 UTF-8로 인코딩하던 기본 처리에서는 이런 입력이
+    422 대신 500이 되었다.
     """
     body = json.dumps({"detail": jsonable_encoder(exc.errors())})
     return Response(body, status_code=422, media_type="application/json")
 
 
-# APP_CSP: 채팅 화면과 API 응답에 붙는 Content-Security-Policy.
+# APP_CSP: 채팅 화면과 API 응답에 붙는 Content-Security-Policy. 모든 응답은 MIME 추측과 프레임 삽입을
+# 막고(아래 security_headers), 채팅 화면과 API는 같은 출처의 코드만 허용한다. 화면의 스크립트·스타일은 /static
+# 아래 파일이다.
 # - default-src 'self': 같은 출처의 스크립트·스타일·이미지만 허용한다. 채팅 화면의 인라인 script·style을
 #   app/web/static/chat.js·chat.css 파일로 옮긴 덕분에 'unsafe-inline' 없이 동작한다.
 # - object-src 'none', base-uri 'none': 플러그인 삽입과 <base> 태그로 상대 경로를 가로채는 것을 막는다.
 # - form-action 'self': 폼 전송 대상을 같은 출처로 제한한다.
 # - frame-ancestors 'none': 다른 사이트가 이 페이지를 iframe에 넣지 못하게 한다(클릭재킹 방지).
-# Every response: no MIME sniffing, no framing. The chat page and the API allow only
-# same-origin code; the page's script and style are files under /static.
 APP_CSP = (
     "default-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; "
     "frame-ancestors 'none'"
@@ -80,9 +81,10 @@ APP_CSP = (
 # frame-ancestors 'none'은 유지한다.
 # DOCS_PATHS: FastAPI 객체가 실제로 쓰는 문서 경로를 그대로 읽어 와, 경로 설정이 바뀌어도 목록이 어긋나지 않게
 # 한다.
-# FastAPI's own docs pages load Swagger UI and ReDoc (and ReDoc's fonts) from CDNs and start
-# them with inline code. Allowing jsDelivr already lets any package there run, so hashing the
-# inline code would not make this policy much stricter; the pages hold no user data.
+# FastAPI 자체 문서 페이지는 Swagger UI와 ReDoc(그리고 ReDoc의 글꼴)을 CDN에서 불러와 인라인 코드로 시작한다.
+# 인라인 코드를 해시로 하나씩 허용하는 방법도 있지만, jsDelivr를 허용한 시점에 이미 그곳의 어떤 패키지든
+# 실행될 수 있으므로 정책이 크게 엄격해지지 않는다. 또 이 페이지들에는 사용자 데이터가 없어 'unsafe-inline'을
+# 둔다.
 DOCS_CSP = (
     "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
     "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://fonts.googleapis.com; "
@@ -128,5 +130,5 @@ app.mount("/static", StaticFiles(directory=WEB_DIR / "static"), name="static")
 # README '하지 않은 것'에 적힌 범위 결정이다.
 @app.get("/", include_in_schema=False)
 async def index() -> FileResponse:
-    """Chat page for trying the API in a browser; it calls the same endpoints as any client."""
+    """브라우저에서 API를 써 보는 채팅 화면. 다른 클라이언트와 똑같은 엔드포인트를 호출한다."""
     return FileResponse(WEB_DIR / "index.html")

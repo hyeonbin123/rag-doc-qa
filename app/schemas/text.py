@@ -12,14 +12,14 @@ from pydantic import AfterValidator
 
 # NUL이 있으면 ValueError를 낸다. pydantic이 이 오류를 검증 오류로 바꿔 FastAPI가 422로 응답한다.
 def reject_nul(value: str) -> str:
-    # PostgreSQL text cannot hold U+0000. A value with it only fails when its row is written,
-    # after the work the request asked for (for a question, the whole LLM answer), as a 500.
+    # PostgreSQL text는 U+0000을 담을 수 없다. 이런 값은 그 행을 쓸 때에야 실패하는데, 그때는 요청한
+    # 작업(질문이면 LLM 답변 생성 전체)을 이미 다 한 뒤라 500이 된다. 그래서 입력 단계에서 막는다.
     if "\x00" in value:
         raise ValueError("must not contain the NUL character (U+0000)")
     return value
 
 
 # str에 검증기를 붙인 재사용 타입. AfterValidator라 pydantic의 기본 str 타입 검증을 통과한 값에 실행된다. 끝의
-# 문자열은 이 타입의 설명(docstring 역할)이다.
+# 문자열은 이 타입의 설명(docstring 역할)이고, 뜻은 "앱이 PostgreSQL에 저장하는 요청 문자열"이다.
 NulFreeStr = Annotated[str, AfterValidator(reject_nul)]
 """Request text the app stores in PostgreSQL."""

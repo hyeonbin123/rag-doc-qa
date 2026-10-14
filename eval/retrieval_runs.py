@@ -1,12 +1,12 @@
-"""Analyses of stored retrieval-eval records (eval/runs/<tag>.retrieval.jsonl).
+"""저장된 검색 평가 기록(eval/runs/<tag>.retrieval.jsonl)의 분석.
 
-Usage:
+사용법:
     python -m eval.retrieval_runs floors eval/runs/<tag>.retrieval.jsonl
     python -m eval.retrieval_runs compare eval/runs/<a>.retrieval.jsonl eval/runs/<b>.retrieval.jsonl
 
-floors: for a run made with --score-floor 0, the metrics at each candidate floor and the
-floor the v12 rule picks (the highest one at which every question keeps 5 results).
-compare: the same questions in two runs, e.g. HNSW against exact search, or two models.
+floors: --score-floor 0으로 돌린 실행에서, 후보 바닥값마다의 지표와 v12 규칙이 고르는 바닥값(모든 질문이
+결과 5개를 유지하는 가장 높은 값).
+compare: 두 실행의 같은 질문들을 비교한다. 예: HNSW 대 정확 탐색, 또는 두 모델.
 """
 
 # [파일 역할] eval/run_retrieval_eval.py가 남긴 문항별 검색 기록(eval/runs/<tag>.retrieval.jsonl)을 다시 읽어,
@@ -35,7 +35,7 @@ from eval.common import read_json, read_jsonl, write_report
 # 바닥값 후보. 규칙상 지금 값 0.3에서 시작해 0.05씩 낮춰 0까지 본다(docs/experiments.md v12 선택 1번). 높은
 # 값부터 시도하므로 순서가 중요하다.
 FLOOR_GRID = (0.3, 0.25, 0.2, 0.15, 0.1, 0.05, 0.0)
-KEEP = 5  # the answer pipeline passes the top 5 to the generator
+KEEP = 5  # 답변 파이프라인은 상위 5개를 생성기에 넘긴다
 
 
 # 한 문항의 결과 중 바닥값 이상인 것만 남긴다(앱이 바닥값 아래 결과를 버리는 것과 같은 효과).
@@ -46,7 +46,7 @@ def _kept(record: dict, floor: float) -> list[dict]:
 # 남은 결과 순위마다 정답 페이지인지(True/False)와 남은 개수를 돌려준다. 정답 경로도 결과 경로도 page_key로
 # 바꿔 비교하므로 영어 원문 청크가 나와도 같은 페이지면 맞음으로 센다.
 def ranked_pages_hit(record: dict, floor: float) -> tuple[list[bool], int]:
-    """Per kept rank, whether its page is an expected page; and how many were kept."""
+    """남은 순위마다 그 페이지가 정답 페이지인지, 그리고 몇 개가 남았는지."""
     expected = {page_key(p) for p in record["expected_source_paths"]}
     kept = _kept(record, floor)
     return [page_key(r["source_path"]) in expected for r in kept], len(kept)
@@ -81,7 +81,7 @@ def metrics(records: list[dict], floor: float = 0.0) -> dict:
 # 왜 5개인가: 답변 파이프라인이 상위 5개를 생성기에 넘기므로, 바닥값 때문에 생성 컨텍스트가 줄어들지 않는
 # 선에서만 값을 정하려는 것이다. 어느 값에서도 만족하지 않으면 0.0.
 def pick_floor(records: list[dict], grid: tuple[float, ...] = FLOOR_GRID) -> float:
-    """The highest floor at which every question keeps KEEP results (or all it had)."""
+    """모든 질문이 KEEP개 결과(또는 원래 가진 결과 전부)를 남기는 가장 높은 바닥값."""
     for floor in grid:
         if all(len(_kept(r, floor)) >= min(KEEP, len(r["results"])) for r in records):
             return floor

@@ -1,4 +1,4 @@
-"""Question language detection, used to pick which docs translation to search."""
+"""질문 언어 판별. 어느 번역 문서에서 찾을지 고르는 데 쓴다."""
 
 # [파일 역할] 질문이 영어인지 한국어인지 판별하고, 앱이 지원하는 문서 언어 목록을 정의한다.
 # [왜 필요한가] 영어 원문과 한국어 번역은 서로 다른 임베딩 모델로 벡터를 만들었기 때문에(docs/experiments.md
@@ -27,9 +27,9 @@ _HANGUL_RE = re.compile(r"[ᄀ-ᇿ㄰-㆏가-힣]")
 # 충분하다. README '알려진 한계'에 적힌 대로 한글이 한 글자라도 있으면 한국어이며, 판별이 틀리면 API 요청의
 # language로 직접 지정할 수 있다.
 def detect_language(text: str) -> Language:
-    """Korean if the text contains any Hangul, otherwise English.
+    """글에 한글이 하나라도 있으면 한국어, 없으면 영어로 본다.
 
-    Korean questions usually mix in English API names ("HTTPException으로 404를
-    반환하려면?"), so a single Hangul character is enough to call it Korean.
+    한국어 질문에는 보통 영어 API 이름이 섞이므로("HTTPException으로 404를 반환하려면?"), 한글 한 글자만
+    있어도 한국어로 판단한다.
     """
     return "ko" if _HANGUL_RE.search(text) else "en"

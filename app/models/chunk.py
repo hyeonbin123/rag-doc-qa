@@ -35,7 +35,7 @@ if TYPE_CHECKING:
 # 임베딩 열 차원(384). 영어 bge-small-en-v1.5의 출력 크기이고, 한국어 모델도 이 크기에 맞춘다.
 # app/services/embedding.py가 이 값으로 모델 출력 차원을 검사하고, Granite R2 311M처럼 더 큰 모델은 이 길이로
 # 잘라(truncate_dim) 쓴다. 바꾸려면 마이그레이션과 전체 재임베딩이 필요하다.
-EMBEDDING_DIM = 384  # BAAI/bge-small-en-v1.5
+EMBEDDING_DIM = 384  # BAAI/bge-small-en-v1.5의 출력 차원
 
 
 # 청크 한 행 = 한 문서의 chunk_index번째 조각.
@@ -63,12 +63,12 @@ class Chunk(Base):
     heading_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     token_count: Mapped[int] = mapped_column(Integer, nullable=False)
-    # Which docs translation the chunk comes from ("en", "ko"); retrieval searches one
-    # language at a time. Kept on chunks so the vector and BM25 queries need no join.
+    # 청크가 어느 번역 문서에서 왔는지("en", "ko"). 검색은 한 번에 한 언어 안에서만 한다. 문서 테이블이 아니라
+    # 청크에 두어 벡터 질의와 BM25 질의가 조인 없이 언어로 거를 수 있게 한다.
     language: Mapped[str] = mapped_column(String(8), nullable=False, server_default="en")
     # 정규화된 임베딩 벡터. 같은 language의 청크끼리만 같은 모델로 만든 벡터라 비교할 수 있다.
     embedding: Mapped[list[float]] = mapped_column(Vector(EMBEDDING_DIM), nullable=False)
-    # Postgres keeps this in sync with heading_path + content; the app never writes it.
+    # Postgres가 heading_path + content에 맞춰 늘 다시 계산하는 생성 열이라 앱은 이 열에 값을 쓰지 않는다.
     # 생성 열 식은 마이그레이션 0002와 글자 그대로 같아야 한다. 'english' 설정이라 영어 형태소 기준으로
     # 어휘소를 만든다.
     content_tsv: Mapped[str] = mapped_column(

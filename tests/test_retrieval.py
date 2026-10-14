@@ -33,9 +33,9 @@ from tests.conftest import EMBEDDING_DIM
 # cross-encoder 대신 쓰는 가짜 재정렬기: 패시지에 키워드가 있으면 1.0, 없으면 0.0. 받은 후보 수도 기록해 후보
 # 수(pool) 테스트에 쓴다. 실제 모델은 올리지 않는다.
 class KeywordReranker(RerankerService):
-    """Stands in for the cross-encoder: 1.0 if the passage has the keyword, else 0.0."""
+    """cross-encoder 대역: 문단에 키워드가 있으면 1.0, 없으면 0.0."""
 
-    def __init__(self, keyword: str) -> None:  # intentionally skip loading a real model
+    def __init__(self, keyword: str) -> None:  # 실제 모델 로딩을 일부러 건너뛴다
         self.keyword = keyword
         self.last_candidate_count = 0
 
@@ -111,7 +111,7 @@ async def test_hybrid_search_surfaces_lexical_match_that_dense_drops(db_session)
     await _seed_document_with_chunk(db_session, orthogonal, "load settings from environment variables")
 
     dense = await similarity_search(db_session, query_vector, top_k=5)
-    assert all("environment" not in r.content for r in dense)  # cosine 0 falls under the floor
+    assert all("environment" not in r.content for r in dense)  # 코사인 0은 바닥값 아래라 버려진다
 
     hybrid = await hybrid_search(db_session, "environment variables", query_vector, top_k=5)
     assert "environment" in hybrid[0].content
@@ -127,8 +127,8 @@ async def test_lexical_search_ranks_rare_terms_above_repeated_common_ones(db_ses
     await _seed_document_with_chunk(db_session, vector, "fastapi credentials")
     await _seed_document_with_chunk(db_session, vector, "fastapi basics")
 
-    # Without IDF the chunk repeating "fastapi" would win; BM25 weights the word that
-    # only one chunk contains far above the word every chunk contains.
+    # IDF가 없으면 "fastapi"를 반복한 청크가 이긴다. BM25는 한 청크에만 있는 단어를 모든 청크에 있는 단어보다
+    # 훨씬 무겁게 친다.
     results = await lexical_search(db_session, "fastapi credentials", top_k=5)
     assert results[0].content == "fastapi credentials"
 
@@ -163,8 +163,8 @@ async def test_rerank_search_reorders_the_union_of_dense_and_bm25_candidates(db_
     await _seed_document_with_chunk(db_session, query_vector, "generic prose about nothing much")
     await _seed_document_with_chunk(db_session, orthogonal, "load settings from environment variables")
 
-    # One candidate per list: dense brings the generic chunk, BM25 the environment one,
-    # and the order comes from the reranker alone.
+    # 목록마다 후보 하나: dense는 일반 문장 청크를, BM25는 environment 청크를 가져오고, 순서는 재정렬기만으로
+    # 정해진다.
     results = await rerank_search(
         db_session,
         "environment variables",
@@ -203,8 +203,8 @@ async def test_rerank_pool_defaults_to_the_questions_language(db_session):
         await _seed_document_with_chunk(db_session, vector, f"{i} english chunk", "en")
         await _seed_document_with_chunk(db_session, vector, f"{i} 한국어 청크", "ko")
 
-    # Neither question has [A-Za-z0-9] words, so the dense list is the only source of
-    # candidates and its length is exactly the pool.
+    # 두 질문 모두 [A-Za-z0-9] 단어가 없으므로 후보는 dense 목록에서만 나오고, 그 길이가 정확히 후보
+    # 수(pool)다.
     query_vector = [1.0] + [0.0] * (EMBEDDING_DIM - 1)
     reranker = KeywordReranker("chunk")
     await rerank_search(db_session, "?!", query_vector, 10, reranker, language="en")
@@ -246,25 +246,25 @@ async def test_retrieve_in_rerank_mode_requires_a_reranker(db_session):
         await retrieve(db_session, "q", [1.0] + [0.0] * (EMBEDDING_DIM - 1), 5, "rerank")
 
 
-# --- score floor per embedding model, cross-lingual search (docs/experiments.md v12) ---
+# --- 임베딩 모델별 점수 바닥값, 교차언어 검색 (docs/experiments.md v12) ---
 
 
 # v12 테스트용 벡터 도우미: 앞 성분만 정하고 나머지는 0인 벡터, 그리고 _unit(1.0)과의 코사인이 정확히
 # `cosine`인 단위 벡터.
 def _unit(*components: float) -> list[float]:
-    """A vector whose first components are given and the rest zero."""
+    """앞쪽 성분은 주어진 값이고 나머지는 0인 벡터."""
     return list(components) + [0.0] * (EMBEDDING_DIM - len(components))
 
 
 def _at_similarity(cosine: float) -> list[float]:
-    """A unit vector whose cosine with _unit(1.0) is `cosine`."""
+    """_unit(1.0)과의 코사인이 `cosine`인 단위 벡터."""
     return _unit(cosine, (1 - cosine**2) ** 0.5)
 
 
 # 경로의 페이지에 청크를 하나 더한다(문서가 없으면 처음에 만든다). 언어는 경로의 docs/<언어>/에서 정한다. 같은
 # 페이지의 여러 청크, 같은 페이지의 다른 번역을 만들 때 쓴다.
 async def _seed_page_chunk(db_session, path: str, embedding: list[float], content: str, index: int = 0):
-    """A chunk of the page at `path`; the page's document is created on first use."""
+    """`path` 페이지의 청크 하나. 그 페이지의 문서 행은 처음 쓸 때 만든다."""
     from sqlalchemy import select
 
     document = await db_session.scalar(select(Document).where(Document.source_path == path))
@@ -294,7 +294,7 @@ async def _seed_page_chunk(db_session, path: str, embedding: list[float], conten
 async def test_similarity_search_takes_the_score_floor_as_a_parameter(db_session):
     await _seed_page_chunk(db_session, "docs/en/docs/low.md", _at_similarity(0.25), "low score")
 
-    assert await similarity_search(db_session, _unit(1.0), 5) == []  # under the default 0.3
+    assert await similarity_search(db_session, _unit(1.0), 5) == []  # 기본 바닥값 0.3 미만
     lowered = await similarity_search(db_session, _unit(1.0), 5, score_floor=0.2)
     assert [r.content for r in lowered] == ["low score"]
 
@@ -313,7 +313,7 @@ def test_page_key_is_the_same_for_every_translation_of_a_page():
     assert page_key("docs/ko/docs/tutorial/body.md") == "tutorial/body.md"
     assert page_key("docs/en/docs/tutorial/body.md") == "tutorial/body.md"
     assert page_key("docs/en/docs/index.md") == "index.md"
-    assert page_key("README.md") == "README.md"  # not a docs page: left as it is
+    assert page_key("README.md") == "README.md"  # 문서 페이지가 아니면 그대로 둔다
 
 
 # 교차언어 검색은 점수순으로 합치되, 이미 다른 번역으로 들어간 페이지는 건너뛴다: a는 한국어(0.9), b는
@@ -327,8 +327,8 @@ async def test_cross_lingual_search_keeps_one_translation_per_page(db_session):
 
     results = await cross_lingual_search(db_session, _unit(1.0), 5, ("ko", "en"))
 
-    # Page a is taken by its Korean chunk and page b by its English one, so the other
-    # translation of each page is dropped instead of repeating the same content.
+    # 페이지 a는 한국어 청크가, 페이지 b는 영어 청크가 먼저 자리를 잡으므로, 각 페이지의 다른 번역은 같은
+    # 내용을 되풀이하지 않도록 빠진다.
     assert [r.content for r in results] == ["ko a", "en b"]
 
 

@@ -1,11 +1,11 @@
-"""Answer generation with structured, schema-enforced citations.
+"""스키마로 강제한 구조화 인용이 붙은 답변 생성.
 
-Two interchangeable providers behind one interface:
-- Anthropic: forces the `cite_answer` tool via `tool_choice`.
-- Ollama: forces the same JSON schema via Ollama's `format` (constrained decoding).
+서로 바꿔 끼울 수 있는 두 제공자를 한 인터페이스 뒤에 둔다:
+- Anthropic: `tool_choice`로 `cite_answer` 도구 호출을 강제한다.
+- Ollama: Ollama의 `format`(제약 디코딩)으로 같은 JSON 스키마를 강제한다.
 
-Both guarantee schema-valid citations without parsing free-form text, so
-`/query/ask` never has to care which one is wired in.
+둘 다 자유 텍스트를 파싱하지 않고도 스키마에 맞는 인용을 보장하므로, `/query/ask`는 어느 쪽이 연결돼
+있는지 신경 쓸 필요가 없다.
 """
 
 # [파일 역할] 검색된 청크를 근거로 LLM 답변과 인용(근거 청크 번호)을 만드는 생성 단계. 로컬 Ollama와 Claude
@@ -61,9 +61,8 @@ OLLAMA_ANSWER_PROMPT = BASE_RULES + (
     "3. Reply with the answer text only — no JSON, no preamble.\n"
 )
 
-# Added only for Korean questions. A general "answer in the question's language" rule
-# (that mentioned Korean as the example) made the local 7B model answer English
-# questions in Korean too, dropping English answer correctness from 4.60 to 4.19.
+# 한국어 질문에만 붙이는 규칙. 처음에는 "질문과 같은 언어로 답하라"는 일반 규칙(예시로 한국어를 들었음)을
+# 썼는데, 로컬 7B 모델이 영어 질문에도 한국어로 답해 영어 답변 정확도가 4.60에서 4.19로 떨어졌다.
 KOREAN_ANSWER_RULE = (
     "4. Write the answer in Korean. Keep code, API names and identifiers exactly as they "
     "appear in the passages.\n"
@@ -75,11 +74,10 @@ def system_prompt_for(prompt: str, language: Language) -> str:
     return prompt + KOREAN_ANSWER_RULE if language == "ko" else prompt
 
 
-# The language guard (docs/experiments.md v13; on by default since the v13 adoption through
-# Settings.language_guard, LANGUAGE_GUARD=false turns it off): a Korean
-# answer with kana or Han characters outside code is generated once more with this rule in
-# place of KOREAN_ANSWER_RULE. The docs never use those scripts, so in an answer they mean
-# the model slipped into Japanese or Chinese (v10-v12 saw it in the 7B model's answers).
+# 언어 가드(docs/experiments.md v13. v13 채택 때부터 Settings.language_guard로 기본으로 켜져 있고,
+# LANGUAGE_GUARD=false로 끈다): 코드 밖에 가나나 한자가 있는 한국어 답은 KOREAN_ANSWER_RULE 대신 이 규칙을
+# 넣어 한 번 더 생성한다. 문서는 이 문자들을 전혀 쓰지 않으므로, 답에 나왔다면 모델이 일본어나 중국어로 샌
+# 것이다(v10~v12에서 7B 모델의 답에서 이런 경우를 봤다).
 KOREAN_RETRY_RULE = (
     "4. Write the entire answer in Korean only (한국어로만 답하세요). Do not switch to Chinese "
     "or Japanese: no Chinese characters and no Japanese kana outside code. Keep code, API "
@@ -91,7 +89,7 @@ KOREAN_RETRY_RULE = (
 # _FENCED_CODE_RE·_INLINE_CODE_RE: 펜스 코드 블록과 인라인 코드. 코드 안의 한자(예: 예제 문자열)는 언어 섞임이
 # 아니므로 가드 판단에서 뺀다.
 KANA_HAN_RE = re.compile(r"[぀-ヿ一-鿿]")
-# A fence that is never closed runs to the end of the answer.
+# 닫히지 않은 펜스는 답의 끝까지를 코드로 본다.
 _FENCED_CODE_RE = re.compile(r"```.*?(?:```|\Z)", re.DOTALL)
 _INLINE_CODE_RE = re.compile(r"`[^`\n]*`")
 
@@ -135,10 +133,9 @@ CITATIONS_SCHEMA = {
 # 인용 응답이 스키마를 어기는 이유를 문자열로 돌려준다(맞으면 None). bool은 파이썬에서 int의 하위 타입이라
 # 따로 걸러 낸다. 앱 동작에는 영향이 없고, 평가가 스키마를 지킨 응답 수를 세는 데 쓴다(eval/answer_report.py).
 def citation_schema_error(reply: str) -> str | None:
-    """Why a citation reply breaks CITATIONS_SCHEMA, or None when it fits.
+    """인용 응답이 CITATIONS_SCHEMA를 어기는 이유. 스키마에 맞으면 None.
 
-    Only recorded (the answer eval counts schema-valid replies); the app parses the reply
-    as it always has.
+    기록용일 뿐이다(답변 평가가 스키마를 지킨 응답 수를 센다). 앱은 응답을 늘 하던 대로 파싱한다.
     """
     try:
         parsed = json.loads(reply)
@@ -162,8 +159,8 @@ ANSWER_SCHEMA = {
         "answer": {"type": "string", "description": "The answer to the user's question."},
         "citations": {
             "type": "array",
-            # minItems forces schema-constrained decoding to emit at least one citation;
-            # smaller local models otherwise satisfy the schema with an empty array.
+            # minItems로 스키마 제약 디코딩이 인용을 최소 하나는 내게 한다. 그러지 않으면 작은 로컬 모델은
+            # 빈 배열로 스키마를 만족시켜 버린다.
             "minItems": 1,
             "items": {
                 "type": "object",
@@ -198,8 +195,7 @@ class GenerationResult:
     input_tokens: int
     output_tokens: int
     model_name: str
-    # Provider-specific details the answer eval records (per-call token counts, stop
-    # reasons, the language guard); the app does not read them.
+    # 답변 평가가 기록하는 제공자별 세부 정보(호출마다의 토큰 수, 멈춘 이유, 언어 가드). 앱은 읽지 않는다.
     diagnostics: dict = field(default_factory=dict)
 
 
@@ -262,26 +258,24 @@ class AnthropicGenerationService(GenerationService):
 
 
 class OllamaGenerationService(GenerationService):
-    """Local generation, split into two calls.
+    """로컬 생성. 호출을 두 번으로 나눈다.
 
-    A 7B model under JSON-schema-constrained decoding does not reliably escape
-    quotes inside string values, so an answer containing code gets truncated at
-    its first `"`. Generating the prose free-form and extracting citations in a
-    second, digits-only schema call sidesteps that entirely.
+    7B 모델은 JSON 스키마 제약 디코딩 중에 문자열 값 안의 따옴표를 믿을 만하게 이스케이프하지 못해, 코드가
+    든 답이 첫 `"`에서 잘린다. 답 글은 자유 텍스트로 생성하고, 인용은 숫자만 담는 스키마로 두 번째 호출에서
+    뽑으면 이 문제를 아예 피한다.
 
-    Options added for v13 (docs/experiments.md), all inert by default:
-    - `think`: sent as Ollama's `think` field when set (False turns off the reasoning
-      that models such as qwen3.5 do by default); None sends no field.
-    - `language_guard`: a Korean answer with kana or Han outside code is generated once
-      more with KOREAN_RETRY_RULE; the citations are taken for the final answer.
-    - `strict_citations=False` (the answer eval) records a citation reply that breaks
-      the schema instead of raising, so a run can count them.
+    v13에서 더한 옵션(docs/experiments.md). 모두 기본값에서는 아무 영향이 없다:
+    - `think`: 값이 있으면 Ollama의 `think` 필드로 보낸다(False면 qwen3.5 같은 모델이 기본으로 하는 추론을
+      끈다). None이면 필드를 보내지 않는다.
+    - `language_guard`: 코드 밖에 가나나 한자가 있는 한국어 답을 KOREAN_RETRY_RULE로 한 번 더 생성한다.
+      인용은 최종 답을 기준으로 받는다.
+    - `strict_citations=False`(답변 평가용): 스키마를 어긴 인용 응답에서 예외를 내는 대신 기록해, 한 번의
+      실행에서 그런 응답 수를 셀 수 있게 한다.
     """
 
     # CONTEXT_TOKENS: 요청마다 num_ctx로 문맥 크기를 8192로 지정한다. MAX_OUTPUT_TOKENS: 답 길이
     # 상한(num_predict 1024). 문맥 8192 중 1024는 답에 쓰이는 셈이다(docs/experiments.md v11의 계산).
-    # Ollama defaults to a 4096-token context, which the retrieved passages alone can
-    # nearly fill — leaving no room for the answer.
+    # Ollama 기본 문맥은 4096토큰인데, 검색된 문맥만으로도 거의 찰 수 있어 답을 쓸 자리가 남지 않는다.
     CONTEXT_TOKENS = 8192
     MAX_OUTPUT_TOKENS = 1024
 

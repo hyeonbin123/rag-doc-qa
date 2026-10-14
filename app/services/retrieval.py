@@ -38,32 +38,30 @@ RetrievalMode = Literal["dense", "hybrid", "rerank"]
 # dense 점수(코사인 유사도) 바닥값. 지금 쓰는 모델은 모두 이 0.3을 쓴다(v12에서 규칙으로 정한 한국어 바닥값도
 # 0.3이라 SCORE_FLOORS는 비어 있다).
 SCORE_FLOOR = 0.3
-# Dense results under the floor are dropped, so a question the docs don't cover gets no
-# passages. Cosine scores sit in different ranges for different models, so a model whose
-# on-topic scores fall lower gets its own floor, set on the Korean tuning sets only
-# (docs/experiments.md v12). Models not listed use SCORE_FLOOR.
+# 바닥값 미만의 dense 결과는 버리므로, 문서가 다루지 않는 질문에는 근거 청크가 붙지 않는다. 코사인 점수가
+# 놓이는 범위는 모델마다 달라서, 관련 문서의 점수가 더 낮게 나오는 모델에는 따로 바닥값을 둘 수 있다. 그 값은
+# 한국어 튜닝용 셋에서만 정한다(docs/experiments.md v12). 여기 없는 모델은 SCORE_FLOOR를 쓴다.
 SCORE_FLOORS: dict[str, float] = {}
 # RRF 상수 k. 순위 r인 결과가 가중치 / (60 + r)을 받는다. 60은 RRF에서 널리 쓰는 기본값이고 v4부터 그대로
 # 썼다. k가 크면 1위와 10위의 점수 차가 작아져 한 목록의 1위가 결과를 독점하지 못한다.
 RRF_K = 60
-# pgvector's HNSW scan returns at most hnsw.ef_search rows (default 40), so a larger
-# LIMIT would silently shrink the dense candidate list back to 40 anyway.
+# pgvector의 HNSW 탐색은 최대 hnsw.ef_search개(기본 40) 행만 돌려준다. LIMIT을 더 크게 잡아도 dense 후보
+# 목록은 어차피 조용히 40개로 줄어든다.
 CANDIDATE_POOL = 40
-# Standard BM25 defaults (as in Lucene/Elasticsearch), deliberately left untuned.
+# 표준 BM25 기본값(Lucene·Elasticsearch와 같음). 일부러 튜닝하지 않았다.
 # k1: 단어가 반복될수록 점수가 늘다가 포화하는 정도. b: 문서 길이 정규화 강도(0이면 길이 무시, 1이면 완전
 # 정규화).
 BM25_K1 = 1.2
 BM25_B = 0.75
-# RRF weight of the BM25 list relative to the dense list (which has weight 1). Picked
-# from {0.25, 0.5, 0.75, 1.0} on eval/qa_dev.jsonl only, never on the test set.
+# dense 목록(가중치 1)에 대한 BM25 목록의 RRF 가중치. {0.25, 0.5, 0.75, 1.0} 중에서 eval/qa_dev.jsonl로만
+# 골랐고, 테스트셋으로는 고르지 않았다.
 # v5 결과: 튜닝용 셋 MRR 0.953(dense 0.858)이었지만 테스트셋에서 0.894(dense 0.933)로 낮아 hybrid는 기본값이
 # 되지 못했다.
 LEXICAL_WEIGHT = 0.75
-# Candidates taken from each of the dense and BM25 lists for the cross-encoder. Every
-# candidate costs one model forward pass at query time (on a desktop CPU, about 60 ms
-# each for the English MiniLM-L6 and 100 ms for the multilingual L12), so this trades
-# latency for recall. Picked per language on that language's tuning set under a 1 s
-# median retrieval budget: English from {5, 10, 20}, Korean from {3, 5, 8}.
+# cross-encoder에 넘길 후보를 dense 목록과 BM25 목록에서 각각 몇 개씩 가져올지. 후보 하나마다 질의 시점에
+# 모델 forward를 한 번 돌려야 해서(데스크톱 CPU에서 영어 MiniLM-L6은 약 60ms, 다국어 L12는 약 100ms) 지연과
+# 재현율을 맞바꾸는 값이다. 언어마다 그 언어의 튜닝용 셋에서, 검색 지연 중앙값 1초 예산 안에서 골랐다:
+# 영어는 {5, 10, 20}, 한국어는 {3, 5, 8} 중에서.
 # v6(영어): 목록당 5개가 튜닝용 셋 MRR 0.969, p50 627ms로 예산 안에서 가장 좋았다(10개부터 예산 초과).
 # v9(한국어): 3개가 0.891, 8개는 p50 1359ms로 예산 초과. 두 목록에서 가져오므로 실제 후보는 최대 그 두
 # 배(겹치면 그보다 적음)다.
@@ -71,7 +69,7 @@ RERANK_POOLS: dict[Language, int] = {"en": 5, "ko": 3}
 
 # 질문에서 BM25에 쓸 영문·숫자 단어만 뽑는 정규식(_search_words).
 _WORD_RE = re.compile(r"[A-Za-z0-9]+")
-# docs/<language>/docs/<page>: every translation of a page shares <page>.
+# docs/<언어>/docs/<페이지> 형태의 경로. 한 페이지의 모든 번역은 같은 <페이지> 부분을 갖는다.
 _DOCS_PATH_RE = re.compile(r"^docs/([^/]+)/docs/(.+)$")
 
 # 아래 _BM25_CTES는 hybrid·rerank·lexical_search가 앞부분에 붙여 쓰는 공통 CTE다. 단계:
@@ -84,16 +82,11 @@ _DOCS_PATH_RE = re.compile(r"^docs/([^/]+)/docs/(.+)$")
 #    :pool개에 순위(rnk)를 매긴다.
 # 질문 단어를 OR로 묶는 이유: plainto_tsquery처럼 AND로 묶으면 문장형 질문에는 거의 아무것도 걸리지
 # 않는다(docs/experiments.md v4 구현 메모).
-# BM25 over chunks.content_tsv, computed in SQL so there is no extra index or stats
-# table to keep in sync with ingestion:
-# - terms: the question's lexemes, stemmed with the same 'english' config as content_tsv
-# - df: counted per term through the GIN index on content_tsv
-# - tf: how many positions the lexeme has in the chunk's tsvector
-# - length: chunks.token_count; BM25 only uses dl / avgdl, so any consistent unit works
-# Postgres' own ts_rank has no IDF, which let words like "fastapi" (in 57% of chunks)
-# drown out the rare, informative words of a question.
-# Every statistic is taken within one language, so Korean chunks never dilute the
-# English document frequencies and vice versa.
+# chunks.content_tsv 위의 BM25를 SQL로 계산하므로, 적재와 맞춰 둘 별도 인덱스나 통계 테이블이 필요 없다.
+# - 길이: chunks.token_count. BM25는 dl / avgdl 비율만 쓰므로 단위가 일정하기만 하면 된다.
+# Postgres 자체의 ts_rank에는 IDF가 없어서, "fastapi"처럼 흔한 단어(청크의 57%에 있음)가 질문의 드물고 정보가
+# 많은 단어를 묻어 버렸다(v4가 채택되지 못한 원인).
+# 모든 통계는 한 언어 안에서만 계산하므로, 한국어 청크가 영어 문서 빈도를 흐리지 않고 그 반대도 마찬가지다.
 _BM25_CTES = """
     terms AS (
         SELECT lexeme FROM unnest(to_tsvector('english', :words))
@@ -152,9 +145,9 @@ class RetrievedChunk:
 
 
 # 임베딩 모델별 dense 바닥값. /query/ask와 평가 스크립트가 질문을 임베딩한 모델 이름으로 부른다. 모델마다 관련
-# 문서의 코사인 점수 분포가 달라 바닥값을 따로 둘 수 있게 한 것이다(위 영어 주석).
+# 문서의 코사인 점수 분포가 달라 바닥값을 따로 둘 수 있게 한 것이다(위 SCORE_FLOORS 주석).
 def score_floor_for(model_name: str) -> float:
-    """The dense score floor for vectors from this embedding model."""
+    """이 임베딩 모델이 만든 벡터에 쓰는 dense 점수 바닥값."""
     return SCORE_FLOORS.get(model_name, SCORE_FLOOR)
 
 
@@ -162,10 +155,10 @@ def score_floor_for(model_name: str) -> float:
 # 데(eval/retrieval_runs.py, eval/run_answer_eval.py, eval/generator_arms.py)와 교차언어 검색의 중복 제거에
 # 쓴다.
 def page_key(source_path: str) -> str:
-    """The page a docs path belongs to, the same for each translation of it.
+    """문서 경로가 속한 페이지. 한 페이지의 모든 번역이 같은 값을 갖는다.
 
-    "docs/ko/docs/tutorial/body.md" and "docs/en/docs/tutorial/body.md" are both
-    "tutorial/body.md". Anything else is returned unchanged.
+    "docs/ko/docs/tutorial/body.md"와 "docs/en/docs/tutorial/body.md"는 둘 다 "tutorial/body.md"다.
+    이 형식이 아닌 경로는 그대로 돌려준다.
     """
     match = _DOCS_PATH_RE.match(source_path)
     return match.group(2) if match else source_path
@@ -195,12 +188,11 @@ def _to_chunk(row) -> RetrievedChunk:
 
 
 def _search_words(question: str) -> str:
-    """Keep only the question's [A-Za-z0-9] words.
+    """질문에서 [A-Za-z0-9] 단어만 남긴다.
 
-    The lexemes Postgres derives from these are plain alphanumerics, which is what
-    lets the BM25 SQL cast each one straight to a tsquery without escaping. For a
-    Korean question this keeps only the English API names in it (or nothing, in
-    which case the lexical side is skipped).
+    여기서 Postgres가 만드는 어휘소는 평범한 영문·숫자뿐이라, BM25 SQL이 이스케이프 없이 각 어휘소를 바로
+    tsquery로 바꿀 수 있다. 한국어 질문이면 그 안의 영어 API 이름만 남는다(하나도 없으면 어휘 검색 쪽을
+    건너뛴다).
     """
     return " ".join(_WORD_RE.findall(question))
 
@@ -221,12 +213,11 @@ def _bm25_params(words: str, language: Language) -> dict:
 # 맞아야 플래너가 쓸 수 있어서 바인드 파라미터 대신 리터럴을 넣는다. 지원 언어 목록으로 먼저 검사하므로 SQL
 # 주입 위험이 없다.
 def _language_sql(language: Language) -> str:
-    """The language as an SQL literal, for the vector queries.
+    """벡터 질의에 넣을 SQL 리터럴 형태의 언어 값.
 
-    Each language has its own partial HNSW index (migration 0004). The planner only
-    uses a partial index when the WHERE clause matches its predicate as written, which
-    a bind parameter can't guarantee, so the value is inlined, after checking it
-    against the fixed list of supported languages.
+    언어마다 부분 HNSW 인덱스가 따로 있다(마이그레이션 0004). 플래너는 WHERE 절이 인덱스 조건과 쓰인 그대로
+    맞을 때만 부분 인덱스를 쓰는데, 바인드 파라미터로는 이를 보장할 수 없다. 그래서 정해진 지원 언어
+    목록으로 값을 검사한 뒤 SQL에 직접 넣는다.
     """
     if language not in SUPPORTED_LANGUAGES:
         raise ValueError(f"unsupported docs language {language!r}")
@@ -237,7 +228,7 @@ def _language_sql(language: Language) -> str:
 # 코사인 거리 = 코사인 유사도를 score로 돌려준다. 평가의 실행 계획 확인(eval/retrieval_checks.py)도 이 함수로
 # 앱과 똑같은 SQL을 EXPLAIN한다.
 def dense_search_sql(language: Language) -> str:
-    """The dense search statement for one language (binds :qvec and :top_k)."""
+    """한 언어의 dense 검색 SQL 문(바인드 값은 :qvec와 :top_k)."""
     return f"""
         SELECT c.id, c.document_id, c.content, c.heading_path, d.source_path,
                1 - (c.embedding <=> :qvec) AS score
@@ -258,11 +249,10 @@ async def similarity_search(
     language: Language = "en",
     score_floor: float = SCORE_FLOOR,
 ) -> list[RetrievedChunk]:
-    """Cosine similarity search over chunks via pgvector's <=> operator.
+    """pgvector의 <=> 연산자로 청크를 코사인 유사도 검색한다.
 
-    `1 - (embedding <=> :qvec)` converts cosine *distance* into a
-    similarity score in roughly [0, 1] for normalized vectors. Of the top_k, the ones
-    scoring under `score_floor` are dropped.
+    `1 - (embedding <=> :qvec)`는 코사인 *거리*를 유사도 점수로 바꾸며, 정규화된 벡터라면 대략 [0, 1]
+    범위다. 상위 top_k개 중 `score_floor` 미만인 것은 버린다.
     """
     result = await db.execute(
         text(dense_search_sql(language)),
@@ -284,15 +274,13 @@ async def cross_lingual_search(
     languages: tuple[Language, ...],
     score_floor: float = SCORE_FLOOR,
 ) -> list[RetrievedChunk]:
-    """Dense search over several translations at once, one translation per page.
+    """여러 번역을 한꺼번에 dense 검색하되, 한 페이지는 한 번역만 남긴다.
 
-    Only meaningful when every searched language was embedded by the same multilingual
-    model as the question (docs/experiments.md v12, "T3"): the scores are then on one
-    scale and can be merged. Each language's top 2 * top_k (through its own HNSW index)
-    are merged by score. A chunk is skipped when its page is already in the list in
-    another translation, so the same content does not take two of the top_k places;
-    several chunks of one page in the same translation are kept, as in a one-language
-    search.
+    검색하는 모든 언어를 질문과 같은 다국어 모델로 임베딩했을 때만 의미가 있다(docs/experiments.md v12,
+    "T3"). 그래야 점수가 한 척도 위에 있어 합칠 수 있다. 언어마다 (그 언어의 HNSW 인덱스로) 상위
+    2 * top_k개를 뽑아 점수순으로 합친다. 어떤 청크의 페이지가 다른 번역으로 이미 목록에 있으면 그 청크는
+    건너뛰어, 같은 내용이 top_k 자리를 두 번 차지하지 않게 한다. 같은 번역 안에서 한 페이지의 청크가 여러
+    개인 것은 한 언어 검색과 마찬가지로 그대로 둔다.
     """
     candidates: list[RetrievedChunk] = []
     for language in languages:
@@ -318,7 +306,7 @@ async def cross_lingual_search(
 async def lexical_search(
     db: AsyncSession, question: str, top_k: int, language: Language = "en"
 ) -> list[RetrievedChunk]:
-    """BM25-only ranking, the lexical half of hybrid_search. `score` is the BM25 score."""
+    """BM25만으로 매긴 순위. hybrid_search의 어휘 검색 절반이다. `score`는 BM25 점수."""
     words = _search_words(question)
     if not words:
         return []
@@ -357,14 +345,13 @@ async def hybrid_search(
     language: Language = "en",
     score_floor: float = SCORE_FLOOR,
 ) -> list[RetrievedChunk]:
-    """Fuse the dense and BM25 rankings with weighted Reciprocal Rank Fusion.
+    """dense 순위와 BM25 순위를 가중 RRF(Reciprocal Rank Fusion)로 합친다.
 
-    Each ranked list contributes weight / (RRF_K + rank); ranks are fused rather than
-    raw scores because cosine similarity and BM25 live on unrelated scales. `score`
-    stays the cosine similarity so it means the same thing in both modes.
-    SCORE_FLOOR is not applied: a passage that only matched lexically can have a low
-    cosine score, and surfacing exactly those passages is the point of this mode. A
-    question with no searchable words falls back to dense search, under `score_floor`.
+    순위 목록마다 가중치 / (RRF_K + 순위)를 더한다. 코사인 유사도와 BM25는 서로 무관한 척도라 날것의
+    점수가 아니라 순위를 합친다. `score`는 코사인 유사도로 두어 두 모드에서 같은 뜻을 갖게 한다.
+    SCORE_FLOOR는 적용하지 않는다: 어휘로만 걸린 문서 조각은 코사인 점수가 낮을 수 있는데, 바로 그런 조각을
+    끌어올리는 것이 이 모드의 목적이기 때문이다. 검색할 단어가 없는 질문은 dense 검색으로 대신하고, 그때는
+    `score_floor`를 적용한다.
     """
     words = _search_words(question)
     if not words:
@@ -424,7 +411,7 @@ async def _rerank_candidates(
     language: Language,
     score_floor: float = SCORE_FLOOR,
 ) -> list[RetrievedChunk]:
-    """The union of the dense top `pool` and the BM25 top `pool`, in no particular order."""
+    """dense 상위 `pool`개와 BM25 상위 `pool`개의 합집합. 순서는 정해져 있지 않다."""
     words = _search_words(question)
     if not words:
         return await similarity_search(db, query_embedding, pool, language, score_floor)
@@ -473,19 +460,18 @@ async def rerank_search(
     language: Language = "en",
     score_floor: float = SCORE_FLOOR,
 ) -> list[RetrievedChunk]:
-    """Re-score the union of the dense and BM25 candidates with a cross-encoder.
+    """dense 후보와 BM25 후보의 합집합을 cross-encoder로 다시 채점한다.
 
-    Unlike RRF, a candidate that only one list found is judged on its own text rather
-    than on how many lists agreed on it. `score` becomes the reranker's relevance
-    probability. `pool` defaults to the language's RERANK_POOLS entry. `score_floor` applies
-    when the question has no searchable words and the candidates are dense only.
+    RRF와 달리, 한 목록에서만 찾은 후보도 몇 개의 목록이 동의했는지가 아니라 자기 글 내용으로 평가받는다.
+    `score`는 재정렬 모델의 관련도 확률이 된다. `pool`의 기본값은 그 언어의 RERANK_POOLS 값이다.
+    `score_floor`는 질문에 검색할 단어가 없어 후보가 dense 결과뿐일 때 적용한다.
     """
     # pool을 주지 않으면(평가의 --rerank-pool 생략, 앱) 질문 언어의 기본 후보 수를 쓴다. 후보마다
     # cross-encoder 입력은 적재 임베딩과 같은 '헤딩 경로 + 본문' 형식이다.
     pool = pool or RERANK_POOLS[language]
     candidates = await _rerank_candidates(db, question, query_embedding, pool, language, score_floor)
     passages = [build_embedding_text(c.heading_path or "", c.content) for c in candidates]
-    # The model call is CPU-bound; the model thread keeps the event loop free meanwhile.
+    # 모델 호출은 CPU를 쓰므로 모델 스레드에서 돌려, 그동안 이벤트 루프가 다른 일을 하게 둔다.
     scores = await run_model(reranker.score, question, passages)
     # 각 후보의 score를 재정렬 점수로 바꾸고 높은 순으로 정렬해 top_k만 남긴다.
     for chunk, score in zip(candidates, scores, strict=True):
@@ -515,11 +501,11 @@ async def retrieve(
     score_floor: float = SCORE_FLOOR,
     cross_lingual: bool = False,
 ) -> list[RetrievedChunk]:
-    """Search the docs translation matching `language`, detected from the question if None.
+    """`language`에 맞는 번역 문서를 검색한다. None이면 질문에서 언어를 판별한다.
 
-    `score_floor` applies to dense search, including the dense fallback of the hybrid and
-    rerank modes for a question with no searchable words. `cross_lingual` (dense only) searches every
-    translation instead, the question's own first; see cross_lingual_search.
+    `score_floor`는 dense 검색에 적용되며, 검색할 단어가 없는 질문에서 hybrid·rerank 모드가 dense로
+    대신하는 경우도 포함한다. `cross_lingual`(dense 전용)이면 질문 언어를 먼저 두고 모든 번역을 함께
+    검색한다. cross_lingual_search 참고.
     """
     language = language or detect_language(question)
     if cross_lingual:

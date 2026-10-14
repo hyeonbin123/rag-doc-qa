@@ -1,11 +1,10 @@
-"""The answer eval's judge call, truncation check, per-item records and comparisons.
+"""답변 평가의 판정 호출, 잘림 확인, 문항별 기록, 비교 기능을 검증한다.
 
-Until v10 the Ollama judge call set only temperature 0, so it ran in Ollama's default
-4096-token context, and Ollama cuts an over-long prompt without saying so. These tests
-pin the v11 judge (num_ctx 8192, truncate=false, a pre-flight length check, the
-prompt_eval_count kept next to a tokenizer count), the legacy judge kept for comparison,
-and the per-item JSONL that lets a judge rerun without regenerating answers. No Ollama,
-database or tokenizer download is needed.
+v10까지 Ollama 판정 호출은 temperature 0만 지정해서 Ollama 기본 문맥 4096토큰에서 돌았고, Ollama는 너무
+긴 프롬프트를 알리지 않고 잘라 낸다. 이 테스트들은 v11 판정(num_ctx 8192, truncate=false, 보내기 전 길이
+확인, 토크나이저 수와 나란히 남기는 prompt_eval_count), 비교용으로 남긴 legacy 판정, 그리고 답을 다시
+생성하지 않고 판정만 다시 돌릴 수 있게 하는 문항별 JSONL을 고정한다. Ollama, DB, 토크나이저 다운로드가
+필요 없다.
 """
 
 # [테스트 묶음] 답변 평가 하네스(eval/judge.py, eval/run_answer_eval.py, eval/run_judge.py,
@@ -91,7 +90,7 @@ def gen_record(item_id: str, answer: str = "Use Query().", chunks: int = 2, **ex
     return record
 
 
-# --- the judge call -------------------------------------------------------------------
+# --- 판정 호출 ---
 
 
 # J1 판정 요청이 num_ctx 8192와 truncate=false를 보내고, 스키마·메시지·stream 설정이 맞는지 확인한다.
@@ -109,7 +108,7 @@ def test_v11_judge_asks_for_8192_tokens_and_no_silent_truncation():
 # J0(num_ctx=None)는 v10까지의 요청과 똑같아야 한다. num_ctx나 truncate 필드가 하나라도 붙으면 옛 판정을
 # 재현한 비교(J1 − J0)가 의미를 잃는다.
 def test_legacy_judge_payload_is_the_pre_v11_one():
-    # J0 must reproduce the old call exactly: Ollama's default context, default truncation.
+    # J0는 예전 호출을 그대로 재현해야 한다: Ollama 기본 문맥, 기본 잘림 동작.
     payload = ollama_judge_payload("prompt", JudgeConfig(model="m", num_ctx=None, label="J0"))
 
     assert payload == {
@@ -165,7 +164,7 @@ async def test_judge_still_rejects_scores_off_the_scale(monkeypatch):
 # truncate=false에서 Ollama가 '문맥 초과'로 거절하면 실행을 멈추지 않고 그 문항을 오류로 기록하는지
 # 확인한다(점수는 비워 둠). v11 스모크에서 실제로 HTTP 400이 났다.
 async def test_context_overflow_error_is_recorded_not_raised(monkeypatch):
-    # With truncate=false Ollama refuses an over-long prompt; the item is kept as an error.
+    # truncate=false면 Ollama는 너무 긴 프롬프트를 거절하고, 그 문항은 오류로 남는다.
     mock_ollama(
         monkeypatch,
         lambda request: httpx.Response(400, json={"error": "the input length exceeds the context length"}),
@@ -186,7 +185,7 @@ async def test_other_ollama_errors_still_raise(monkeypatch):
         await judge_with_ollama("http://ollama.test", "prompt", JudgeConfig(model="m"))
 
 
-# --- truncation detection --------------------------------------------------------------
+# --- 잘림 탐지 ---
 
 
 # 잘림 판정 규칙: prompt_eval_count가 토크나이저 수보다 16토큰 넘게 모자라면 'truncated', 몇 토큰 차이는 'ok',
@@ -194,7 +193,7 @@ async def test_other_ollama_errors_still_raise(monkeypatch):
 # 낸 값이다.
 def test_truncation_status_compares_evaluated_and_counted_tokens():
     assert truncation_status(prompt_eval_count=5000, counted_tokens=5003) == "ok"
-    # Ollama 0.35.1 keeps 4 tokens plus about half of a 4096 window.
+    # Ollama 0.35.1은 앞 4토큰과 4096 창의 절반쯤을 남긴다.
     assert truncation_status(prompt_eval_count=2050, counted_tokens=5003) == "truncated"
     assert truncation_status(prompt_eval_count=None, counted_tokens=5003) == "unchecked"
     assert truncation_status(prompt_eval_count=2050, counted_tokens=None) == "unchecked"
@@ -204,7 +203,7 @@ def test_truncation_status_compares_evaluated_and_counted_tokens():
 # 순서를 기록하는지 확인한다. 답 해시는 나중에 '답이 바뀐 문항 수'를 세는 데 쓰인다.
 async def test_judge_items_records_counts_flags_and_answer_hash():
     records = [gen_record("t1"), gen_record("t2", answer="A longer answer.")]
-    evaluated = {"Question t1?": 300, "Question t2?": 100}  # t2 comes back short
+    evaluated = {"Question t1?": 300, "Question t2?": 100}  # t2는 짧게(잘려서) 돌아온다
 
     async def call(prompt):
         question = prompt.split("\n")[0].removeprefix("Question: ")
@@ -238,7 +237,7 @@ async def test_judge_items_checks_every_prompt_fits_before_sending():
             call,
             count_tokens=lambda messages: 8000 if "x x" in messages[0]["content"] else 500,
         )
-    assert calls == []  # nothing sent: the run stops before the first judge call
+    assert calls == []  # 아무것도 보내지 않음: 첫 판정 호출 전에 실행이 멈춘다
 
 
 # J0는 길이 확인으로 막지 않고 그대로 보내야 한다. 옛 판정이 얼마나 잘렸는지(M1)를 재는 것이 목적이기
@@ -285,7 +284,7 @@ def test_chat_token_counter_counts_the_templated_prompt():
     assert counter([{"role": "user", "content": "a|b|c"}]) == 3
 
 
-# --- per-item generation records ------------------------------------------------------
+# --- 문항별 생성 기록 ---
 
 
 # generate_answer의 기록에 순위별 청크(id, 본문), 첫 정답 순위, 답, 참고 답안, 생성 시간·토큰 수, 키워드
@@ -370,12 +369,12 @@ async def test_generation_counts_the_other_translation_as_a_hit_and_crosses_only
         None, lambda lang: FakeEmbedder(), FakeGenerator(), en, 5, "dense", None, cross_lingual=True
     )
 
-    assert ko_record["first_hit_rank"] == 1  # the English page of the expected Korean one
+    assert ko_record["first_hit_rank"] == 1  # 정답 한국어 페이지의 영어판
     assert ko_record["cross_lingual"] is True
     assert ko_record["score_floor"] == 0.2
     assert calls[0]["cross_lingual"] is True and calls[0]["score_floor"] == 0.2
-    assert calls[1]["cross_lingual"] is False  # English questions search English only
-    assert calls[1]["score_floor"] == 0.3  # the model's floor when none is given
+    assert calls[1]["cross_lingual"] is False  # 영어 질문은 영어만 검색한다
+    assert calls[1]["score_floor"] == 0.3  # 바닥값을 주지 않으면 모델의 바닥값
 
 # 생성 순서: dataset이면 그대로, shuffle이면 모든 문항을 한 번씩 담은 다른 순서이고 같은 seed면 항상 같다(v11
 # 생성 노이즈 측정을 재현할 수 있게).
@@ -399,7 +398,7 @@ def test_jsonl_round_trip_keeps_unicode(tmp_path):
     assert "엔드포인트" in path.read_text(encoding="utf-8")
 
 
-# --- rerunning the judge on stored answers --------------------------------------------
+# --- 저장된 답으로 판정 다시 돌리기 ---
 
 
 # run_judge.judge_file이 저장된 답을 생성 없이 판정하고, 파일 순서가 아니라 데이터셋 순서로 판정하며, 출력
@@ -412,7 +411,7 @@ async def test_run_judge_rejudges_stored_answers_without_generating(tmp_path, mo
     sent = []
 
     def handler(request):
-        if request.url.path != "/api/chat":  # the run notes /api/version and /api/ps if it can
+        if request.url.path != "/api/chat":  # 실행은 가능하면 /api/version과 /api/ps를 기록한다
             return httpx.Response(404, json={"error": "not here"})
         sent.append(json.loads(request.content))
         return chat_response(GOOD_SCORES, prompt_eval_count=2050)
@@ -428,12 +427,12 @@ async def test_run_judge_rejudges_stored_answers_without_generating(tmp_path, mo
 
     judgments = read_jsonl(out_path)
     assert out_path.name == "unit.J0.judge.jsonl"
-    assert [j["id"] for j in judgments] == ["t1", "t2"]  # dataset order, not file order
+    assert [j["id"] for j in judgments] == ["t1", "t2"]  # 파일 순서가 아니라 데이터셋 순서
     assert all(j["truncation"] == "truncated" for j in judgments)
     assert "num_ctx" not in sent[0]["options"]
 
 
-# --- comparisons ----------------------------------------------------------------------
+# --- 비교 ---
 
 
 # 대응표본 bootstrap 구간: 평균이 정확하고, 구간이 평균을 감싸며, seed가 고정돼 같은 입력이면 같은 구간이
@@ -482,7 +481,7 @@ def test_pairing_refuses_files_with_different_items():
         )
 
 
-# --- v13: generation diagnostics and the language guard in the per-item record ----------
+# --- v13: 문항별 기록의 생성 진단과 언어 가드 ---
 
 
 # v13 언어 가드가 다시 만든 문항의 기록: 최종 답, 가드 적용 여부, 가드 전 답과 그 답의 가나·한자 섞임, 재시도
@@ -553,7 +552,7 @@ async def test_generation_record_keeps_the_guard_and_per_call_diagnostics(monkey
 # 진단을 내지 않는 생성기(Claude, 테스트 가짜)일 때 가드·호출 필드가 False/None으로 채워져 기록 모양이 깨지지
 # 않는지 확인한다.
 async def test_generation_record_without_diagnostics_keeps_its_old_shape(monkeypatch):
-    # The Anthropic provider (and the fakes in other tests) report no diagnostics.
+    # Anthropic 제공자(와 다른 테스트의 가짜 생성기)는 진단을 알려 주지 않는다.
     chunk = RetrievedChunk(uuid.uuid4(), uuid.uuid4(), "docs/en/docs/p1.md", "H", "Text", 0.8)
 
     async def fake_retrieve(db, question, vector, top_k, mode, **kwargs):

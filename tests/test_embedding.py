@@ -1,7 +1,6 @@
-"""Embedding model specs: prefixes, pinned revisions, Matryoshka truncation and float32.
+"""임베딩 모델 설정: 접두사, 고정 리비전, Matryoshka 자르기, float32.
 
-The real models are not loaded here; SentenceTransformer is replaced with a stand-in that
-records how it was constructed.
+여기서는 실제 모델을 올리지 않는다. SentenceTransformer를 어떻게 생성됐는지만 기록하는 대역으로 바꾼다.
 """
 
 # [테스트 묶음] 임베딩 모델 설정 표(app/services/embedding.py의 EMBEDDING_MODELS)와 EmbeddingService가 모델을
@@ -34,7 +33,7 @@ QWEN3_06B = "Qwen/Qwen3-Embedding-0.6B"
 # 차원을, 없으면 native_dim(기본 384)을 출력 차원으로 보고한다. 모델을 받지 않고 '어떻게 올렸는가'만 검사할 수
 # 있다.
 class RecordingSentenceTransformer:
-    """Records the constructor arguments; reports the dimension the model would output."""
+    """생성자 인자를 기록하고, 그 모델이 낼 출력 차원을 알려 준다."""
 
     native_dim = 384
     calls: list[tuple[str, dict]] = []
@@ -62,7 +61,7 @@ def test_the_korean_candidates_have_pinned_revisions_and_their_prefixes():
     for name in (GRANITE_97M, GRANITE_311M, QWEN3_06B):
         revision = EMBEDDING_MODELS[name].revision
         assert revision is not None and len(revision) == 40
-    # Granite R2 takes no prefixes; Qwen3 instructs the query side only.
+    # Granite R2는 접두사를 쓰지 않고, Qwen3는 질문 쪽에만 지시문을 붙인다.
     assert prefixes_for(GRANITE_97M) == ("", "")
     assert prefixes_for(GRANITE_311M) == ("", "")
     query_prefix, passage_prefix = prefixes_for(QWEN3_06B)
@@ -73,7 +72,7 @@ def test_the_korean_candidates_have_pinned_revisions_and_their_prefixes():
 # 384차원보다 넓은 모델(311m 768차원, Qwen3 1024차원)은 vector(384) 열에 맞게 앞쪽 384개만 쓰도록 자르고, 원래
 # 384인 97m은 자르지 않는다.
 def test_wider_models_are_cut_to_the_vector_column_size():
-    assert EMBEDDING_MODELS[GRANITE_97M].truncate_dim is None  # already 384
+    assert EMBEDDING_MODELS[GRANITE_97M].truncate_dim is None  # 원래 384차원
     assert EMBEDDING_MODELS[GRANITE_311M].truncate_dim == EMBEDDING_DIM
     assert EMBEDDING_MODELS[QWEN3_06B].truncate_dim == EMBEDDING_DIM
 
@@ -85,7 +84,7 @@ def test_models_load_in_float32_with_their_revision_and_truncation(recorded):
 
     name, kwargs = recorded[-1]
     assert name == GRANITE_311M
-    # transformers 5 loads the Granite R2 checkpoints in bfloat16 unless told otherwise.
+    # transformers 5는 따로 지정하지 않으면 Granite R2 체크포인트를 bfloat16으로 올린다.
     assert kwargs["model_kwargs"] == {"dtype": torch.float32}
     assert kwargs["revision"] == EMBEDDING_MODELS[GRANITE_311M].revision
     assert kwargs["truncate_dim"] == EMBEDDING_DIM
@@ -100,7 +99,7 @@ def test_the_models_already_in_use_load_as_before(recorded):
     assert name == E5_SMALL
     assert kwargs["revision"] is None
     assert kwargs["truncate_dim"] is None
-    assert kwargs["model_kwargs"] == {"dtype": torch.float32}  # their checkpoints are float32
+    assert kwargs["model_kwargs"] == {"dtype": torch.float32}  # 이 모델들의 체크포인트는 float32다
 
 
 # 자르기 설정 없이 1024차원을 내는 모델이면 서비스를 만들 때 바로 ValueError가 나야 한다. 그대로 두면 적재할
@@ -119,8 +118,6 @@ def test_a_model_whose_vectors_do_not_fit_the_column_fails_loudly(recorded, monk
 # 적재 해시에 들어가는 identity가 e5·bge(그리고 가짜)에서는 모델 이름 그대로인지 확인한다. 리비전 등이 붙으면
 # 해시가 바뀌어 저장된 모든 문서가 '바뀜'으로 보여 쓸데없이 다시 임베딩된다.
 def test_identity_stays_the_bare_name_for_the_models_already_ingested(recorded):
-    # Ingestion hashes the identity. For e5 and bge it must stay the model name, or every
-    # stored document would look changed and be re-embedded for nothing.
     assert EmbeddingService(E5_SMALL).identity == E5_SMALL
     assert EmbeddingService(BGE_SMALL).identity == BGE_SMALL
     assert FakeEmbeddingService().identity == "fake-embedding"
@@ -139,11 +136,11 @@ def test_identity_names_the_revision_and_the_cut(recorded):
 # 한국어 기본 모델이 v13 단계 B에서 채택한 granite-311m이고, 측정한 리비전과 384 자르기가 그대로인지 고정한다.
 # 환경 변수와 .env를 읽지 않게 해 코드의 기본값만 본다.
 def test_the_korean_default_is_the_v13_stage_b_adoption(monkeypatch):
-    # granite-311m@384 replaced e5-small as the Korean model (docs/experiments.md v13 stage B).
+    # 한국어 모델은 granite-311m@384가 e5-small을 대신했다(docs/experiments.md v13 단계 B).
     monkeypatch.delenv("EMBEDDING_MODEL_NAME_KO", raising=False)
     settings = Settings(database_url="x", jwt_secret_key="y", _env_file=None)
 
     assert settings.embedding_model_name_ko == GRANITE_311M
-    # The revision and the cut that were measured, and the same vector column as before.
+    # 측정한 리비전과 자르기 차원, 그리고 예전과 같은 벡터 열 크기.
     assert EMBEDDING_MODELS[GRANITE_311M].revision == "44399559930365213510b1ee2eb15ded83374f0e"
     assert EMBEDDING_MODELS[GRANITE_311M].truncate_dim == EMBEDDING_DIM == 384

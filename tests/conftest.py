@@ -1,9 +1,8 @@
-"""Test fixtures.
+"""테스트 픽스처.
 
-Integration tests (test_auth.py, test_retrieval.py, test_query.py) need a
-running Postgres+pgvector server reachable via TEST_DATABASE_URL (defaults to
-the docker-compose db). The "ragdb_test" database and the extensions the
-schema needs are created on first use.
+통합 테스트(test_auth.py, test_retrieval.py, test_query.py)는 TEST_DATABASE_URL로 접속할 수 있는 실행 중인
+Postgres+pgvector 서버가 필요하다(기본값은 docker-compose의 db). "ragdb_test" DB와 스키마에 필요한 확장은
+처음 쓸 때 만든다.
 """
 
 # [파일 역할] 모든 테스트가 공유하는 pytest 픽스처와 가짜 모델. 실제 Postgres + pgvector에 테스트용
@@ -51,9 +50,9 @@ EMBEDDING_DIM = 384
 # __init__을 건너뛰므로 revision·truncate_dim은 EmbeddingService의 클래스 기본값(None)을 쓰고, identity는
 # 'fake-embedding'이 된다.
 class FakeEmbeddingService(EmbeddingService):
-    """Deterministic, dependency-free stand-in for the real sentence-transformer model."""
+    """실제 sentence-transformer 모델을 대신하는, 결정론적이고 의존성 없는 가짜."""
 
-    def __init__(self) -> None:  # intentionally skip the real __init__/model load
+    def __init__(self) -> None:  # 실제 __init__(모델 로딩)을 일부러 건너뛴다
         self.model_name = "fake-embedding"
 
     def _fake_vector(self, text: str) -> list[float]:
@@ -89,10 +88,10 @@ _test_database_ready = False
 # CREATE DATABASE는 트랜잭션 안에서 실행할 수 없어서, 관리용 postgres DB에 AUTOCOMMIT 연결로 접속해 만든다. DB
 # 이름은 SQL 파라미터로 넘길 수 없어 큰따옴표로 감싸 문자열에 넣는다(값은 코드의 URL에서 온다).
 async def _ensure_test_database() -> None:
-    """Create the test database and its extensions if missing.
+    """테스트 DB와 그 확장이 없으면 만든다.
 
-    docker compose only creates the app database, so without this a fresh clone
-    fails every integration test on "database ragdb_test does not exist".
+    docker compose는 앱 DB만 만들기 때문에, 이것이 없으면 새로 clone한 저장소에서는 모든 통합 테스트가
+    "database ragdb_test does not exist"로 실패한다.
     """
     global _test_database_ready
     if _test_database_ready:

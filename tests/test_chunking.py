@@ -60,7 +60,7 @@ def test_chunk_markdown_preserves_all_headings():
 def test_chunk_markdown_never_splits_inside_code_fence():
     chunks = chunk_markdown(SAMPLE_DOC)
     combined = "\n\n".join(c.content for c in chunks)
-    # the code block should appear intact somewhere in the combined output
+    # 코드 블록이 합친 결과의 어딘가에 온전한 모양으로 나와야 한다
     assert "async def read_item(item_id: int):" in combined
     assert "return {\"item_id\": item_id}" in combined
 

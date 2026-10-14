@@ -1,21 +1,21 @@
-"""Retrieval-only evaluation: Hit@k, MRR and retrieval latency.
+"""검색만 평가한다: Hit@k, MRR, 검색 지연.
 
-Usage:
+사용법:
     python -m eval.run_retrieval_eval [--top-k 10] [--tag v1_baseline]
         [--mode dense|hybrid|rerank] [--dataset eval/qa_dev.jsonl [more.jsonl ...]]
         [--lexical-weight 0.75] [--rerank-pool 10] [--reranker-model NAME]
         [--score-floor 0.3] [--cross-lingual] [--exact] [--no-vector-check]
 
-Tune on the tuning sets (eval/qa_dev.jsonl, eval/qa_dev_ko.jsonl, eval/qa_dev2_ko.jsonl);
-the other sets are held out for testing. In rerank mode the model and pool follow each
-question's language; --reranker-model and --rerank-pool override them for every question.
+튜닝은 튜닝용 셋(eval/qa_dev.jsonl, eval/qa_dev_ko.jsonl, eval/qa_dev2_ko.jsonl)에서만 하고, 나머지 셋은
+테스트용으로 아껴 둔다. rerank 모드에서는 모델과 후보 수가 질문마다 그 질문의 언어를 따른다.
+--reranker-model과 --rerank-pool은 모든 질문에 대해 이를 덮어쓴다.
 
-A hit is a retrieved chunk from an expected page in any translation, so an English chunk
-of an expected Korean page counts (the --cross-lingual search can return one). For a
-one-language search this is the same as matching the path exactly.
+맞음(hit)은 정답 페이지에서 나온 청크를 번역과 상관없이 찾은 것이다. 그래서 한국어 정답 페이지의 영어
+청크도 맞음으로 센다(--cross-lingual 검색은 이런 청크를 돌려줄 수 있다). 한 언어만 검색할 때는 경로를
+그대로 비교하는 것과 결과가 같다.
 
-Every run also writes per-question records (ranked chunk ids, paths and scores) to
-eval/runs/<tag>.retrieval.jsonl; eval/retrieval_runs.py compares runs and score floors.
+모든 실행은 문항별 기록(순위별 청크 id, 경로, 점수)도 eval/runs/<tag>.retrieval.jsonl에 쓴다.
+eval/retrieval_runs.py가 실행끼리, 그리고 점수 바닥값을 비교한다.
 """
 
 # [파일 역할] 검색 단계만 평가하는 스크립트. 질문셋의 문항마다 앱과 같은 검색(retrieve)을 돌려 Hit@3/5/10,
@@ -66,7 +66,7 @@ from eval.retrieval_checks import check_stored_vectors, dense_search_plan, force
 
 # 결과가 5개 미만인 문항을 'short'로 센다. 답변 파이프라인은 상위 5개를 생성기에 넘기므로, 바닥값이 결과를
 # 잘라 5개 밑으로 내려가면 생성 컨텍스트가 줄어든다는 뜻이다.
-SHORT = 5  # fewer results than this means the generator would get fewer than top 5
+SHORT = 5  # 결과가 이보다 적으면 생성기가 상위 5개보다 적게 받는다
 
 
 # 경로 목록을 페이지 키 목록으로 바꾼다. 번역이 달라도 같은 페이지면 같은 키가 된다.
@@ -95,7 +95,7 @@ def reciprocal_rank(ranked_paths: list[str], expected: list[str]) -> float:
 # 쓴다(모델끼리 비교할 때).
 def reranker_lookup(model_override: str | None) -> Callable[[Language], RerankerService]:
     if model_override is None:
-        return get_reranker_service  # the configured model for each question's language
+        return get_reranker_service  # 질문 언어마다 설정된 모델
     fixed = RerankerService(model_override)
     return lambda language: fixed
 
@@ -103,7 +103,7 @@ def reranker_lookup(model_override: str | None) -> Callable[[Language], Reranker
 # 이 언어 질문에 쓸 dense 점수 바닥값. --score-floor가 있으면 그 값(v12 바닥값 측정은 0으로 돌림), 없으면 그
 # 언어 질문을 임베딩하는 모델의 값(앱과 같음).
 def question_floor(args: argparse.Namespace, embedder, language: Language) -> float:
-    """--score-floor if given, else the floor of the model that embeds this language."""
+    """--score-floor가 있으면 그 값, 없으면 이 언어를 임베딩하는 모델의 바닥값."""
     if args.score_floor is not None:
         return args.score_floor
     return score_floor_for(embedder(language).model_name)
@@ -124,8 +124,8 @@ async def evaluate_question(
     reranker = reranker_for(language) if reranker_for else None
     floor = question_floor(args, embedder, language)
     cross_lingual = bool(args.cross_lingual) and language == "ko"
-    # Timed after the embedding so every mode is measured on the same work: the DB
-    # queries, plus the cross-encoder in rerank mode.
+    # 임베딩이 끝난 뒤부터 시간을 재서, 모든 모드가 같은 작업(DB 질의, rerank 모드면 cross-encoder까지)으로
+    # 측정되게 한다.
     start = time.perf_counter()
     retrieved = await retrieve(
         db,
@@ -204,7 +204,7 @@ async def main(args: argparse.Namespace) -> None:
     args.mode = args.mode or settings.retrieval_mode
     if args.cross_lingual and args.mode != "dense":
         raise SystemExit("--cross-lingual is dense only")
-    embedder = get_embedding_service  # per-language lookup, called with each question's language
+    embedder = get_embedding_service  # 언어별 조회 함수. 질문마다 그 질문의 언어로 부른다
     # --dataset에 여러 셋을 주면 함께 돌려 전체와 셋별 지표를 같이 낸다(v12 dev는 qa_dev_ko + qa_dev2_ko
     # 72문항을 한 번에 돌렸다).
     datasets = [(path, load_dataset(path)) for path in args.dataset]
@@ -215,7 +215,7 @@ async def main(args: argparse.Namespace) -> None:
     # 둔다(v6·v9의 지연 예산 1초 판단이 이 지연 값으로 내려졌다).
     if args.mode == "rerank":
         reranker_for = reranker_lookup(args.reranker_model)
-        for language in languages:  # keep one-off setup cost out of the timings
+        for language in languages:  # 한 번만 드는 준비 비용을 측정 시간에서 뺀다
             reranker_for(language).score("warm-up", ["warm-up"])
 
     started = datetime.now(UTC)
@@ -223,9 +223,8 @@ async def main(args: argparse.Namespace) -> None:
     vector_checks = []
     async with async_session_maker() as db:
         if not args.no_vector_check:
-            # The stored vectors of every searched language must come from the model that
-            # embeds the questions searching them (a cross-lingual Korean question searches
-            # the English chunks with the Korean model).
+            # 검색하는 모든 언어의 저장 벡터는 그 언어를 검색하는 질문을 임베딩하는 모델로 만든 것이어야 한다
+            # (교차언어 한국어 질문은 한국어 모델로 영어 청크를 검색한다).
             for language in languages:
                 vector_checks.append(await check_stored_vectors(db, embedder(language), language))
             if args.cross_lingual and "ko" in languages:
@@ -350,23 +349,23 @@ if __name__ == "__main__":
     parser.add_argument("--dataset", type=Path, nargs="+", default=[DATASET_PATH])
     parser.add_argument("--lexical-weight", type=float, default=LEXICAL_WEIGHT)
     parser.add_argument(
-        "--rerank-pool", type=int, default=None, help="defaults to RERANK_POOLS[language]"
+        "--rerank-pool", type=int, default=None, help="재정렬 후보 수. 기본값은 RERANK_POOLS[언어]"
     )
     parser.add_argument(
-        "--reranker-model", default=None, help="defaults to the language's RERANKER_MODEL_NAME"
+        "--reranker-model", default=None, help="재정렬 모델. 기본값은 그 언어의 RERANKER_MODEL_NAME"
     )
     parser.add_argument(
         "--score-floor", type=float, default=None,
-        help="dense score floor for every question; defaults to each model's (SCORE_FLOORS)",
+        help="모든 질문에 쓸 dense 점수 바닥값. 기본값은 모델마다의 값(SCORE_FLOORS)",
     )
     parser.add_argument(
         "--cross-lingual", action="store_true",
-        help="Korean questions search the Korean and English chunks (needs a database whose "
-        "English chunks were embedded by the Korean model)",
+        help="한국어 질문이 한국어와 영어 청크를 함께 검색한다(영어 청크도 한국어 모델로 "
+        "임베딩한 DB가 필요하다)",
     )
-    parser.add_argument("--exact", action="store_true", help="exact search instead of HNSW")
+    parser.add_argument("--exact", action="store_true", help="HNSW 대신 정확 탐색으로 검색한다")
     parser.add_argument(
         "--no-vector-check", action="store_true",
-        help="skip checking that the stored vectors come from the configured models",
+        help="저장된 벡터가 설정된 모델로 만든 것인지 확인하는 단계를 건너뛴다",
     )
     asyncio.run(main(parser.parse_args()))

@@ -1,4 +1,4 @@
-"""init schema: extensions, users, documents, chunks, query_logs
+"""초기 스키마: 확장(vector, pgcrypto)과 users, documents, chunks, query_logs 테이블을 만든다.
 
 Revision ID: 0001
 Revises:

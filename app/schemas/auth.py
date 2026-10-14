@@ -24,9 +24,9 @@ _email_adapter = TypeAdapter(EmailStr)
 # find_user_by_email)와 데모 계정 시드(scripts/seed_demo_user.py)가 써서, 가입 때와 다른 대소문자로 도메인을
 # 입력해도 같은 계정을 찾게 한다.
 def normalize_email(value: str) -> str:
-    """Return the address as UserRegister stores it (EmailStr form, domain lower-cased).
+    """UserRegister가 저장하는 형태(EmailStr 형식, 도메인은 소문자)로 주소를 바꿔 돌려준다.
 
-    Raises ValueError (pydantic's ValidationError) if the value is not an address.
+    값이 이메일 주소가 아니면 ValueError(pydantic의 ValidationError)를 낸다.
     """
     return _email_adapter.validate_python(value)
 

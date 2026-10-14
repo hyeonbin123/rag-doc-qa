@@ -1,17 +1,16 @@
-"""Split the question-first Korean pool into its tuning and test sets.
+"""질문을 먼저 쓴 한국어 질문 풀을 튜닝용 셋과 테스트셋으로 나눈다.
 
-Usage:
+사용법:
     python -m eval.build_pool3_sets
 
-eval/question_pool3_ko.txt holds 120 Korean questions written before looking at the docs
-or this repository; eval/pool3_labels.jsonl holds their labels (expected pages, the
-sections that answer them, a reference answer, keywords), written afterwards from the docs.
-See eval/pool3_provenance.md. The kept questions are shuffled with a fixed seed and cut
-into three disjoint sets, each used for one purpose only:
+eval/question_pool3_ko.txt에는 문서나 이 저장소를 보기 전에 쓴 한국어 질문 120개가 있고,
+eval/pool3_labels.jsonl에는 그 뒤에 문서를 보고 단 라벨(정답 페이지, 답이 되는 절, 참고 답안, 키워드)이
+있다. eval/pool3_provenance.md 참고. 남긴 질문을 고정 seed로 섞어 서로 겹치지 않는 세 셋으로 자르고, 각
+셋은 한 가지 목적에만 쓴다:
 
-- qa_dev2_ko: tuning, together with qa_dev_ko (docs/experiments.md v12 picks with it)
-- qa_test3a_ko: the v12 test, run once on the picked setting
-- qa_test3b_ko: held back for a later step; v12 does not open it
+- qa_dev2_ko: 튜닝용. qa_dev_ko와 함께 쓴다(docs/experiments.md v12가 이 셋으로 설정을 고른다)
+- qa_test3a_ko: v12 테스트. 고른 설정 하나로 한 번만 돌린다
+- qa_test3b_ko: 다음 단계용으로 아껴 둔다. v12에서는 열어 보지 않는다
 """
 
 # [파일 역할] 문서를 보기 전에 쓴 한국어 질문 120개(질문 풀 3)를 고정 seed로 섞어 40문항씩 세 셋으로 나누고
@@ -56,7 +55,7 @@ def build() -> dict[str, list[dict]]:
     random.Random(SEED).shuffle(order)
     sets = {}
     for i, name in enumerate(SET_NAMES):
-        chosen = sorted(order[i * SET_SIZE : (i + 1) * SET_SIZE])  # pool order within a set
+        chosen = sorted(order[i * SET_SIZE : (i + 1) * SET_SIZE])  # 셋 안에서는 풀 순서대로
         sets[name] = [{field: kept[j][field] for field in EVAL_FIELDS} for j in chosen]
     if sum(len(s) for s in sets.values()) != len(kept):
         raise ValueError(f"{len(kept)} kept questions do not fill {len(SET_NAMES)} sets of {SET_SIZE}")

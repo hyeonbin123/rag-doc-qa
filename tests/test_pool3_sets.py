@@ -1,4 +1,4 @@
-"""The question-first Korean pool and its fixed split (docs/experiments.md v12)."""
+"""질문을 먼저 쓴 한국어 질문 풀과 그 고정 분할을 검증한다(docs/experiments.md v12)."""
 
 # [테스트 묶음] 질문 풀 3(문서를 보지 않고 쓴 한국어 질문 120개)과 그 고정 분할(qa_dev2_ko / qa_test3a_ko /
 # qa_test3b_ko), 그리고 test3b의 영어판(qa_test3b_en)을 검사한다. DB 없이 커밋된 파일만 읽는다.
@@ -46,7 +46,7 @@ def test_the_sets_load_as_eval_questions_with_the_pool_wording():
     pool = build_pool3_sets.POOL_PATH.read_text(encoding="utf-8").splitlines()
     for name in build_pool3_sets.SET_NAMES:
         for q in load_dataset(build_pool3_sets.EVAL_DIR / f"{name}.jsonl"):
-            assert q.question == pool[int(q.id[1:]) - 1]  # the question as written, unedited
+            assert q.question == pool[int(q.id[1:]) - 1]  # 손대지 않은, 쓴 그대로의 질문
             assert q.expected_source_paths and q.reference_answer
 
 
@@ -54,8 +54,8 @@ def test_the_sets_load_as_eval_questions_with_the_pool_wording():
 # 원문, 키워드는 그대로, 질문은 영어로 판별되고 질문·참고 답안에 한글·가나·한자가 없다. v13 채택 단계에서 영어
 # 정확도를 같은 문항으로 재는 데 쓴 셋이다.
 def test_the_english_test3b_is_the_korean_one_translated_item_for_item():
-    # docs/experiments.md v13: the same 40 items, the same keywords, each expected page's
-    # English original; only the question and reference answer are translated.
+    # docs/experiments.md v13: 같은 40문항, 같은 키워드, 정답 페이지는 각각의 영어 원문이다. 질문과 참고
+    # 답안만 번역했다.
     ko = load_dataset(build_pool3_sets.EVAL_DIR / "qa_test3b_ko.jsonl")
     en = load_dataset(build_pool3_sets.EVAL_DIR / "qa_test3b_en.jsonl")
 

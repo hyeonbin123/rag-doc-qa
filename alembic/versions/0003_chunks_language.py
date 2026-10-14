@@ -1,4 +1,4 @@
-"""add language to chunks
+"""chunks에 language 열(문서 번역 언어)을 더한다.
 
 Revision ID: 0003
 Revises: 0002
@@ -26,7 +26,7 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    # Every existing row is English: until now only docs/en/docs was ingested.
+    # 지금까지는 docs/en/docs만 적재했으므로 기존 행은 모두 영어다.
     # server_default="en": 기존 행을 모두 영어로 채우면서 NOT NULL 열을 한 번에 추가한다(기본값 없이 NOT NULL
     # 열을 더하면 기존 행 때문에 실패한다). String(8)은 'en', 'ko' 같은 짧은 언어 코드용이다.
     op.add_column(

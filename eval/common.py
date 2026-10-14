@@ -14,8 +14,8 @@ from pathlib import Path
 # 리포트를 남기는 곳.
 DATASET_PATH = Path(__file__).parent / "qa_dataset.jsonl"
 REPORTS_DIR = Path(__file__).parent / "reports"
-# Per-item records of answer-eval runs (answers with their passages, judge replies), so a
-# judge can be rerun on stored answers.
+# RUNS_DIR: 답변 평가 실행의 문항별 기록(답과 그 근거 문맥, 판정 응답)을 두는 곳. 저장된 답으로 판정만 다시
+# 돌릴 수 있게 한다.
 RUNS_DIR = Path(__file__).parent / "runs"
 
 
@@ -81,7 +81,7 @@ def read_jsonl(path: Path) -> list[dict]:
 
 
 def read_json(path: Path) -> dict:
-    """A run's notes file, or {} when there is none."""
+    """실행 하나의 메모 파일(JSON)을 읽는다. 파일이 없으면 {}."""
     return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
 
 
@@ -95,7 +95,7 @@ def write_json(path: Path, data: dict) -> Path:
 # 지금 체크아웃된 커밋 해시. 실행 기록에 남겨 어떤 코드로 잰 결과인지 추적한다. git이 없거나 저장소
 # 밖이면(또는 10초 안에 끝나지 않으면) None.
 def git_commit() -> str | None:
-    """The checked-out commit, recorded with each run."""
+    """지금 체크아웃된 커밋. 실행마다 함께 기록한다."""
     try:
         result = subprocess.run(
             ["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True, timeout=10

@@ -1,4 +1,4 @@
-"""add full-text search column to chunks
+"""chunks에 전문 검색 열(content_tsv)과 그 GIN 인덱스를 더한다.
 
 Revision ID: 0002
 Revises: 0001

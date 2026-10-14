@@ -1,6 +1,6 @@
-"""Debug utility: list the FastAPI doc paths that would be ingested, without embedding anything.
+"""디버그 도구: 아무것도 임베딩하지 않고, 적재될 FastAPI 문서 경로 목록만 보여 준다.
 
-Usage:
+사용법:
     python -m scripts.fetch_docs [--commit SHA] [--languages en,ko]
 """
 
@@ -47,7 +47,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--languages",
         default=",".join(DOC_LANGUAGES),
-        help="comma-separated docs translations to list (default: en,ko)",
+        help="목록을 볼 문서 번역 언어, 쉼표로 구분(기본값: en,ko)",
     )
     args = parser.parse_args()
     # 'en,ko' 같은 쉼표 목록을 튜플로 바꾸고 빈 항목은 버린다(적재 CLI의 --languages와 같은 형식).

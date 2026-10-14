@@ -20,7 +20,7 @@ class AskRequest(BaseModel):
     top_k: int = Field(default=5, ge=1, le=10)
     language: Literal["auto", "en", "ko"] = Field(
         default="auto",
-        description="Which docs translation to search. auto picks ko when the question contains Hangul.",
+        description="검색할 문서 번역 언어. auto면 질문에 한글이 있을 때 ko를 고른다.",
     )
 
 

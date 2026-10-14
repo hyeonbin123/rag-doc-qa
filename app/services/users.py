@@ -11,24 +11,22 @@ from app.schemas.auth import normalize_email
 
 
 async def find_user_by_email(db: AsyncSession, typed: str) -> User | None:
-    """Find the account a typed address belongs to.
+    """입력한 주소가 어느 계정의 것인지 찾는다.
 
-    Registration stores the EmailStr-normalized address, but rows made by earlier
-    versions of scripts/seed_demo_user.py hold the address exactly as typed
-    ("Demo@Example.COM"). Both spellings are looked up and the typed one wins, so a
-    login that matched a row before normalization existed still reaches that row;
-    the normalized spelling only adds matches.
+    가입은 EmailStr로 정규화한 주소를 저장하지만, 예전 버전의 scripts/seed_demo_user.py가 만든 행에는
+    입력한 그대로의 주소가 있다("Demo@Example.COM"). 두 철자를 모두 찾되 입력한 철자를 우선하므로, 정규화가
+    생기기 전에 어떤 행과 맞던 로그인은 지금도 그 행에 닿는다. 정규화한 철자는 맞는 경우를 더할 뿐이다.
     """
     # NUL 문자가 든 username은 DB에 묻지 않고 '없음'으로 처리한다. 그대로 질의 파라미터로 보내면 PostgreSQL이
     # 거부해 로그인이 500이 됐다(OWASP ZAP 지적 후속 수정). 결과적으로 로그인은 401이 된다.
     if "\x00" in typed:
-        return None  # no stored address holds U+0000, and PostgreSQL rejects it as a parameter
+        return None  # 저장된 주소에는 U+0000이 없고, PostgreSQL은 이를 파라미터로 받지 않는다
     # 후보 1순위는 입력한 그대로, 2순위는 정규화한 형태(주소 형식이 아니면 정규화 없이 그대로만 찾는다).
     candidates = [typed]
     try:
         normalized = normalize_email(typed)
     except ValueError:
-        normalized = None  # not an address: only an exact stored match can apply
+        normalized = None  # 주소 형식이 아니다: 저장된 값과 정확히 같은 경우만 맞을 수 있다
     if normalized is not None and normalized != typed:
         candidates.append(normalized)
 

@@ -37,7 +37,7 @@
   // busy: 답변을 기다리는 중이면 새 질문을 막는 표시. queuedQuestion: 로그인 전에 누른 예시 질문이나 토큰
   // 만료로 못 보낸 질문을 로그인 뒤 이어 보내려고 잠시 담아 둔다.
   let token = null;
-  try { token = sessionStorage.getItem(TOKEN_KEY); } catch (e) { /* storage blocked: stay logged out */ }
+  try { token = sessionStorage.getItem(TOKEN_KEY); } catch (e) { /* 저장소가 막힘: 로그아웃 상태로 둔다 */ }
   let busy = false;
   let queuedQuestion = null;
 
@@ -71,12 +71,12 @@
       try {
         const body = await res.json();
         if (typeof body.detail === 'string') detail = body.detail;
-        // A 422 lists each rejected field; its last loc entry is the field name.
+        // 422는 거부된 필드를 하나씩 나열하고, 각 항목의 loc 마지막 값이 필드 이름이다.
         if (Array.isArray(body.detail)) {
           fields = body.detail.map((d) => (d.loc || []).at(-1));
           types = body.detail.map((d) => d.type);
         }
-      } catch (e) { /* non-JSON error body */ }
+      } catch (e) { /* 오류 본문이 JSON이 아님 */ }
       const err = new ApiError(res.status, detail);
       err.fields = fields;
       err.types = types;
@@ -118,10 +118,10 @@
     try {
       if (value) sessionStorage.setItem(TOKEN_KEY, value);
       else sessionStorage.removeItem(TOKEN_KEY);
-    } catch (e) { /* storage blocked: token lives in memory only */ }
+    } catch (e) { /* 저장소가 막힘: 토큰은 메모리에만 남는다 */ }
   }
 
-  /* ---------- rendering ---------- */
+  /* ---------- 화면 그리기 ---------- */
 
   // 요소를 만드는 도우미. 글은 textContent로 넣으므로 HTML로 해석되지 않는다.
   function el(tag, className, text) {
@@ -151,8 +151,8 @@
     }).join('');
   }
 
-  // Answers are markdown-ish: prose plus ``` code fences. Everything is escaped
-  // before any tag is added, so model output can never inject markup.
+  // 답변은 마크다운 비슷한 형식이다: 설명 글과 ``` 코드 펜스. 태그를 하나라도 붙이기 전에 모든 글을 먼저
+  // 이스케이프하므로, 모델 출력이 마크업을 끼워 넣을 수 없다. 닫히지 않은 펜스는 답의 끝까지를 코드로 본다.
   function renderAnswer(text) {
     const fence = /```[\w-]*\n?([\s\S]*?)(?:```|$)/g;
     const parts = [];
@@ -340,7 +340,7 @@
     return { wrap, stop: () => clearInterval(timer) };
   }
 
-  /* ---------- actions ---------- */
+  /* ---------- 사용자 동작 ---------- */
 
   // 질문을 보낸다. 앞뒤 공백을 지운 빈 질문이나, 이전 답변을 기다리는 중이면 무시한다. 첫 화면의 예시 상자를
   // 지우고, 내 말풍선과 기다림 표시를 붙인 뒤 /query/ask를 부른다(top_k 5).
@@ -398,8 +398,8 @@
     }
     const details = await Promise.all(items.map((item) => api('/logs/' + item.id).catch(() => null)));
     items.forEach((item, i) => { item.detail = details[i]; });
-    // Prepend instead of replacing: a question sent while the history was still
-    // loading is already on screen and must stay below it.
+    // 바꿔 넣지 않고 앞에 붙인다: 기록을 불러오는 동안 보낸 질문은 이미 화면에 있고, 그 질문은 기록 아래에
+    // 남아 있어야 한다.
     log.prepend(...items.reverse().flatMap(historyNodes));
     scrollToEnd();
   }
@@ -503,7 +503,7 @@
     questionBox.style.height = Math.min(questionBox.scrollHeight, 160) + 'px';
   }
 
-  /* ---------- wiring ---------- */
+  /* ---------- 이벤트 연결 ---------- */
 
   // 이벤트 연결. 로그인 폼 제출은 페이지 이동을 막고 로그인한다. 계정 만들기는 submit 버튼이 아니라서
   // reportValidity로 브라우저 기본 검사(필수 입력, 이메일 형식)를 직접 돌린 뒤 가입한다.
@@ -519,10 +519,10 @@
     e.preventDefault();
     ask(questionBox.value);
   });
-  // Enter는 보내기, Shift+Enter는 줄바꿈. 한글 입력기 조합 중의 Enter는 아래 기존 주석처럼 무시한다.
+  // Enter는 보내기, Shift+Enter는 줄바꿈. 한글 입력기 조합 중의 Enter는 무시한다.
   questionBox.addEventListener('keydown', (e) => {
-    // While a Korean IME is still composing a syllable, Enter only confirms it. Browsers
-    // flag that with isComposing, and some (Safari) only with keyCode 229.
+    // 한글 입력기가 아직 음절을 조합하는 중이면 Enter는 그 글자를 확정할 뿐이다. 브라우저는 이를
+    // isComposing으로 알려 주고, 일부 브라우저(Safari)는 keyCode 229로만 알려 준다.
     if (e.isComposing || e.keyCode === 229) return;
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();

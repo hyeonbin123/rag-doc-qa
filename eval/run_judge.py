@@ -1,18 +1,16 @@
-"""Judge stored answers again, without regenerating them.
+"""저장된 답을 다시 생성하지 않고 다시 판정한다.
 
-Reads per-item generation records written by eval/run_answer_eval.py
-(eval/runs/<tag>.gen.jsonl) and writes eval/runs/<tag>.<label>.judge.jsonl plus a report
-in eval/reports/. Several files are judged one after another with one judge setting, so
-Ollama keeps one model loaded.
+eval/run_answer_eval.py가 쓴 문항별 생성 기록(eval/runs/<tag>.gen.jsonl)을 읽고,
+eval/runs/<tag>.<label>.judge.jsonl과 eval/reports/의 리포트를 쓴다. 여러 파일을 한 판정 설정으로 차례로
+판정하므로 Ollama는 모델 하나만 올려 둔 채로 있다.
 
-Usage:
+사용법:
     python -m eval.run_judge eval/runs/v11_A_test2.gen.jsonl [more .gen.jsonl ...]
         --label J0 --num-ctx 0 [--model qwen2.5:7b-instruct] [--order dataset|reverse]
         [--no-token-count]
 
---num-ctx 0 sends the pre-v11 judge call (no num_ctx: Ollama's default context, with
-over-long prompts cut silently); any other value is sent with truncate=false after
-checking that every prompt fits.
+--num-ctx 0은 v11 이전 판정 호출을 보낸다(num_ctx 없음: Ollama 기본 문맥이고, 너무 긴 프롬프트는 조용히
+잘린다). 그 밖의 값이면 모든 프롬프트가 들어가는지 확인한 뒤 truncate=false와 함께 보낸다.
 """
 
 # [파일 역할] 저장된 답변 기록(<tag>.gen.jsonl)을 생성 없이 다시 판정하는 명령과, 판정 실행·기록 저장을 맡는
@@ -57,7 +55,7 @@ from eval.tokens import counter_for_model, tokenizer_source
 # 이 값으로 '판정 뒤 모델이 GPU에 다 올라가 있었는가'(size_vram == size), 실제 문맥 크기(context_length), 모델
 # digest를 결과 옆에 남긴다.
 async def ollama_state(base_url: str) -> dict:
-    """Ollama's version, loaded models and local tags, best effort (recorded with results)."""
+    """Ollama 버전, 올라간 모델, 로컬 태그 목록을 되는 대로 읽는다(결과와 함께 기록)."""
     state: dict = {}
     async with httpx.AsyncClient(timeout=10.0) as client:
         for key, path in (("version", "/api/version"), ("ps", "/api/ps"), ("tags", "/api/tags")):
@@ -73,7 +71,7 @@ async def ollama_state(base_url: str) -> dict:
 # tags 목록에서 모델의 digest를 찾는다. 같은 태그가 다시 올라오면 다른 모델이 될 수 있어서, 측정한 모델을
 # digest로 고정해 기록한다(v13 후보 표가 digest로 모델을 정함).
 def model_digest(state: dict, model: str) -> str | None:
-    """The local model's manifest digest: tags get re-pushed, so a tag alone does not pin it."""
+    """로컬 모델의 manifest digest. 태그는 다시 올라올 수 있어 태그만으로는 모델이 고정되지 않는다."""
     for local in (state.get("tags") or {}).get("models", []):
         if local.get("name") == model or local.get("model") == model:
             return local.get("digest")
@@ -122,7 +120,7 @@ async def judge_and_save(
     count_tokens: TokenCounter | None,
     order: str = "dataset",
 ) -> tuple[list[dict], dict]:
-    """Judge records in the order given, write the judgments and their run notes."""
+    """기록을 받은 순서대로 판정하고, 판정 기록과 그 실행 메모를 쓴다."""
     started = datetime.now(UTC).isoformat()
     call = judge_call_for(provider, config, base_url, api_key)
     judgments = await judge_items(records, config, call, count_tokens)
@@ -233,16 +231,16 @@ async def main(args: argparse.Namespace) -> int:
 if __name__ == "__main__":
     # 명령행 옵션. --num-ctx 기본값은 J1의 8192, --order는 dataset(기본)과 reverse만 받는다.
     parser = argparse.ArgumentParser()
-    parser.add_argument("generations", type=Path, nargs="+", help="eval/runs/<tag>.gen.jsonl files")
-    parser.add_argument("--label", default=None, help="names the output files, e.g. J0 or J1")
-    parser.add_argument("--model", default=None, help="defaults to the model that generated the answers")
+    parser.add_argument("generations", type=Path, nargs="+", help="eval/runs/<tag>.gen.jsonl 파일들")
+    parser.add_argument("--label", default=None, help="출력 파일 이름에 붙는 라벨. 예: J0, J1")
+    parser.add_argument("--model", default=None, help="판정 모델. 기본값은 답을 생성한 모델")
     parser.add_argument(
         "--num-ctx",
         type=int,
         default=DEFAULT_JUDGE_NUM_CTX,
-        help="judge context; 0 sends the pre-v11 call without num_ctx",
+        help="판정 문맥 크기. 0이면 num_ctx 없이 v11 이전 호출을 보낸다",
     )
     parser.add_argument("--order", choices=["dataset", "reverse"], default="dataset")
-    parser.add_argument("--no-token-count", action="store_true", help="skip the tokenizer count")
-    sys.stdout.reconfigure(errors="backslashreplace")  # see eval/run_answer_eval.py
+    parser.add_argument("--no-token-count", action="store_true", help="토크나이저로 토큰 수 세기를 건너뛴다")
+    sys.stdout.reconfigure(errors="backslashreplace")  # 이유는 eval/run_answer_eval.py 참고
     sys.exit(asyncio.run(main(parser.parse_args())))

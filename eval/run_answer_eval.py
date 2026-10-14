@@ -1,20 +1,17 @@
-"""Full-pipeline answer evaluation: keyword coverage + LLM-as-judge faithfulness and
-correctness.
+"""전체 파이프라인 답변 평가: 키워드 커버리지 + LLM 판정(LLM-as-judge)의 충실도와 정확도.
 
-Every answer is generated first and stored per item in eval/runs/<tag>.gen.jsonl (the
-ranked passages with chunk ids and contents, the answer, timings and token counts). The
-judge then scores the stored answers and its replies go to
-eval/runs/<tag>.<judge label>.judge.jsonl, with the prompt's token count as Ollama read
-it and as the model's tokenizer counts it, so a cut prompt is visible per item.
-eval/run_judge.py reruns a judge on stored answers.
+모든 답을 먼저 생성해 문항별로 eval/runs/<tag>.gen.jsonl에 저장한다(청크 id와 본문이 붙은 순위별 문단, 답,
+걸린 시간, 토큰 수). 그 뒤 판정 모델이 저장된 답을 채점하고, 판정 응답은
+eval/runs/<tag>.<판정 라벨>.judge.jsonl에 간다. 여기에는 Ollama가 읽은 프롬프트 토큰 수와 모델 토크나이저로
+센 토큰 수가 함께 들어가, 잘린 프롬프트가 문항마다 보인다. eval/run_judge.py는 저장된 답으로 판정만 다시
+돌린다.
 
-The judge runs on whichever provider GENERATION_PROVIDER selects, so a fully local
-(free) eval run is possible. --judge-model pins the judge to one model, so runs that
-compare generation models are all scored by the same judge. The Ollama judge asks for an
-8192-token context with truncate=false (docs/experiments.md v11); --judge-num-ctx 0
-sends the pre-v11 call, which ran in Ollama's default context.
+판정은 GENERATION_PROVIDER가 고른 제공자로 돌므로, 완전히 로컬(무료)에서 평가를 돌릴 수 있다.
+--judge-model은 판정 모델을 하나로 고정해, 생성 모델을 비교하는 실행들이 모두 같은 판정 모델로 채점되게
+한다. Ollama 판정은 truncate=false로 8192토큰 문맥을 요청한다(docs/experiments.md v11). --judge-num-ctx 0은
+Ollama 기본 문맥에서 돌던 v11 이전 호출을 보낸다.
 
-Usage:
+사용법:
     python -m eval.run_answer_eval [--top-k 5] [--tag v1_baseline] [--mode dense|hybrid|rerank] [--skip-judge]
         [--dataset eval/qa_test2.jsonl] [--judge-model qwen2.5:7b-instruct]
         [--judge-num-ctx 8192] [--judge-label J1] [--order dataset|shuffle] [--seed 20261003]
@@ -93,9 +90,9 @@ __all__ = [
     "keyword_coverage",
 ]
 
-# KANA_HAN_RE: kana (U+3040-U+30FF) and Han (U+4E00-U+9FFF) characters. The docs never use
-# them, so in an answer they mean the model slipped into Japanese or Chinese (seen in
-# Korean answers from the 7B model). Counted anywhere in the answer, code included.
+# KANA_HAN_RE: 가나(U+3040~U+30FF)와 한자(U+4E00~U+9FFF). 문서는 이 문자들을 쓰지 않으므로, 답에 나왔다면
+# 모델이 일본어나 중국어로 샌 것이다(7B 모델의 한국어 답에서 봤다). 평가에서는 코드 부분까지 포함해 답
+# 어디에서든 센다.
 
 # 생성 프롬프트 토큰 수를 세는 함수의 타입: (질문, 검색된 청크, 언어) → 토큰 수.
 GenerationPromptCounter = Callable[[str, list[RetrievedChunk], Language], int]
@@ -106,10 +103,10 @@ GenerationPromptCounter = Callable[[str, list[RetrievedChunk], Language], int]
 # JSON이 아니면 실패하지만, 평가는 그 문항을 기록하고 계속 가야 v13처럼 인용 스키마 오류 수를 셀 수 있기
 # 때문이다.
 def build_generator(settings: Settings) -> GenerationService:
-    """The configured generator; for Ollama, one that records a bad citation reply.
+    """설정된 생성기. Ollama면 잘못된 인용 응답을 기록하는 생성기를 만든다.
 
-    The app raises on a citation reply that is not JSON; an eval run records it per item
-    (docs/experiments.md v13 counts them) and goes on.
+    앱은 JSON이 아닌 인용 응답에서 예외를 내지만, 평가 실행은 그것을 문항별로 기록하고(docs/experiments.md
+    v13이 그 수를 센다) 계속 진행한다.
     """
     if settings.generation_provider != "ollama":
         return get_generation_service()
@@ -126,7 +123,7 @@ def build_generator(settings: Settings) -> GenerationService:
 # v11에서 '순서를 바꿔 다시 생성해도 답이 같은가'(생성 노이즈 M4)를 재려고 넣었다. 같은 seed면 항상 같은
 # 순서가 나와 재현할 수 있다. 바뀌는 것은 생성 순서뿐이고, 기록·판정·리포트는 데이터셋 순서로 둔다.
 def generation_order(n: int, order: str, seed: int) -> list[int]:
-    """Indices in the order to generate: the dataset's, or a shuffle fixed by the seed."""
+    """생성할 순서의 인덱스: 데이터셋 순서, 또는 seed로 고정한 셔플 순서."""
     indices = list(range(n))
     if order == "shuffle":
         random.Random(seed).shuffle(indices)
@@ -138,7 +135,7 @@ def generation_order(n: int, order: str, seed: int) -> list[int]:
 # 왜 세나: 생성 호출은 num_ctx 8192에서 truncate를 보내지 않으므로, 넘쳤다면 조용히 잘렸을 것이다. 문항마다
 # 토큰 수를 남겨 그런 일이 없었는지 기록으로 확인한다(docs/experiments.md v11·v13 CPU 확인).
 def ollama_answer_prompt_counter(count_tokens: TokenCounter) -> GenerationPromptCounter:
-    """Counts the Ollama answer call's prompt (system rules + passages + question)."""
+    """Ollama 답변 호출의 프롬프트(시스템 규칙 + 문단 + 질문)를 센다."""
 
     def count(question: str, chunks: list[RetrievedChunk], language: Language) -> int:
         return count_tokens(
@@ -169,11 +166,10 @@ async def generate_answer(
     cross_lingual: bool = False,
     score_floor: float | None = None,
 ) -> dict:
-    """Retrieve, generate and record one answer.
+    """답 하나를 검색·생성하고 기록한다.
 
-    `cross_lingual` lets Korean questions search the English chunks too (docs/experiments.md
-    v12); English questions always search English only. `score_floor` defaults to the floor
-    of the model embedding the question.
+    `cross_lingual`이면 한국어 질문이 영어 청크도 함께 검색한다(docs/experiments.md v12). 영어 질문은 언제나
+    영어만 검색한다. `score_floor`의 기본값은 질문을 임베딩한 모델의 바닥값이다.
     """
     # 앱의 /query/ask와 같은 순서: 질문 언어 판별(한글이 있으면 ko) → 그 언어의 모델로 질문 임베딩. 교차언어
     # 검색은 한국어 질문에만 적용한다.
@@ -205,7 +201,7 @@ async def generate_answer(
     diagnostics = generation_result.diagnostics or {}
     unguarded = diagnostics.get("unguarded_answer")
 
-    # A chunk of an expected page counts in any translation, as in run_retrieval_eval.
+    # 정답 페이지의 청크는 어느 번역이든 정답으로 센다(run_retrieval_eval과 같음).
     expected_pages = {page_key(p) for p in q.expected_source_paths}
     # 검색 결과 중 정답 페이지 청크가 처음 나온 순위. 컨텍스트에 정답이 있었는지 볼 때 쓴다(없으면 None).
     first_hit_rank = next(
@@ -240,10 +236,10 @@ async def generate_answer(
         "answer": generation_result.answer,
         "cited_chunk_numbers": generation_result.cited_chunk_numbers,
         "generation_ms": generation_ms,
-        # Both Ollama calls (answer + citations) summed, as Ollama reported them.
+        # Ollama가 알려 준 두 호출(답변 + 인용)의 토큰 수 합.
         "generation_input_tokens": generation_result.input_tokens,
         "generation_output_tokens": generation_result.output_tokens,
-        # The answer call's prompt by the tokenizer: above 8191 it would have been cut.
+        # 답변 호출의 프롬프트를 토크나이저로 센 수. 8191을 넘었다면 잘렸을 것이다.
         "generation_prompt_tokens_counted": (
             count_generation_prompt(q.question, retrieved, language) if count_generation_prompt else None
         ),
@@ -251,8 +247,8 @@ async def generate_answer(
         # 있는지(kana_han). kana_han은 v10~v13에서 '한국어 답에 일본어·중국어가 섞임'을 세는 결정 지표다.
         "keyword_coverage": keyword_coverage(generation_result.answer, q.must_include_keywords),
         "kana_han": bool(KANA_HAN_RE.search(generation_result.answer)),
-        # v13: the language guard (the first answer when it regenerated) and per-call
-        # details from the Ollama provider; None/False for providers that report none.
+        # v13: Ollama 제공자가 알려 주는 언어 가드 정보(다시 생성했으면 첫 답)와 호출별 세부 정보. 알려 주지
+        # 않는 제공자에서는 None/False다.
         "guard_applied": bool(diagnostics.get("guard_applied")),
         "unguarded_answer": unguarded,
         "kana_han_unguarded": bool(KANA_HAN_RE.search(unguarded)) if unguarded is not None else None,
@@ -273,7 +269,7 @@ async def generate_answer(
 async def main(args: argparse.Namespace) -> int:
     settings = get_settings()
     mode = args.mode or settings.retrieval_mode
-    embedder = get_embedding_service  # per-language lookup, called with each question's language
+    embedder = get_embedding_service  # 언어별 조회 함수. 질문마다 그 질문의 언어로 부른다
     generator = build_generator(settings)
     questions = load_dataset(args.dataset)
     ollama = settings.generation_provider == "ollama"
@@ -298,7 +294,7 @@ async def main(args: argparse.Namespace) -> int:
     async with async_session_maker() as db:
         # 측정 전에 이 DB의 저장 벡터가 지금 설정된 모델로 만든 것인지 확인한다. 교차언어면 영어 청크도 한국어
         # 모델로 만든 것이어야 한다.
-        if not args.no_vector_check:  # see eval/retrieval_checks.py
+        if not args.no_vector_check:  # eval/retrieval_checks.py 참고
             for language in languages:
                 vector_checks.append(await check_stored_vectors(db, embedder(language), language))
             if args.cross_lingual and "ko" in languages:
@@ -308,7 +304,7 @@ async def main(args: argparse.Namespace) -> int:
             reranker = None
             # rerank 모드의 재정렬 모델도 언어마다 다르다(영어 MiniLM, 한국어 다국어 모델, docs/experiments.md
             # v9).
-            if mode == "rerank":  # like the embedder, chosen by the question's language
+            if mode == "rerank":  # 임베딩 모델처럼 질문 언어로 고른다
                 reranker = get_reranker_service(detect_language(q.question))
             record = await generate_answer(
                 db,
@@ -372,9 +368,8 @@ async def main(args: argparse.Namespace) -> int:
     }
     write_json(meta_path(gen_path), gen_meta)
 
-    # Judge only after every answer exists. With a judge model other than the generator,
-    # interleaving the two would make Ollama swap models on every question, and the
-    # reload time would land in the generation timings.
+    # 모든 답이 만들어진 뒤에만 판정한다. 판정 모델이 생성 모델과 다르면, 둘을 번갈아 부를 때 Ollama가
+    # 질문마다 모델을 바꿔 올리고 그 다시 올리는 시간이 생성 시간에 섞인다.
     # --skip-judge면 판정 없이 키워드 커버리지 등만으로 리포트를 만든다(빠르고 무료).
     judgments = judge_meta = None
     if not args.skip_judge:
@@ -399,7 +394,7 @@ async def main(args: argparse.Namespace) -> int:
 
     report = render_report(args.tag, gen_meta, records, judgments, judge_meta)
     timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
-    path = write_report(f"answer_eval_{args.tag}_{timestamp}.md", report)  # before printing
+    path = write_report(f"answer_eval_{args.tag}_{timestamp}.md", report)  # 출력하기 전에 먼저 저장
     print(report)
     print(f"\nwritten to {path}")
     # 판정 오류가 하나라도 있으면 리포트는 남기되 종료 코드 1로 알려, 자동 실행 스크립트가 알아챌 수 있게
@@ -416,34 +411,34 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--top-k", type=int, default=5)
     parser.add_argument("--tag", default="run")
-    parser.add_argument("--skip-judge", action="store_true", help="skip the judge calls (fast, free)")
+    parser.add_argument("--skip-judge", action="store_true", help="판정 호출을 건너뛴다(빠르고 무료)")
     parser.add_argument("--mode", choices=["dense", "hybrid", "rerank"], default=None)
     parser.add_argument("--dataset", type=Path, default=DATASET_PATH)
     parser.add_argument(
-        "--judge-model", default=None, help="defaults to the generation model in use"
+        "--judge-model", default=None, help="판정 모델. 기본값은 지금 쓰는 생성 모델"
     )
     parser.add_argument(
         "--judge-num-ctx",
         type=int,
         default=DEFAULT_JUDGE_NUM_CTX,
-        help="Ollama judge context; 0 sends the pre-v11 call without num_ctx",
+        help="Ollama 판정 문맥 크기. 0이면 num_ctx 없이 v11 이전 호출을 보낸다",
     )
-    parser.add_argument("--judge-label", default=None, help="names the judgment file, e.g. J1")
+    parser.add_argument("--judge-label", default=None, help="판정 파일 이름에 붙는 라벨. 예: J1")
     parser.add_argument("--order", choices=["dataset", "shuffle"], default="dataset")
-    parser.add_argument("--seed", type=int, default=20261003, help="for --order shuffle")
-    parser.add_argument("--no-token-count", action="store_true", help="skip the tokenizer counts")
+    parser.add_argument("--seed", type=int, default=20261003, help="--order shuffle에 쓰는 seed")
+    parser.add_argument("--no-token-count", action="store_true", help="토크나이저로 토큰 수 세기를 건너뛴다")
     parser.add_argument(
         "--cross-lingual", action="store_true",
-        help="Korean questions search the Korean and English chunks (docs/experiments.md v12)",
+        help="한국어 질문이 한국어와 영어 청크를 함께 검색한다(docs/experiments.md v12)",
     )
     parser.add_argument(
         "--score-floor", type=float, default=None,
-        help="dense score floor; defaults to the floor of the model embedding each question",
+        help="dense 점수 바닥값. 기본값은 각 질문을 임베딩한 모델의 바닥값",
     )
     parser.add_argument(
         "--no-vector-check", action="store_true",
-        help="skip checking that the stored vectors come from the configured models",
+        help="저장된 벡터가 설정된 모델로 만든 것인지 확인하는 단계를 건너뛴다",
     )
-    # A console code page that lacks some character in an answer must not end a long run.
+    # 콘솔 코드 페이지에 답의 어떤 글자가 없더라도 오래 걸리는 실행이 그 때문에 끝나면 안 된다.
     sys.stdout.reconfigure(errors="backslashreplace")
     sys.exit(asyncio.run(main(parser.parse_args())))

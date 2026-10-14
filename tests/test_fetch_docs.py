@@ -1,4 +1,4 @@
-"""scripts/fetch_docs.py, the debug listing of the pages an ingest would pick up."""
+"""scripts/fetch_docs.py: 적재가 가져갈 페이지 목록을 보여 주는 디버그 명령의 테스트."""
 
 # [테스트 묶음] scripts/fetch_docs.py(적재 대상 목록을 보여 주는 디버그 명령)의 테스트. GitHub 트리 응답을
 # httpx.MockTransport로 흉내 내 네트워크 없이 돈다.

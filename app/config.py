@@ -36,22 +36,23 @@ class Settings(BaseSettings):
     # Ollama 서버 주소. 호스트에서 실행하는 기준값이고, 컨테이너 안에서는 compose가
     # host.docker.internal:11434로 덮어쓴다.
     ollama_base_url: str = "http://localhost:11434"
-    # A.X-4.0-Light (Q4_K_M), built locally with scripts/ax40_light/; adopted in v13 over
-    # qwen2.5:7b-instruct, which stays the judge (docs/experiments.md v13).
+    # 기본 생성 모델 A.X-4.0-Light(Q4_K_M). scripts/ax40_light/로 직접 GGUF로 변환해 만들었고, v13에서
+    # qwen2.5:7b-instruct 대신 채택했다. qwen2.5:7b-instruct는 답변 판정 모델로 계속 쓴다
+    # (docs/experiments.md v13).
     ollama_model_name: str = "a.x-4.0-light:q4_k_m"
-    # Sent as Ollama's `think` field when set; models that reason by default (qwen3.5)
-    # need false. Unset sends no field, as before v13 (docs/experiments.md).
+    # 값이 있으면 Ollama 요청의 `think` 필드로 보낸다. 기본으로 추론 과정을 내는 모델(qwen3.5)은 false가
+    # 필요하다. 비워 두면(None) v13 이전처럼 이 필드를 아예 보내지 않는다(docs/experiments.md).
     ollama_think: bool | None = None
-    # Regenerate once a Korean answer that slipped into Chinese or Japanese (v13; on since
-    # the v13 adoption).
+    # 언어 가드: 한국어 답변이 중국어나 일본어로 새면 한 번 다시 생성한다(v13에서 도입, v13 채택 때부터
+    # 켜 둠).
     language_guard: bool = True
     # 영어 문서·질문 임베딩 모델. v8에서 다국어 모델 하나로 통일하면 영어 테스트셋 MRR이 0.933 → 0.638로
     # 떨어져 영어는 이 모델을 유지했다(docs/experiments.md v8).
     embedding_model_name: str = "BAAI/bge-small-en-v1.5"
-    # Korean docs and questions need a multilingual model; English keeps the English
-    # one because the multilingual model scored far lower on the English test sets.
-    # Granite R2 311M cut to 384 dimensions, adopted in v13 stage B over
-    # intfloat/multilingual-e5-small, which stays in the image (docs/experiments.md).
+    # 한국어 문서·질문 임베딩 모델. 한국어에는 다국어 모델이 필요하지만, 다국어 모델은 영어 테스트셋 점수가
+    # 훨씬 낮아 영어는 위의 영어 전용 모델을 그대로 쓴다. 지금 값은 Granite R2 311M을 384차원으로 잘라 쓴
+    # 것으로, v13 단계 B에서 intfloat/multilingual-e5-small 대신 채택했다. e5-small도 이미지에 그대로 남아
+    # 있다(docs/experiments.md).
     embedding_model_name_ko: str = "ibm-granite/granite-embedding-311m-multilingual-r2"
     # 검색 방식. dense(벡터만), hybrid(벡터 + SQL BM25를 가중 RRF로 합침), rerank(두 후보를 cross-encoder로
     # 다시 채점). 기본 dense는 v7(영어)·v9(한국어)에서 미리 정한 규칙으로 확정한 값이다. 나머지 두 모드는
@@ -60,11 +61,11 @@ class Settings(BaseSettings):
     # rerank 모드에서 영어 질문에 쓰는 cross-encoder. v6에서 지연 예산(검색 중앙값 1초) 안에 드는 모델로
     # 골랐다(docs/experiments.md v6).
     reranker_model_name: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
-    # The model above was trained on English only; on the Korean tuning set it ranked
-    # worse than no reranking at all, so Korean questions get a multilingual one.
+    # 위 모델은 영어로만 학습돼, 한국어 튜닝용 셋에서는 재정렬을 아예 안 한 것보다도 순위를 못 매겼다. 그래서
+    # 한국어 질문에는 다국어 cross-encoder를 쓴다(docs/experiments.md v9).
     reranker_model_name_ko: str = "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1"
-    # Worker threads for CPU-bound model calls (embeddings, the cross-encoder). 6 was
-    # measured against 1 on a 12-core desktop; see app/services/inference.py.
+    # CPU를 쓰는 모델 호출(임베딩, cross-encoder)을 돌리는 작업 스레드 수. 12코어 데스크톱에서 6개와 1개를
+    # 비교해 6으로 정했다. 자세한 근거는 app/services/inference.py.
     model_threads: int = 6
     # fastapi_docs_commit_sha: .env.example에도 있는 키지만 지금 코드에서 이 필드를 읽는 곳은 없다. 적재
     # 커밋은 요청·명령의 commit_sha(또는 --commit)로 정하고, 없으면 tiangolo/fastapi master 브랜치의 최신

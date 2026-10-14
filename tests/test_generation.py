@@ -1,15 +1,12 @@
-"""The Ollama provider's two-call generation, without a running Ollama.
+"""실행 중인 Ollama 없이, Ollama 제공자의 두 단계 호출 생성을 검증한다.
 
-Under schema-constrained decoding the local 7B model didn't escape quotes inside
-string values, so answers containing code were cut off at their first `"`. The answer
-is therefore generated as free text, and the citations come from a second call
-constrained to a digits-only schema. The recorded answer-quality numbers were measured
-with this split, so these tests pin it.
+스키마 제약 디코딩에서 로컬 7B 모델은 문자열 값 안의 따옴표를 이스케이프하지 못해, 코드가 든 답이 첫
+`"`에서 잘렸다. 그래서 답은 자유 텍스트로 생성하고, 인용은 숫자만 담는 스키마로 제약한 두 번째 호출에서
+받는다. 기록된 답변 품질 수치는 이렇게 나눈 상태로 쟀으므로, 이 테스트들이 그 구조를 고정한다.
 
-v13 (docs/experiments.md) adds an optional think switch for models that reason by
-default, an optional language guard for Korean answers that slip into Chinese or
-Japanese, and per-call diagnostics the answer eval records. All three are off or inert
-by default, so the qwen2.5 payload stays what it was.
+v13(docs/experiments.md)은 기본으로 추론하는 모델을 위한 선택적 think 스위치, 중국어나 일본어로 새는 한국어
+답을 위한 선택적 언어 가드, 답변 평가가 기록하는 호출별 진단을 더했다. 셋 다 기본값에서는 꺼져 있거나
+아무 영향이 없으므로, qwen2.5에 보내는 요청 본문은 예전 그대로다.
 """
 
 # [테스트 묶음] Ollama 생성기(app/services/generation.py의 OllamaGenerationService)의 단위 테스트. 실제 Ollama
@@ -54,7 +51,7 @@ def make_chunk(n: int) -> RetrievedChunk:
 # 모듈의 httpx.AsyncClient를 바꿔 끼우고, 받은 요청 본문 목록을 돌려준다.
 @pytest.fixture
 def ollama_requests(monkeypatch):
-    """Answer Ollama's /api/chat in memory; returns the request payloads in order."""
+    """Ollama의 /api/chat에 메모리에서 답한다. 받은 요청 본문을 순서대로 돌려준다."""
     payloads: list[dict] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -90,7 +87,7 @@ async def test_ollama_answers_in_free_text_then_cites_with_a_schema(ollama_reque
     assert "format" not in answer_call
     assert citation_call["format"] == CITATIONS_SCHEMA
     assert ANSWER_WITH_CODE in citation_call["messages"][-1]["content"]
-    # Ollama's default 4096-token context is nearly filled by the passages alone.
+    # Ollama 기본 문맥 4096토큰은 문단만으로도 거의 찬다.
     assert [call["options"]["num_ctx"] for call in ollama_requests] == [8192, 8192]
 
     assert result.answer == ANSWER_WITH_CODE
@@ -98,7 +95,7 @@ async def test_ollama_answers_in_free_text_then_cites_with_a_schema(ollama_reque
     assert (result.input_tokens, result.output_tokens) == (200, 20)
 
 
-# --- v13: think switch, language guard, per-call diagnostics ---------------------------
+# --- v13: think 스위치, 언어 가드, 호출별 진단 ---
 
 # v13 테스트용 고정 문장: 한국어 질문, 설명 글에 중국어가 섞인 답(가드가 걸려야 함), 깨끗한 한국어 답, 2번을
 # 인용하는 인용 응답.
@@ -113,9 +110,9 @@ CITE_2 = (json.dumps({"citations": [{"chunk_number": 2}]}), {})
 # 넣는다.
 @pytest.fixture
 def scripted_ollama(monkeypatch):
-    """Answer each /api/chat call from a script of (content, extra fields).
+    """/api/chat 호출마다 (내용, 추가 필드) 각본에서 응답을 꺼내 답한다.
 
-    Returns the request payloads and the script list, which the test fills in.
+    받은 요청 본문 목록과, 테스트가 채워 넣을 각본 목록을 돌려준다.
     """
     payloads: list[dict] = []
     script: list[tuple[str, dict]] = []
@@ -147,7 +144,7 @@ def scripted_ollama(monkeypatch):
 # 같아야 한다. qwen2.5 기준 실행의 요청이 바뀌면 이전 측정과 비교할 수 없다.
 @pytest.mark.asyncio
 async def test_the_default_payload_has_no_think_field(scripted_ollama):
-    # The qwen2.5 baseline must keep sending exactly what it sent through v12.
+    # qwen2.5 기준선은 v12까지 보내던 요청을 그대로 보내야 한다.
     payloads, script = scripted_ollama
     script += [(CLEAN_KO, {}), CITE_2]
 
@@ -189,9 +186,9 @@ async def test_language_guard_regenerates_a_mixed_korean_answer_once(scripted_ol
     )
     assert generation.KOREAN_RETRY_RULE in retry["messages"][0]["content"]
     assert generation.KOREAN_ANSWER_RULE not in retry["messages"][0]["content"]
-    assert retry["messages"][1] == first["messages"][1]  # same passages and question
+    assert retry["messages"][1] == first["messages"][1]  # 같은 문단과 질문
     assert "format" not in retry
-    assert CLEAN_KO in citation["messages"][-1]["content"]  # citations for the final answer
+    assert CLEAN_KO in citation["messages"][-1]["content"]  # 인용은 최종 답 기준
 
     assert result.answer == CLEAN_KO
     assert result.cited_chunk_numbers == [2]
@@ -224,10 +221,10 @@ async def test_language_guard_retries_only_once(scripted_ollama):
 @pytest.mark.parametrize(
     ("question", "language", "answer", "guard"),
     [
-        (KOREAN_Q, "ko", "코드 예:\n```python\n# 设置\nx = 1\n```\n끝.", True),  # Han inside a fence
-        (KOREAN_Q, "ko", "`変数`라는 이름은 코드에만 있습니다.", True),  # Han inside inline code
-        ("How do I alias a query?", "en", "Use alias. 代码", True),  # English questions are left alone
-        (KOREAN_Q, "ko", MIXED_KO, False),  # the guard is off unless asked for
+        (KOREAN_Q, "ko", "코드 예:\n```python\n# 设置\nx = 1\n```\n끝.", True),  # 펜스 안의 한자
+        (KOREAN_Q, "ko", "`変数`라는 이름은 코드에만 있습니다.", True),  # 인라인 코드 안의 한자
+        ("How do I alias a query?", "en", "Use alias. 代码", True),  # 영어 질문은 건드리지 않는다
+        (KOREAN_Q, "ko", MIXED_KO, False),  # 켜라고 하지 않으면 가드는 꺼져 있다
     ],
 )
 async def test_language_guard_leaves_other_answers_alone(
@@ -282,7 +279,7 @@ async def test_diagnostics_keep_done_reason_thinking_and_citation_validity(scrip
     assert d["answer_calls"][0]["ms"] >= 0
     assert d["think_tag_in_answer"] is True
     assert d["citation_call"]["prompt_eval_count"] == 2400
-    assert d["citation_schema_error"] is None  # 9 is out of range, but the schema holds
+    assert d["citation_schema_error"] is None  # 9는 범위 밖이지만 스키마는 지킨다
     assert "citation_reply" not in d
     assert result.cited_chunk_numbers == [9]
 

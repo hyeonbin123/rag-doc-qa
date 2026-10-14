@@ -32,7 +32,7 @@ class IngestResult(BaseModel):
     chunks_created: int
     chunks_updated: int
     chunks_skipped: int = Field(
-        description="Documents (not chunks) skipped because their content hash was unchanged."
+        description="내용 해시가 바뀌지 않아 건너뛴 문서 수. 이름과 달리 청크 수가 아니라 문서 수를 센다."
     )
     elapsed_ms: int
 

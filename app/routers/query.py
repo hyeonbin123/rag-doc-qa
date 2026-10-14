@@ -49,13 +49,13 @@ async def ask(
     embedder = embedder_for(language)
     embed_sw = Stopwatch()
     with embed_sw.measure():
-        # CPU-bound model call: queued on the model thread so other requests keep moving.
+        # CPU를 쓰는 모델 호출이라 모델 스레드 풀에 줄 세워, 그동안 다른 요청이 계속 처리되게 한다.
         query_embedding = await run_model(embedder.embed_query, payload.question)
 
     # 검색. score_floor는 임베딩 모델별 점수 바닥값으로, dense 검색에서 이보다 낮은 결과를 버려 문서가 다루지
     # 않는 질문에는 근거 청크가 붙지 않게 한다(app/services/retrieval.py).
     retrieval_sw = Stopwatch()
-    with retrieval_sw.measure():  # includes cross-encoder reranking in "rerank" mode
+    with retrieval_sw.measure():  # "rerank" 모드에서는 cross-encoder 재정렬 시간도 포함
         retrieved = await retrieve(
             db,
             payload.question,
@@ -67,9 +67,9 @@ async def ask(
             score_floor=score_floor_for(embedder.model_name),
         )
 
-    # End the read transaction so the pooled connection isn't held while the LLM
-    # generates (seconds per question, queued in Ollama). Commit rather than rollback:
-    # rollback expires current_user, and reloading it later would need async IO.
+    # 읽기 트랜잭션을 여기서 끝내, LLM이 답을 만드는 동안(질문마다 몇 초, Ollama에서 줄 서기도 함) 풀의 DB
+    # 연결을 붙잡고 있지 않게 한다. rollback이 아니라 commit인 이유: rollback은 current_user 객체를 만료시켜,
+    # 나중에 그 속성을 읽을 때 다시 불러오려면 비동기 IO가 필요해진다.
     await db.commit()
 
     generation_sw = Stopwatch()

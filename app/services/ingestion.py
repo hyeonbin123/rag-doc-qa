@@ -1,10 +1,9 @@
-"""Fetch the FastAPI docs from GitHub, chunk them, embed them, and upsert into Postgres.
+"""GitHub에서 FastAPI 문서를 받아 청킹·임베딩하고 Postgres에 넣거나 갱신(upsert)한다.
 
-Idempotent by content hash: unchanged files are skipped, changed files have
-their chunks fully replaced, so re-running ingestion after a doc update only
-recomputes what actually changed. A full run (no limit) also deletes the documents
-of the ingested languages that the tree no longer lists: pages removed or renamed
-upstream, or newly excluded. The corpus then mirrors the docs at that commit.
+내용 해시로 멱등하다: 바뀌지 않은 파일은 건너뛰고, 바뀐 파일은 청크를 통째로 교체한다. 그래서 문서가
+갱신된 뒤 적재를 다시 돌려도 실제로 바뀐 것만 다시 계산한다. 전체 적재(limit 없음)는 적재한 언어의 문서
+중 트리 목록에 더는 없는 것, 즉 상류에서 지워지거나 이름이 바뀌었거나 새로 제외된 페이지도 지운다. 그러면
+코퍼스가 그 커밋 시점의 문서와 똑같아진다.
 """
 
 # [파일 역할] FastAPI 공식 문서(GitHub tiangolo/fastapi의 docs/en/docs/, docs/ko/docs/)를 받아 청킹·임베딩하고
@@ -51,8 +50,7 @@ GITHUB_API = "https://api.github.com"
 RAW_BASE = "https://raw.githubusercontent.com"
 REPO = "tiangolo/fastapi"
 DOC_LANGUAGES: tuple[str, ...] = SUPPORTED_LANGUAGES
-# Site furniture rather than documentation: the notice MkDocs puts on AI-assisted
-# translations.
+# 문서가 아니라 사이트 장식에 해당하는 페이지: MkDocs가 AI 도움을 받은 번역 페이지에 붙이는 안내문이다.
 SKIPPED_PAGES = {"translation-banner.md"}
 # 원문 파일을 동시에 받는 최대 개수. 수백 개 문서를 한꺼번에 요청하지 않도록 세마포어로 제한한다.
 MAX_CONCURRENT_FETCHES = 8
@@ -66,7 +64,7 @@ def docs_prefix(language: str) -> str:
 # GitHub 트리 항목 중 요청한 언어 폴더 아래의 마크다운 파일(blob, .md)만 골라 (경로, 언어)로 돌려준다.
 # SKIPPED_PAGES에 있는 페이지(번역 안내 배너)는 뺀다.
 def select_doc_paths(tree: list[dict], languages: Sequence[str]) -> list[tuple[str, str]]:
-    """(path, language) for every Markdown page of the requested translations."""
+    """요청한 번역 언어들의 모든 마크다운 페이지를 (경로, 언어) 목록으로 돌려준다."""
     selected = []
     for item in tree:
         path = item["path"]
@@ -97,8 +95,8 @@ async def list_doc_paths(
     resp = await client.get(f"{GITHUB_API}/repos/{REPO}/git/trees/{sha}", params={"recursive": "1"})
     resp.raise_for_status()
     data = resp.json()
-    # A full run deletes documents the listing leaves out, so a partial listing would
-    # delete pages that still exist.
+    # 전체 적재는 목록에 없는 문서를 지우므로, 잘린(일부만 담긴) 목록으로 적재하면 아직 있는 페이지까지
+    # 지운다. 그래서 GitHub가 트리 목록을 잘랐다고 알리면 적재를 거부한다.
     if data.get("truncated"):
         raise RuntimeError("GitHub tree listing is truncated; refusing to ingest a partial corpus")
     return select_doc_paths(data["tree"], languages)
@@ -125,14 +123,12 @@ def extract_title(raw_text: str, fallback: str) -> str:
 # docs/experiments.md v8 '측정 중 겪은 문제 (d024)'에 자세히 있다. 세션의 엔진에서 따로 연결을 열어 자동 커밋
 # 모드로 실행한다.
 async def _vacuum_chunks(db: AsyncSession) -> None:
-    """Clear the rows that replaced or removed chunks leave behind.
+    """교체되거나 지워진 청크가 남긴 죽은 행을 치운다.
 
-    A changed doc has its chunks deleted and reinserted, and a removed doc takes its
-    chunks with it. Until vacuum removes the dead rows, HNSW scans still walk them and
-    spend their ef_search budget on rows they then discard. That is the likeliest
-    cause of an English dev-set hit that went missing right after a bulk re-ingest
-    and came back once autovacuum had run.
-    VACUUM can't run inside a transaction, hence the autocommit connection.
+    바뀐 문서는 청크를 지우고 다시 넣고, 지워진 문서는 청크도 함께 지워진다. VACUUM이 죽은 행을 치우기
+    전까지 HNSW 탐색은 그 행들도 훑느라 ef_search 예산을 버려질 행에 쓴다. 대량 재적재 직후 영어 튜닝용
+    셋에서 맞히던 문항 하나가 빠졌다가 autovacuum이 돈 뒤 돌아온 일의 가장 그럴듯한 원인이 이것이다.
+    VACUUM은 트랜잭션 안에서 돌 수 없어서 자동 커밋 연결을 쓴다.
     """
     async with db.bind.connect() as conn:
         conn = await conn.execution_options(isolation_level="AUTOCOMMIT")
@@ -180,8 +176,8 @@ async def run_ingestion(
         sha = await resolve_commit_sha(client, commit_sha)
         paths = await list_doc_paths(client, sha, languages)
         listed = {path for path, _ in paths}
-        # Only languages that listed at least one page get pruned: an empty listing more
-        # likely means an upstream restructure or a mistyped language than no pages at all.
+        # 페이지가 하나라도 나온 언어만 사라진 문서를 지운다. 목록이 비었다면 페이지가 정말 하나도 없다기보다
+        # 상류의 폴더 구조가 바뀌었거나 언어 이름을 잘못 썼을 가능성이 크기 때문이다.
         listed_languages = sorted({language for _, language in paths})
         if limit:
             paths = paths[:limit]
@@ -198,10 +194,9 @@ async def run_ingestion(
     # DB 단계: 문서를 하나씩 처리한다. 모든 변경은 한 세션 트랜잭션에 쌓였다가 맨 끝에 한 번 커밋된다.
     for path, language, raw_text in results:
         embedder = embedder_for(language)
-        # The chunker version and the embedding model are part of the key: otherwise
-        # changing either would leave every unchanged doc "skipped" and silently keep
-        # its stale chunks, or vectors from a different model. The model's identity also
-        # names a pinned revision or a cut dimension (it is just the name for e5 and bge).
+        # 청커 버전과 임베딩 모델도 해시 키에 넣는다. 그러지 않으면 둘 중 하나를 바꿔도 원문이 같은 문서는
+        # 모두 '건너뜀'이 되어, 예전 청크나 다른 모델이 만든 벡터를 조용히 그대로 두게 된다. 모델 식별자에는
+        # 고정한 리비전과 자르기 차원도 들어간다(e5와 bge는 모델 이름뿐이다).
         content_hash = hashlib.sha256(
             f"chunker-v{CHUNKER_VERSION}\nembedding-{embedder.identity}\n{raw_text}".encode()
         ).hexdigest()
@@ -252,8 +247,8 @@ async def run_ingestion(
             embedding_texts = [
                 build_embedding_text(c.heading_path, c.content) for c in chunk_results
             ]
-            # Minutes of CPU work over a full ingest. The admin endpoint runs this inside
-            # the API process, so it goes to the model thread and the server keeps answering.
+            # 전체 적재면 몇 분 걸리는 CPU 작업이다. 관리자 API는 이것을 API 프로세스 안에서 돌리므로, 모델
+            # 스레드로 보내 그동안에도 서버가 다른 요청에 응답하게 한다.
             embeddings = await run_model(embedder.embed_passages, embedding_texts)
 
             # 청크와 벡터 개수가 다르면 strict=True가 바로 오류를 내 엉뚱한 짝이 저장되지 않게 한다.
@@ -274,9 +269,9 @@ async def run_ingestion(
 
         documents_processed += 1
 
-    # Pages that left the tree (or became excluded) would otherwise stay searchable and
-    # citable, linking to a page that no longer exists. Never with a limit, which lists
-    # only part of the tree. Their chunks go with them (ON DELETE CASCADE).
+    # 트리에서 빠진(또는 새로 제외된) 페이지를 지우지 않으면 계속 검색·인용되어, 더는 없는 페이지로 링크가
+    # 걸린다. limit이 있으면 트리의 일부만 처리하므로 이 단계를 하지 않는다. 지운 문서의 청크도 함께 지워진다
+    # (ON DELETE CASCADE).
     # 사라진 문서 판정: 이번에 목록에 페이지가 하나라도 있었던 언어의 폴더 아래 문서 중 이번 트리 목록에 없는
     # 것. startswith에 autoescape=True를 줘 경로의 %·_ 같은 문자가 LIKE 와일드카드로 해석되지 않게 한다.
     # ORM 객체를 읽지 않는 일괄 DELETE라 청크 정리는 DB의 ON DELETE CASCADE에 맡기고,

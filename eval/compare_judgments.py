@@ -1,17 +1,15 @@
-"""Compare judgment runs item by item, and summarize judge-prompt truncation.
+"""판정 실행들을 문항 단위로 비교하고, 판정 프롬프트 잘림을 요약한다.
 
-pair: matches two groups of eval/runs/*.judge.jsonl files by dataset and question id.
-Per dataset (and pooled) it reports both sums, the mean per-item difference (b - a) with
-a paired bootstrap 90% interval, how many items went up / down, and how many stored
-answers differ. Used for one judge against another on the same answers (J1 vs J0), and
-for two generation passes under one judge (the generation-to-generation noise).
+pair: eval/runs/*.judge.jsonl 파일 두 묶음을 데이터셋과 질문 id로 짝짓는다. 데이터셋마다(그리고 모두 합쳐)
+양쪽 합계, 문항별 차이(b - a)의 평균과 대응표본 bootstrap 90% 구간, 오르고 내린 문항 수, 저장된 답이
+다른 문항 수를 낸다. 같은 답에 두 판정 설정을 비교하거나(J1 대 J0), 한 판정 설정으로 생성을 두 번 한
+결과를 비교하는 데(생성 사이의 노이즈) 쓴다.
 
-truncation: per file, how many judge prompts came back cut (prompt_eval_count short of
-the tokenizer count by more than the tolerance), how many were longer than the context
-before sending, and how far Ollama's count and the tokenizer's differ on prompts that
-were not cut (the counter's calibration).
+truncation: 파일마다 판정 프롬프트가 잘려 돌아온 수(prompt_eval_count가 토크나이저 수보다 허용 폭 넘게
+적음), 보내기 전에 이미 문맥보다 길었던 수, 잘리지 않은 프롬프트에서 Ollama의 토큰 수와 토크나이저의
+토큰 수가 얼마나 다른지(세는 도구의 보정)를 낸다.
 
-Usage:
+사용법:
     python -m eval.compare_judgments pair --title "J1 - J0, pass A" --tag v11_j1_vs_j0_A
         --a eval/runs/v11_A_*.J0.judge.jsonl --b eval/runs/v11_A_*.J1.judge.jsonl
         [--split-by-truncation a]
@@ -65,7 +63,7 @@ def paired_bootstrap_ci(
     confidence: float = CONFIDENCE,
     seed: int = BOOTSTRAP_SEED,
 ) -> tuple[float, float, float]:
-    """Mean of the per-item differences and its percentile bootstrap interval."""
+    """문항별 차이의 평균과 그 백분위 bootstrap 구간."""
     n = len(diffs)
     mean = sum(diffs) / n
     rng = random.Random(seed)
@@ -112,13 +110,13 @@ class Paired:
 # 문항은 이 지표에서 빠진다).
 def _value(row: dict, metric: str) -> float | None:
     value = row.get(metric)
-    return None if value is None else int(value)  # booleans count as 0/1
+    return None if value is None else int(value)  # bool은 0/1로 센다
 
 
 # 두 판정 기록을 문항 id로 짝짓는다. 양쪽 문항 집합이 다르면 잘못된 파일끼리 비교하는 것이므로 오류를 낸다.
 # 검색 결과가 없었거나 판정 오류로 한쪽이라도 점수가 없는 문항은 그 지표에서 뺀다.
 def pair_metric(a_rows: list[dict], b_rows: list[dict], metric: str) -> Paired:
-    """Items scored on both sides, in a's order; the two sides must hold the same items."""
+    """양쪽 모두 점수가 있는 문항들(a의 순서). 두 쪽은 같은 문항들을 담고 있어야 한다."""
     b_by_id = {r["id"]: r for r in b_rows}
     a_ids = [r["id"] for r in a_rows]
     mismatch = set(a_ids) ^ set(b_by_id)
@@ -315,10 +313,10 @@ def main() -> None:
     pair.add_argument("--split-by-truncation", choices=["a", "b"], default=None)
     trunc = sub.add_parser("truncation")
     trunc.add_argument("--tag", required=True)
-    trunc.add_argument("--ctx", type=int, default=None, help="context the runs used, if not in the records")
+    trunc.add_argument("--ctx", type=int, default=None, help="실행에 쓴 문맥 크기(기록에 없을 때만 지정)")
     trunc.add_argument("paths", type=Path, nargs="+")
     args = parser.parse_args()
-    sys.stdout.reconfigure(errors="backslashreplace")  # see eval/run_answer_eval.py
+    sys.stdout.reconfigure(errors="backslashreplace")  # 이유는 eval/run_answer_eval.py 참고
 
     if args.command == "pair":
         report = pair_report(args.title, args.a, args.b, args.split_by_truncation)

@@ -1,8 +1,7 @@
-"""Markdown-aware chunker shared by the FastAPI app and the ingestion script.
+"""마크다운 구조를 아는 청커. FastAPI 앱과 적재 스크립트가 함께 쓴다.
 
-Splits a markdown document into non-overlapping chunks of roughly TARGET_TOKENS,
-never splitting inside a fenced code block, while tracking a heading
-breadcrumb (heading_path) for each chunk. Overlap is off (OVERLAP_TOKENS = 0,
+마크다운 문서 한 편을 서로 겹치지 않는 약 TARGET_TOKENS 크기의 청크로 나눈다. 펜스 코드 블록 안에서는
+절대 자르지 않고, 청크마다 헤딩 경로(heading_path)를 추적해 둔다. 청크 겹침은 꺼져 있다(OVERLAP_TOKENS = 0,
 docs/experiments.md v14).
 """
 
@@ -72,8 +71,8 @@ class Line:
 # 코드 블록 안에서는 헤딩을 인식하지 않는다. 파이썬 주석('# ...')처럼 #으로 시작하는 코드 줄을 헤딩으로
 # 착각하지 않게 하려는 것이다.
 def _annotate_heading_paths(raw_text: str) -> list[Line]:
-    """Walk lines, tracking a heading stack, tagging each line with its path."""
-    stack: list[tuple[int, str]] = []  # (level, title)
+    """줄을 차례로 훑으며 헤딩 스택을 유지하고, 각 줄에 그 줄이 속한 헤딩 경로를 붙인다."""
+    stack: list[tuple[int, str]] = []  # (헤딩 레벨, 제목)
     lines: list[Line] = []
     in_code_block = False
 
@@ -146,7 +145,7 @@ def strip_heading_anchor(text: str) -> str:
 # 사라지므로 이 순서가 중요하다(v2에서 title까지 지워 q011이 회귀한 원인).
 def _strip_outside_inline_code(line: str) -> str:
     parts = line.split("`")
-    for i in range(0, len(parts), 2):  # even-indexed parts sit outside inline code spans
+    for i in range(0, len(parts), 2):  # 짝수 번째 조각이 인라인 코드 밖이다
         parts[i] = _INCLUDE_DIRECTIVE_RE.sub("", parts[i])
         parts[i] = _TITLED_TERM_RE.sub(r"\4 (\3)", parts[i])
         parts[i] = _HTML_TAG_RE.sub("", parts[i])
@@ -154,12 +153,11 @@ def _strip_outside_inline_code(line: str) -> str:
 
 
 def clean_markdown(raw_text: str) -> str:
-    """Strip MkDocs markup that carries no meaning but dilutes embeddings.
+    """뜻은 없으면서 임베딩을 흐리는 MkDocs 마크업을 걷어 낸다.
 
-    Removes heading anchor ids, code-include directives, admonition delimiters
-    (keeping their labels) and HTML tags. `<dfn>`/`<abbr>` are the exception:
-    their title holds a real definition, so they become "term (definition)".
-    Fenced code passes through verbatim.
+    헤딩 앵커 ID, 코드 include 지시문, admonition 경계 줄(라벨은 남김), HTML 태그를 지운다.
+    `<dfn>`/`<abbr>`는 예외로, title 속성에 실제 정의가 들어 있으므로 "용어 (정의)" 형태로 바꾼다.
+    펜스 코드 블록은 한 글자도 바꾸지 않고 그대로 통과시킨다.
     """
     # 코드 펜스 안의 줄은 손대지 않고 그대로 둔다. 코드 예제는 한 글자도 바꾸면 안 되기 때문이다.
     cleaned: list[str] = []
@@ -197,7 +195,7 @@ def clean_markdown(raw_text: str) -> str:
 # 청크의 heading_path는 그 청크 첫 줄의 절이다(겹쳐 넣은 줄이 있으면 그 뒤 새 줄의 절). 여러 절에 걸친 청크도
 # 그 경로 하나만 갖는다.
 def chunk_markdown(raw_text: str) -> list[ChunkResult]:
-    """Chunk a single markdown document into ChunkResult entries."""
+    """마크다운 문서 한 편을 ChunkResult 목록으로 나눈다."""
     annotated = _annotate_heading_paths(clean_markdown(raw_text))
     if not annotated:
         return []
@@ -237,7 +235,7 @@ def chunk_markdown(raw_text: str) -> list[ChunkResult]:
     # 줄 목록의 끝에서부터 OVERLAP_TOKENS를 넘지 않을 만큼의 줄을 돌려준다(다음 청크 앞머리로 겹쳐 넣을 부분).
     # 겹침이 꺼져 있으면(0) 아무 줄도 넘기지 않는다. 그러지 않으면 토큰이 0개인 빈 줄이 다음 청크로 넘어간다.
     def overlap_tail(lines: list[str]) -> list[str]:
-        """Return trailing lines worth ~OVERLAP_TOKENS, for the next chunk's lead-in."""
+        """끝에서부터 약 OVERLAP_TOKENS만큼의 줄을 돌려준다. 다음 청크의 앞머리로 쓴다."""
         if OVERLAP_TOKENS <= 0:
             return []
         tail: list[str] = []
@@ -263,7 +261,7 @@ def chunk_markdown(raw_text: str) -> list[ChunkResult]:
                 code_block_lines.append(annotated[i].text)
                 i += 1
             if i < len(annotated):
-                code_block_lines.append(annotated[i].text)  # closing fence
+                code_block_lines.append(annotated[i].text)  # 닫는 펜스
                 i += 1
             in_code_block = False
 
@@ -315,7 +313,6 @@ def chunk_markdown(raw_text: str) -> list[ChunkResult]:
 
     flush_buffer()
 
-    # Merge a final tiny trailing chunk into the previous one, if any.
     # 문서 끝에 150토큰 미만의 작은 청크가 남으면 앞 청크에 합친다. 내용이 거의 없는 청크가 따로 검색되는 것을
     # 막는다. 합친 청크는 앞 청크의 헤딩 경로를 쓴다. 앞 청크 끝과 겹치는 줄은 이미 앞 청크에 있으므로 빼고
     # 붙인다.
@@ -339,7 +336,7 @@ def chunk_markdown(raw_text: str) -> list[ChunkResult]:
 # 벡터에 반영된다. 적재(app/services/ingestion.py), cross-encoder 입력(app/services/retrieval.py의
 # rerank_search), 벡터 확인(eval/retrieval_checks.py)이 모두 이 함수를 써서 같은 입력을 만든다.
 def build_embedding_text(heading_path: str, content: str) -> str:
-    """Prepend heading breadcrumb to chunk content before embedding."""
+    """임베딩하기 전에 청크 본문 앞에 헤딩 경로를 붙인다."""
     if heading_path:
         return f"{heading_path}\n\n{content}"
     return content

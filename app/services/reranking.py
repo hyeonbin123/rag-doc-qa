@@ -1,10 +1,9 @@
-"""Cross-encoder reranking.
+"""Cross-encoder 재정렬.
 
-The embedding model is a bi-encoder: the question and each passage are embedded
-separately, which is what lets passages be embedded and indexed ahead of time. A
-cross-encoder reads the question and a passage together, so it judges relevance more
-precisely, but it has to run once per (question, passage) pair at query time. That is
-why it only reorders a short candidate list instead of searching the whole corpus.
+임베딩 모델은 bi-encoder다: 질문과 각 문서 조각(passage)을 따로 임베딩하므로, 문서 조각을 미리 임베딩해
+인덱스에 넣어 둘 수 있다. cross-encoder는 질문과 문서 조각을 함께 읽어 관련도를 더 정확히 판단하지만,
+질의 시점에 (질문, 문서 조각) 쌍마다 한 번씩 돌려야 한다. 그래서 전체 코퍼스를 검색하는 대신 짧은 후보
+목록의 순서만 다시 매긴다.
 """
 
 # [파일 역할] RETRIEVAL_MODE=rerank에서 검색 후보를 cross-encoder로 다시 채점하는 서비스. 위 docstring처럼
@@ -41,10 +40,10 @@ class RerankerService:
         self._model = CrossEncoder(model_name, max_length=MAX_LENGTH)
 
     def score(self, question: str, passages: list[str]) -> list[float]:
-        """Relevance of each passage to the question, as a probability in (0, 1).
+        """각 문서 조각이 질문과 얼마나 관련 있는지를 (0, 1) 사이 확률로 돌려준다.
 
-        MS MARCO cross-encoders return raw logits while BGE rerankers apply a sigmoid
-        by default; forcing the sigmoid gives every model the same score scale.
+        MS MARCO cross-encoder는 날것의 로짓을 돌려주고 BGE reranker는 기본으로 시그모이드를 씌운다.
+        시그모이드를 늘 씌우게 강제하면 어느 모델이든 점수 척도가 같아진다.
         """
         # 후보가 없으면 모델을 부르지 않는다.
         if not passages:
@@ -70,5 +69,5 @@ def _load(model_name: str) -> RerankerService:
 # 모델' 조회 함수로 주입하고, app/main.py가 rerank 모드일 때 시작하면서 두 언어 모델을 미리 올린다. 평가
 # 스크립트도 이 함수를 쓴다.
 def get_reranker_service(language: Language = "en") -> RerankerService:
-    """The cross-encoder for questions in `language`, loaded once per model."""
+    """`language` 질문에 쓰는 cross-encoder. 모델마다 한 번만 올린다."""
     return _load(get_settings().reranker_model_for(language))

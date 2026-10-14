@@ -37,7 +37,7 @@ async def test_an_unknown_document_id_is_not_found(client):
 # 테스트에서만 통과시킨다. 교체는 client 픽스처가 끝날 때 함께 지워진다.
 @pytest.mark.asyncio
 async def test_ingest_rejects_a_nul_character_in_the_commit(client, monkeypatch):
-    # The commit is stored on every document; PostgreSQL text cannot hold U+0000.
+    # 커밋 값은 모든 문서 행에 저장되는데, PostgreSQL text는 U+0000을 담을 수 없다.
     async def must_not_run(*args, **kwargs):
         raise AssertionError("ingestion ran")
 

@@ -60,8 +60,6 @@ async def test_the_chat_page_allows_only_same_origin_code_and_no_framing(client)
 # 둘뿐이고, 둘 다 200과 nosniff로 응답하는지 확인한다.
 @pytest.mark.asyncio
 async def test_the_chat_page_keeps_its_code_in_files_the_policy_allows(client):
-    # The policy allows no inline code, so a <script> or <style> block, a style attribute or
-    # an event-handler attribute in the page would be blocked by the browser.
     html = (await client.get("/")).text
 
     assert re.search(r"<script(?![^>]*\ssrc=)[^>]*>", html) is None
@@ -96,7 +94,7 @@ async def test_the_docs_pages_may_load_their_cdn_files_but_not_be_framed(client,
 
     csp = resp.headers["content-security-policy"]
     hosts = set(re.findall(r'(?:src|href)="(https://[^/"]+)', resp.text))
-    assert hosts  # FastAPI's page loads Swagger UI / ReDoc from a CDN
+    assert hosts  # FastAPI 문서 페이지는 Swagger UI / ReDoc을 CDN에서 불러온다
     assert all(host in csp for host in hosts), hosts
     assert "frame-ancestors 'none'" in csp
     assert resp.headers["x-frame-options"] == "DENY"

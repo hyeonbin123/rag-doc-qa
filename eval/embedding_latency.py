@@ -1,17 +1,15 @@
-"""CPU query-embedding latency of an embedding model: the v12 budget gate G1.
+"""임베딩 모델 하나의 CPU 질의 임베딩 지연: v12의 예산 관문 G1.
 
-Usage:
+사용법:
     python -m eval.embedding_latency MODEL --dataset eval/qa_dev_ko.jsonl eval/qa_dev2_ko.jsonl
         [--passes 3] [--tag v12_latency_<name>]
 
-Loads the model the way the app does (EmbeddingService: its prefixes, revision, cut and
-float32), embeds three warm-up questions, then embeds every question one call at a time
-through embed_query, `passes` times over, and reports the per-call p50/p95/mean. Only the
-question texts are used: no labels, no retrieval.
+앱과 같은 방식(EmbeddingService: 그 모델의 접두사, 리비전, 자르기, float32)으로 모델을 올리고, 워밍업
+질문 3개를 임베딩한 뒤, 모든 질문을 embed_query로 한 번에 하나씩 `passes`번 반복해 임베딩하고 호출당
+p50/p95/평균을 낸다. 질문 문장만 쓰고 라벨이나 검색은 쓰지 않는다.
 
-Also checks that embedding a batch gives the same vectors as one-at-a-time calls (padding
-and pooling handled right) and, for last-token pooling, that the tokenized input ends with
-the end-of-text token.
+묶음(batch)으로 임베딩한 벡터가 하나씩 넣은 벡터와 같은지(패딩과 풀링이 바르게 처리되는지)도 확인하고,
+마지막 토큰 풀링 모델이면 토큰화한 입력이 글 끝(end-of-text) 토큰으로 끝나는지도 확인한다.
 """
 
 # [파일 역할] 임베딩 모델 하나의 CPU 질의 임베딩 지연을 재는 스크립트. v12 한국어 임베딩 후보를 품질을 보기

@@ -1,4 +1,4 @@
-"""Retrieval-eval helpers for the embedding comparison (docs/experiments.md v12)."""
+"""임베딩 비교(docs/experiments.md v12)를 위한 검색 평가 도우미들을 검증한다."""
 
 # [테스트 묶음] v12 한국어 임베딩 비교를 위해 넓힌 검색 평가 하네스의 테스트: 페이지 단위
 # Hit·MRR(eval/run_retrieval_eval.py), 측정 전 확인(eval/retrieval_checks.py의 정확 탐색 전환·저장 벡터
@@ -59,7 +59,7 @@ async def test_exact_search_turns_off_index_scans_for_the_session(db_session):
 # '다른 모델'을 흉내 내는 가짜 임베딩: 같은 인터페이스지만 문서 벡터가 저장된 것과 무관하다. 저장 벡터 확인이
 # 모델 불일치를 잡는지 볼 때 쓴다.
 class OtherEmbeddingService(FakeEmbeddingService):
-    """A different model: same interface, unrelated vectors."""
+    """다른 모델 흉내: 인터페이스는 같고 벡터는 무관하다."""
 
     def __init__(self) -> None:
         self.model_name = "other-embedding"
@@ -148,8 +148,8 @@ def test_metrics_at_a_floor_drop_results_under_it():
 
     assert at_zero["mrr"] == pytest.approx((1 / 2 + 1 / 3) / 2)
     assert at_zero["short"] == 0
-    assert at_shared["mrr"] == pytest.approx((1 / 2 + 0) / 2)  # q2's hit fell under 0.3
-    assert at_shared["short"] == 1  # q2 keeps 2 results, fewer than 5
+    assert at_shared["mrr"] == pytest.approx((1 / 2 + 0) / 2)  # q2의 정답이 0.3 아래로 떨어졌다
+    assert at_shared["short"] == 1  # q2는 결과가 2개만 남아 5개보다 적다
 
 
 # 바닥값 규칙: 모든 문항이 0.3에서 5개 이상 남으면 공통 바닥값 0.3을 그대로 쓴다(docs/experiments.md v12 선택
@@ -168,7 +168,7 @@ def test_floor_rule_lowers_the_floor_until_every_question_keeps_five():
         _record("q2", [0.4, 0.3, 0.26, 0.22, 0.21, 0.1], hit_rank=1),
     ]
 
-    # q2's fifth score is 0.21: 0.25 would cut it to 3 results, 0.2 keeps 5.
+    # q2의 다섯 번째 점수는 0.21이다: 0.25면 결과가 3개로 줄고, 0.2면 5개가 남는다.
     assert retrieval_runs.pick_floor(records) == 0.2
 
 
@@ -197,4 +197,4 @@ async def test_dense_plan_names_the_scan_and_exact_search_avoids_the_index(db_se
 
     assert any(node.startswith("Seq Scan on chunks") for node in nodes)
     assert not any("hnsw" in node for node in nodes)
-    assert await dense_search_plan(db_session, "en") == []  # no English chunks to plan with
+    assert await dense_search_plan(db_session, "en") == []  # 계획을 세울 영어 청크가 없다

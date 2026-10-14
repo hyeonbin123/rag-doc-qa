@@ -51,9 +51,9 @@ async def register(payload: UserRegister, db: AsyncSession = Depends(get_db)) ->
     if existing is not None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email already registered")
 
-    # bcrypt costs about a quarter second of CPU per call (cost 12). On the event loop
-    # that would stall every other request, so it runs on a worker thread. Not the model
-    # pool (run_model): a login shouldn't queue behind embeddings.
+    # bcrypt는 호출마다 CPU를 약 0.25초 쓴다(cost 12). 이벤트 루프에서 그대로 돌리면 그동안 다른 요청이 모두
+    # 멈추므로 작업 스레드에서 실행한다. 모델용 스레드 풀(run_model)은 쓰지 않는다: 로그인이 임베딩 계산 뒤에
+    # 줄 서면 안 되기 때문이다.
     hashed = await run_in_threadpool(hash_password, payload.password)
     user = User(email=payload.email, hashed_password=hashed)
     db.add(user)
@@ -69,8 +69,8 @@ async def login(
     form_data: OAuth2PasswordRequestForm = Depends(),
     db: AsyncSession = Depends(get_db),
 ) -> TokenPair:
-    # Registration stores the address as EmailStr normalizes it (domain lower-cased),
-    # so the typed username is looked up both as typed and in that form.
+    # 가입은 EmailStr이 정규화한 형태(도메인을 소문자로)로 주소를 저장하므로, 입력한 username을 입력한
+    # 그대로와 그 정규화한 형태 두 가지로 찾는다.
     user = await find_user_by_email(db, form_data.username)
     # 사용자가 없을 때와 비밀번호가 틀렸을 때 같은 401 메시지를 돌려줘, 어떤 이메일이 가입돼 있는지 응답
     # 내용으로는 알 수 없게 한다. (없는 이메일이면 bcrypt를 건너뛰므로 응답 시간 차이는 남는다.)

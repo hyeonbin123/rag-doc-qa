@@ -24,7 +24,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from alembic import context
 from app.config import get_settings
 from app.db.base import Base
-from app.models import chunk, document, query_log, user  # noqa: F401  (register models)
+from app.models import chunk, document, query_log, user  # noqa: F401  (모델을 메타데이터에 등록)
 
 # alembic.ini 내용을 담은 설정 객체. 아래에서 DB 주소를 이 객체에 덮어쓴다.
 config = context.config

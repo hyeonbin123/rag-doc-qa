@@ -1,6 +1,6 @@
-"""Create a demo user for manual/local testing.
+"""손으로 해 보는 로컬 테스트용 데모 사용자를 만든다.
 
-Usage:
+사용법:
     python -m scripts.seed_demo_user demo@example.com password123
 """
 
@@ -34,15 +34,15 @@ from app.services.users import find_user_by_email
 # 비밀번호는 가입 API와 같은 규칙(8자 이상, UTF-8 72바이트 이하)으로 먼저 검사한다. 예전에는 검사하지 않아
 # 짧은 비밀번호 계정이 만들어졌고, 72바이트를 넘으면 bcrypt 5의 ValueError traceback으로 끝났다.
 async def seed_user(db: AsyncSession, email: str, password: str) -> tuple[User, bool]:
-    """Return (user, created). The address is stored the way /auth/register stores it.
+    """(사용자, 새로 만들었는지)를 돌려준다. 주소는 /auth/register가 저장하는 형태로 저장한다.
 
-    The existing-user check goes through the same lookup as login, so it also finds a
-    row an earlier version of this script stored exactly as typed.
+    이미 있는 사용자인지는 로그인과 같은 조회 함수로 확인하므로, 예전 버전의 이 스크립트가 입력 그대로
+    저장한 행도 찾는다.
     """
     # 먼저 정규화와 비밀번호 검사부터 해서, 가입이 거부할 값이면 DB를 건드리기 전에 ValueError(pydantic
     # ValidationError)로 끝낸다.
-    stored_email = normalize_email(email)  # ValueError if it is not an address
-    UserRegister(email=stored_email, password=password)  # ValueError if /auth/register would refuse it
+    stored_email = normalize_email(email)  # 주소 형식이 아니면 ValueError
+    UserRegister(email=stored_email, password=password)  # /auth/register가 거부할 값이면 ValueError
     existing = await find_user_by_email(db, email)
     if existing is not None:
         return existing, False

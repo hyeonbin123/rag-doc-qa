@@ -1,9 +1,8 @@
-"""Checks the eval scripts run against the database before measuring.
+"""평가 스크립트가 측정을 시작하기 전에 DB에 대고 돌리는 확인들.
 
-The embedding comparison (docs/experiments.md v12) points the same scripts at several
-databases, each embedded by a different model, and picks the model by environment
-variable. Measuring one model's questions against another model's vectors would not
-fail; it would just give wrong numbers. check_stored_vectors catches that.
+임베딩 비교(docs/experiments.md v12)에서는 같은 스크립트를 서로 다른 모델로 임베딩한 여러 DB에 돌리고,
+모델은 환경 변수로 고른다. 한 모델로 만든 질문 벡터를 다른 모델의 벡터에 대고 재도 실패하지 않고 틀린
+숫자만 나온다. check_stored_vectors가 이것을 잡는다.
 """
 
 # [파일 역할] 검색·답변 평가 스크립트(eval/run_retrieval_eval.py, eval/run_answer_eval.py)가 측정을 시작하기
@@ -40,17 +39,17 @@ MIN_COSINE = 0.99
 # 저장 벡터와 모델이 맞지 않을 때 내는 전용 예외. 평가 스크립트는 이를 잡지 않으므로 측정이 시작되기 전에
 # 실행이 끝난다.
 class VectorModelMismatch(RuntimeError):
-    """The stored vectors of a language were not made by the model the run would use."""
+    """그 언어의 저장 벡터가 이번 실행이 쓸 모델로 만든 것이 아니다."""
 
 
 # 이 세션에서만 인덱스 스캔을 끄는 함수. --exact 옵션일 때 eval/run_retrieval_eval.py가 부르며, 근사(HNSW)
 # 결과와 정확 탐색 결과가 같은지 비교하는 기준 실행을 만든다(docs/experiments.md v12 '실행 계획').
 # SET은 세션 범위라 다른 연결이나 앱에는 영향이 없다.
 async def force_exact_search(db: AsyncSession) -> None:
-    """Make this session's vector searches exact scans instead of HNSW index scans.
+    """이 세션의 벡터 검색을 HNSW 인덱스 스캔 대신 정확 탐색으로 바꾼다.
 
-    With index scans off the planner sorts every row of the language by distance, which
-    is the exact top-k the approximate HNSW scan is compared against.
+    인덱스 스캔을 끄면 플래너가 그 언어의 모든 행을 거리순으로 정렬한다. 이것이 근사 HNSW 탐색과 비교할
+    정확한 상위 k개다.
     """
     await db.execute(text("SET enable_indexscan = off"))
 
@@ -71,10 +70,10 @@ def _cosine(a: list[float], b: list[float]) -> float:
 async def check_stored_vectors(
     db: AsyncSession, embedder: EmbeddingService, language: str, sample: int = 3
 ) -> dict:
-    """Re-embed a few stored chunks of `language` and compare with their stored vectors.
+    """`language` 청크 몇 개를 다시 임베딩해 저장된 벡터와 비교한다.
 
-    Ingestion embeds build_embedding_text(heading_path, content), so the same model gives
-    back the stored vector (cosine about 1.0); another model's vectors are unrelated.
+    적재는 build_embedding_text(heading_path, content)를 임베딩하므로, 같은 모델이면 저장된 벡터가 다시
+    나온다(cos 약 1.0). 다른 모델의 벡터와는 상관이 없다.
     """
     # ORDER BY id로 항상 같은 청크를 골라 실행마다 같은 확인을 한다. embedding::text는 pgvector 값을
     # '[0.1,0.2,...]' 문자열로 받아 아래에서 json.loads로 리스트로 바꾸기 위한 것이다.
@@ -116,11 +115,11 @@ async def check_stored_vectors(
 # 수 있게 한다(docs/experiments.md v12).
 # 그 언어의 청크가 없으면 빈 목록을 돌려준다.
 async def dense_search_plan(db: AsyncSession, language: str, top_k: int = 10) -> list[str]:
-    """The scan nodes Postgres picks for the dense search of `language`.
+    """Postgres가 `language`의 dense 검색에 고른 스캔 노드들.
 
-    "Index Scan using chunks_embedding_<language>_hnsw_idx" is the approximate HNSW scan;
-    "Seq Scan on chunks" under a Sort is an exact scan. With a few hundred chunks per
-    language the planner can prefer the exact one. One stored vector stands in for a query.
+    "Index Scan using chunks_embedding_<language>_hnsw_idx"는 근사 HNSW 탐색이고, Sort 아래의
+    "Seq Scan on chunks"는 정확 탐색이다. 언어마다 청크가 수백 개 수준이면 플래너가 정확 탐색을 고를 수
+    있다. 질의 대신 저장된 벡터 하나를 쓴다.
     """
     # 실제 질문 벡터 대신 저장된 벡터 하나를 질의로 쓴다. 계획은 값보다 SQL 모양과 테이블 통계로 정해지므로
     # 이것으로 충분하다.

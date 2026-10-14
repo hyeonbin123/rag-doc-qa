@@ -1,8 +1,8 @@
-"""Re-ingestion keeps the corpus in step with the upstream docs tree.
+"""재적재가 코퍼스를 상류 문서 트리와 맞게 유지하는지 검증한다.
 
-Unchanged pages are skipped, changed pages have their chunks replaced, and a full run
-removes pages that are no longer listed, so a renamed or deleted docs page can't stay
-searchable and citable. The GitHub calls are replaced with an in-memory tree.
+바뀌지 않은 페이지는 건너뛰고, 바뀐 페이지는 청크를 교체하며, 전체 실행은 목록에 더는 없는 페이지를
+지운다. 그래서 이름이 바뀌거나 지워진 문서 페이지가 계속 검색·인용될 수 없다. GitHub 호출은 메모리 속
+트리로 바꾼다.
 """
 
 # [테스트 묶음] 재적재(app/services/ingestion.py의 run_ingestion)가 DB의 문서를 GitHub 문서 트리와 맞게
@@ -41,7 +41,7 @@ PAGES = {
 # 적재가 `pages`를 커밋 deadbeef의 문서 트리로 보게 만든다. 목록은 실제 select_doc_paths로 골라 언어 필터와
 # 제외 페이지 규칙은 진짜 코드가 적용한다. 테스트 중간에 다시 불러 '상류 트리가 바뀐 상황'을 만든다.
 def serve_upstream(monkeypatch, pages: dict[str, str]) -> None:
-    """Make the ingestion see `pages` as the docs tree at commit deadbeef."""
+    """적재가 `pages`를 커밋 deadbeef의 문서 트리로 보게 한다."""
 
     async def fake_commit_sha(client, commit_sha=None):
         return "deadbeef"
@@ -97,7 +97,7 @@ async def test_a_full_run_removes_pages_that_left_the_upstream_tree(db_session, 
     serve_upstream(monkeypatch, {A: PAGES[A]})
     outcome = await ingest(db_session, languages=("en",))
 
-    # The Korean page is outside the languages this run ingested, so it stays.
+    # 한국어 페이지는 이번 실행이 적재한 언어 밖이므로 남는다.
     assert await stored_paths(db_session) == {A, C}
     assert outcome.documents_deleted == 1
     orphaned = await db_session.scalar(
@@ -110,7 +110,7 @@ async def test_a_full_run_removes_pages_that_left_the_upstream_tree(db_session, 
 # 지운다. 목록에서 빠졌으므로 '트리에 없는 문서'와 같이 취급된다.
 @pytest.mark.asyncio
 async def test_a_page_that_became_excluded_is_removed(db_session, monkeypatch):
-    # Ingested before translation-banner.md joined SKIPPED_PAGES.
+    # translation-banner.md가 SKIPPED_PAGES에 들어가기 전에 적재된 행.
     db_session.add(
         Document(source_path=BANNER, title="Banner", source_commit_sha="old", content_hash="old")
     )
@@ -153,8 +153,6 @@ async def test_a_dry_run_counts_stale_pages_without_deleting_them(db_session, mo
 # 지워졌다기보다 상류 구조 변경이나 잘못된 언어 코드일 가능성이 크기 때문이다.
 @pytest.mark.asyncio
 async def test_a_language_that_lists_no_pages_is_left_alone(db_session, monkeypatch):
-    # An empty listing for a translation more likely means an upstream restructure or
-    # a wrong language code than that every page was deleted.
     serve_upstream(monkeypatch, PAGES)
     await ingest(db_session)
 
@@ -188,7 +186,6 @@ async def test_an_updated_page_gets_a_new_fetched_at(db_session, monkeypatch):
 # 낸다.
 @pytest.mark.asyncio
 async def test_a_truncated_tree_listing_is_refused():
-    # A partial listing would make a full run delete pages that still exist.
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"tree": [{"path": A, "type": "blob"}], "truncated": True})
 
@@ -199,7 +196,7 @@ async def test_a_truncated_tree_listing_is_refused():
 
 # 같은 모델 이름에 다른 고정 리비전을 가진 가짜 임베딩. identity에 '@리비전'이 붙어 적재 해시가 달라진다.
 class RevisedEmbeddingService(FakeEmbeddingService):
-    """The same model name at another pinned revision: different vectors, same name."""
+    """같은 모델 이름, 다른 고정 리비전: 이름은 같지만 벡터가 다르다."""
 
     revision = "0" * 40
 

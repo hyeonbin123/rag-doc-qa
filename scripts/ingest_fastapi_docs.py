@@ -1,6 +1,6 @@
-"""Repeatable, idempotent ingestion CLI for the FastAPI docs corpus.
+"""FastAPI 문서 코퍼스를 적재하는 명령행 도구. 몇 번을 다시 돌려도 결과가 같다(멱등).
 
-Usage:
+사용법:
     python -m scripts.ingest_fastapi_docs [--commit SHA] [--limit N] [--dry-run]
                                           [--languages en,ko]
 """
@@ -70,7 +70,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--languages",
         default=",".join(DOC_LANGUAGES),
-        help="comma-separated docs translations to ingest (default: en,ko)",
+        help="적재할 문서 번역 언어, 쉼표로 구분(기본값: en,ko)",
     )
     args = parser.parse_args()
     # 'en,ko' 같은 쉼표 목록을 튜플로 바꾼다. --languages ko처럼 한 언어만 다시 적재할 수 있다(v13 단계 B에서

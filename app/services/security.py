@@ -20,10 +20,9 @@ from app.config import get_settings
 # 모듈을 import할 때 설정을 읽어 JWT 키·알고리즘·수명을 쓴다.
 settings = get_settings()
 
-# bcrypt reads at most 72 bytes of a password, and bcrypt 5 raises on longer input
-# instead of truncating it. Registration rejects such passwords (UserRegister); at
-# login they cannot match any stored hash. Bytes, not characters: a Korean character
-# is 3 bytes in UTF-8.
+# bcrypt는 비밀번호를 최대 72바이트까지만 읽고, bcrypt 5는 더 긴 입력을 잘라 쓰는 대신 예외를 낸다. 가입은
+# 이런 비밀번호를 거부하고(UserRegister), 로그인에서는 저장된 어떤 해시와도 맞을 수 없다. 글자 수가 아니라
+# 바이트 수다: 한글 한 글자는 UTF-8로 3바이트다.
 MAX_PASSWORD_BYTES = 72
 
 

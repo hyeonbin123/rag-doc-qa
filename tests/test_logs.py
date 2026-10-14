@@ -26,7 +26,7 @@ async def test_an_unknown_log_id_is_not_found(authed_client):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("query", ["limit=-1", "offset=-1", "limit=0", "limit=101"])
 async def test_paging_outside_the_bounds_is_rejected(authed_client, query):
-    # Negative values used to reach Postgres, which rejects them: a 500.
+    # 예전에는 음수 값이 Postgres까지 가서 거부되며 500이 났다.
     resp = await authed_client.get(f"/logs?{query}")
     assert resp.status_code == 422
 

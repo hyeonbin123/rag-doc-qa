@@ -23,7 +23,7 @@ async def test_seed_stores_the_email_the_way_registration_does(client, db_sessio
     assert created
     assert user.email == "Heidi@example.com"
 
-    # The same string then conflicts at registration and logs in, as for a registered user.
+    # 그러면 같은 문자열이 가입 때는 중복으로 걸리고, 로그인은 가입한 사용자처럼 성공한다.
     register_resp = await client.post(
         "/auth/register", json={"email": "Heidi@Example.COM", "password": "supersecret1"}
     )
