@@ -4,7 +4,11 @@
 # 제목을 임베딩에 두 번 넣었고, 경로만 있는 include 지시문은 노이즈였으며, v2에서 <dfn> title까지 지워 q011이
 # 1위에서 3위로 떨어졌다(docs/experiments.md v1 → v3). 이 테스트들이 그 동작을 고정한다.
 
+import pytest
+
+import app.services.chunking as chunking
 from app.services.chunking import (
+    CHUNKER_VERSION,
     OVERLAP_TOKENS,
     TARGET_TOKENS,
     build_embedding_text,
@@ -149,10 +153,37 @@ def test_clean_markdown_keeps_definition_text_from_dfn_and_abbr():
     assert "<" not in cleaned
 
 
-# --- 청크 겹침 (CHUNKER_VERSION 4, docs/experiments.md v14) ---
+# --- 청크 겹침 (docs/experiments.md v14) ---
+# CHUNKER_VERSION 4에서 겹침이 실제로 적용되게 고쳤고, v14 재측정 결과로 5에서 겹침을 껐다
+# (OVERLAP_TOKENS = 0). 기본 청커는 겹치지 않는 청크를 만들고, 그 청크는 3까지와 같다. 겹침을 다시 켜는
+# 경우를 위해 고친 겹침 동작은 아래 overlap_on 픽스처(OVERLAP_TOKENS = 50, v14에서 잰 값)로 계속 고정한다.
 
 # 서로 다른 짧은 줄(줄마다 약 11토큰). 줄이 모두 달라서 어느 줄이 어느 청크에 몇 번 들어갔는지 셀 수 있다.
 SHORT_LINES = [f"Line {i:03d} says one short thing about path parameters." for i in range(200)]
+
+# v14에서 재 본 겹침 크기.
+MEASURED_OVERLAP_TOKENS = 50
+
+
+@pytest.fixture
+def overlap_on(monkeypatch):
+    monkeypatch.setattr(chunking, "OVERLAP_TOKENS", MEASURED_OVERLAP_TOKENS)
+
+
+# 기본값은 겹침 꺼짐이다. 청커 버전 5는 4로 적재한 DB가 다음 적재 때 다시 처리되게 하려고 올렸다.
+def test_overlap_is_off_by_default():
+    assert OVERLAP_TOKENS == 0
+    assert CHUNKER_VERSION == 5
+
+
+# 겹침이 꺼져 있으면 청크를 이어 붙인 줄이 문서의 줄과 같아야 한다(빈 줄을 빼고, 줄마다 한 번씩, 순서대로).
+# 앞 청크 끝의 줄이 다음 청크에 다시 들어가면 실패한다.
+def test_default_chunks_do_not_overlap():
+    chunks = chunk_markdown("\n".join(SHORT_LINES))
+
+    assert len(chunks) >= 3
+    joined = [line for c in chunks for line in c.content.split("\n") if line]
+    assert joined == SHORT_LINES
 
 
 # 줄을 앞에서부터 쌓아 토큰 합이 처음으로 TARGET_TOKENS에 닿는 줄 수. 청커는 줄마다 센 토큰을 더해 끊을 때를
@@ -168,6 +199,7 @@ def _lines_to_reach_target() -> int:
 
 # 목표 크기에서 끊긴 청크 다음 청크는 앞 청크 끝의 줄(OVERLAP_TOKENS 이하)로 시작해야 한다. CHUNKER_VERSION
 # 3까지는 겹칠 줄을 버퍼를 비운 뒤에 골라 다음 청크가 늘 새 줄로 시작했다.
+@pytest.mark.usefixtures("overlap_on")
 def test_a_chunk_cut_at_the_target_size_overlaps_the_next_one():
     chunks = chunk_markdown("\n".join(SHORT_LINES))
 
@@ -177,12 +209,13 @@ def test_a_chunk_cut_at_the_target_size_overlaps_the_next_one():
         lead = [line for line in cur.content.split("\n") if line in prev_lines]
         assert lead, "the next chunk repeats none of the previous chunk's lines"
         assert prev_lines[-len(lead) :] == lead == cur.content.split("\n")[: len(lead)]
-        assert sum(count_tokens(line) for line in lead) <= OVERLAP_TOKENS
+        assert sum(count_tokens(line) for line in lead) <= MEASURED_OVERLAP_TOKENS
 
 
 # 문서가 목표 크기에 닿는 줄에서 바로 끝나면, 겹쳐 둔 줄만 남는다. 그 줄들로 청크를 만들면 앞 청크 끝을
 # 되풀이할 뿐이고(끝의 작은 청크로 합쳐지면 한 청크 안에 같은 줄이 두 번 들어간다) 새 내용이 없으므로 청크를
 # 만들지 않는다.
+@pytest.mark.usefixtures("overlap_on")
 def test_overlap_lines_alone_never_make_a_chunk():
     lines = SHORT_LINES[: _lines_to_reach_target()]
 
@@ -193,6 +226,7 @@ def test_overlap_lines_alone_never_make_a_chunk():
 
 # 끝에 남은 작은 청크(150토큰 미만)를 앞 청크에 합칠 때, 앞 청크 끝과 겹치는 줄은 다시 붙이지 않는다. 합친
 # 청크에는 문서의 줄이 순서대로 한 번씩만 들어 있어야 한다.
+@pytest.mark.usefixtures("overlap_on")
 def test_a_small_trailing_chunk_merges_without_repeating_the_overlap():
     lines = SHORT_LINES[: _lines_to_reach_target() + 3]
 

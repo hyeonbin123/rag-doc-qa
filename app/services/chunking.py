@@ -1,8 +1,9 @@
 """Markdown-aware chunker shared by the FastAPI app and the ingestion script.
 
-Splits a markdown document into overlapping chunks of roughly TARGET_TOKENS,
+Splits a markdown document into non-overlapping chunks of roughly TARGET_TOKENS,
 never splitting inside a fenced code block, while tracking a heading
-breadcrumb (heading_path) for each chunk.
+breadcrumb (heading_path) for each chunk. Overlap is off (OVERLAP_TOKENS = 0,
+docs/experiments.md v14).
 """
 
 # [파일 역할] FastAPI 문서 마크다운 한 편을 검색 단위인 청크 목록으로 나눈다. 나누기 전에 의미 없는 MkDocs
@@ -32,15 +33,17 @@ import tiktoken
 # - TARGET_TOKENS: 일반 줄을 쌓다가 이 값에 닿으면 청크를 끊는다.
 # - MIN_TOKENS: 마지막 청크가 이 값의 절반(150) 미만이면 앞 청크에 합친다.
 # - MAX_TOKENS: 코드 블록을 붙였을 때 이 값을 넘으면 먼저 지금까지를 끊고 코드 블록을 새 청크로 시작한다.
-# - OVERLAP_TOKENS: 목표 크기에서 끊을 때, 앞 청크 끝에서 이 값을 넘지 않는 만큼의 줄을 다음 청크 앞에
-#   겹쳐 넣는다. 줄 단위라 끝 줄 하나가 이보다 길면(한 줄짜리 긴 문단) 겹치는 줄이 없다.
-#   CHUNKER_VERSION 3까지는 겹칠 줄을 버퍼를 비운 뒤에 골라 실제로는 한 번도 겹치지 않았다(v4에서 고침,
-#   docs/experiments.md v14).
+# - OVERLAP_TOKENS: 0이면 청크가 서로 겹치지 않는다(지금 값). 0보다 크면 목표 크기에서 끊을 때, 앞 청크
+#   끝에서 이 값을 넘지 않는 만큼의 줄을 다음 청크 앞에 겹쳐 넣는다. 줄 단위라 끝 줄 하나가 이보다 길면
+#   (한 줄짜리 긴 문단) 겹치는 줄이 없다.
+#   CHUNKER_VERSION 3까지는 50이었지만 겹칠 줄을 버퍼를 비운 뒤에 골라 실제로는 한 번도 겹치지 않았다. v4에서
+#   고쳐 50토큰 겹침을 재 보니 한국어 답변 정확도가 미리 정한 허용 폭보다 떨어져서(J1 합 346 → 334) 0으로
+#   껐다(docs/experiments.md v14). 0이면 청크(본문, 헤딩 경로, 토큰 수)가 3까지와 같다.
 # - HARD_CAP_TOKENS: 이보다 긴 코드 블록은 어쩔 수 없이 빈 줄 기준으로 쪼갠다.
 TARGET_TOKENS = 400
 MIN_TOKENS = 300
 MAX_TOKENS = 500
-OVERLAP_TOKENS = 50
+OVERLAP_TOKENS = 0
 HARD_CAP_TOKENS = 1000
 
 # _HEADING_RE: # ~ #### 헤딩 줄(레벨, 제목). 다섯 단계 이상은 일반 줄로 본다. _FENCE_RE: 코드 펜스(```로
@@ -112,7 +115,9 @@ class ChunkResult:
 # v1→v3).
 # 4: OVERLAP_TOKENS 겹침이 실제로 적용되게 고침. 3까지의 청크는 서로 겹치지 않았고, v1~v13의 모든 측정은 그
 # 청크로 했다(docs/experiments.md v14).
-CHUNKER_VERSION = 4
+# 5: v14 재측정 결과로 겹침을 끔(OVERLAP_TOKENS = 0). 청크는 3과 같다. 버전을 올린 것은 4로 적재한 DB가 다음
+# 적재 때 겹치지 않는 청크로 다시 처리되게 하려는 것이다.
+CHUNKER_VERSION = 5
 
 # 정제용 정규식들(MkDocs 문법).
 # - _HEADING_ANCHOR_RE: 헤딩 끝의 앵커 ID 표기(중괄호 안에 # 아이디). 그대로 두면 제목이 임베딩에 두 번
@@ -184,8 +189,8 @@ def clean_markdown(raw_text: str) -> str:
 
 
 # 정제 → 헤딩 경로 표시 → 토큰 수 기준으로 줄을 모아 청크를 만든다.
-# - 일반 줄: 버퍼에 쌓다가 TARGET_TOKENS에 닿으면 끊고, 끊은 청크 끝의 줄 일부(OVERLAP_TOKENS 이하)를 다음
-#   청크 앞에 겹쳐 넣는다.
+# - 일반 줄: 버퍼에 쌓다가 TARGET_TOKENS에 닿으면 끊는다. OVERLAP_TOKENS가 0보다 크면 끊은 청크 끝의 줄
+#   일부(OVERLAP_TOKENS 이하)를 다음 청크 앞에 겹쳐 넣는다(지금은 0이라 겹치지 않음).
 # - 코드 블록: 여는 펜스부터 닫는 펜스까지를 한 덩어리로 다룬다. 버퍼에 붙여 MAX_TOKENS를 넘으면 먼저 끊는다.
 #   HARD_CAP_TOKENS보다 길면 따로 빈 줄 기준으로 쪼갠다.
 # - 마지막 청크가 너무 작으면 앞 청크에 합친다.
@@ -230,8 +235,11 @@ def chunk_markdown(raw_text: str) -> list[ChunkResult]:
         overlap_lines = 0
 
     # 줄 목록의 끝에서부터 OVERLAP_TOKENS를 넘지 않을 만큼의 줄을 돌려준다(다음 청크 앞머리로 겹쳐 넣을 부분).
+    # 겹침이 꺼져 있으면(0) 아무 줄도 넘기지 않는다. 그러지 않으면 토큰이 0개인 빈 줄이 다음 청크로 넘어간다.
     def overlap_tail(lines: list[str]) -> list[str]:
         """Return trailing lines worth ~OVERLAP_TOKENS, for the next chunk's lead-in."""
+        if OVERLAP_TOKENS <= 0:
+            return []
         tail: list[str] = []
         tokens = 0
         for line in reversed(lines):
@@ -291,8 +299,8 @@ def chunk_markdown(raw_text: str) -> list[ChunkResult]:
         buffer_lines.append(line.text)
         buffer_tokens += count_tokens(line.text)
 
-        # 목표 크기에 닿으면 끊고, 끊은 청크 끝의 줄을 다음 청크 앞머리로 남긴 뒤, 다음 청크의 헤딩 경로를
-        # 다음 줄의 경로로 바꾼다.
+        # 목표 크기에 닿으면 끊고, (겹침이 켜져 있으면) 끊은 청크 끝의 줄을 다음 청크 앞머리로 남긴 뒤, 다음
+        # 청크의 헤딩 경로를 다음 줄의 경로로 바꾼다.
         # 겹칠 줄은 flush_buffer()가 버퍼를 비우기 전에 골라야 한다. CHUNKER_VERSION 3까지는 비운 뒤에 골라
         # 겹치는 줄이 늘 없었다.
         if buffer_tokens >= TARGET_TOKENS:
