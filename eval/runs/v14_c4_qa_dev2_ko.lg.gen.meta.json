@@ -1,0 +1,56 @@
+{
+  "date": "2026-10-14T04:36:50.646289+00:00",
+  "tag": "v14_c4_qa_dev2_ko",
+  "provider": "ollama",
+  "model": "a.x-4.0-light:q4_k_m",
+  "top_k": 5,
+  "retrieval_mode": "dense",
+  "cross_lingual": false,
+  "score_floor": 0.3,
+  "database": "ragdb_c4",
+  "embedding_models": {
+    "ko": "ibm-granite/granite-embedding-311m-multilingual-r2@44399559930365213510b1ee2eb15ded83374f0e:dim384"
+  },
+  "vector_checks": [
+    {
+      "language": "ko",
+      "model": "ibm-granite/granite-embedding-311m-multilingual-r2@44399559930365213510b1ee2eb15ded83374f0e:dim384",
+      "checked": 3,
+      "min_cosine": 1.0
+    }
+  ],
+  "dataset": "qa_dev2_ko.jsonl",
+  "order": "dataset",
+  "seed": null,
+  "git_commit": "7ea8a0d90aa10459a350df8646bfc0f92dffbdac",
+  "ollama_version": "0.35.1",
+  "ollama_ps_after": {
+    "models": [
+      {
+        "name": "a.x-4.0-light:q4_k_m",
+        "model": "a.x-4.0-light:q4_k_m",
+        "size": 4987929230,
+        "digest": "a874a70d2c09d0b718662cc3f52e38a85c34eacfb29284996530edfbc23d8661",
+        "details": {
+          "parent_model": "",
+          "format": "gguf",
+          "family": "qwen2",
+          "families": [
+            "qwen2"
+          ],
+          "parameter_size": "7.3B",
+          "quantization_level": "Q4_K_M"
+        },
+        "expires_at": "2026-10-14T13:47:26.0253098+09:00",
+        "size_vram": 4987929230,
+        "context_length": 8192
+      }
+    ]
+  },
+  "model_digest": "a874a70d2c09d0b718662cc3f52e38a85c34eacfb29284996530edfbc23d8661",
+  "think": null,
+  "language_guard": true,
+  "records_path": "eval/runs/v14_c4_qa_dev2_ko.gen.jsonl",
+  "arm": "lg",
+  "derived_from": "eval/runs/v14_c4_qa_dev2_ko.gen.jsonl"
+}

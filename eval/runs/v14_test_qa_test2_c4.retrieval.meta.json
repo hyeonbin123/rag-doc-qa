@@ -1,0 +1,45 @@
+{
+  "date": "2026-10-14T04:55:04.411081+00:00",
+  "tag": "v14_test_qa_test2_c4",
+  "git_commit": "7ea8a0d90aa10459a350df8646bfc0f92dffbdac",
+  "database": "ragdb_c4",
+  "embedding_models": {
+    "en": "BAAI/bge-small-en-v1.5"
+  },
+  "mode": "dense",
+  "top_k": 10,
+  "score_floors": {
+    "en": 0.3
+  },
+  "cross_lingual": false,
+  "exact": false,
+  "dense_plans": {
+    "en": [
+      "Sort",
+      "Seq Scan on chunks c",
+      "Seq Scan on documents d"
+    ]
+  },
+  "datasets": [
+    "qa_test2.jsonl"
+  ],
+  "vector_checks": [
+    {
+      "language": "en",
+      "model": "BAAI/bge-small-en-v1.5",
+      "checked": 3,
+      "min_cosine": 1.0
+    }
+  ],
+  "torch_threads": 6,
+  "aggregate": {
+    "n": 43,
+    "hit@3": 0.8372093023255814,
+    "hit@5": 0.8604651162790697,
+    "hit@10": 0.8837209302325582,
+    "mrr": 0.7517441860465115,
+    "short": 0,
+    "p50": 9.217499988153577,
+    "p95": 10.476939985528588
+  }
+}
