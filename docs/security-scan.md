@@ -8,7 +8,9 @@
   - **DB 사본**: 스캔이 가입·질문 기록을 수백 건 쓰므로 `ragdb`를 복사한 `ragdb_scan`을 쓴다. 문서와 청크(벡터 포함)는 같다.
   - **생성기 대역**: 액티브 스캔은 `/query/ask`에 질문을 수백 번 보내는데, 실제 LLM이면 한 번에 몇 초씩 GPU를 쓴다. 그래서 Ollama의 `/api/chat`을 흉내 내는 표준 라이브러리 스크립트(`zap/ollama_stub.py`)가 정해진 답과 인용 JSON을 바로 돌려준다. 인증, 입력 검증, 언어 판별, 임베딩 모델, 벡터 검색, 질문 기록은 실제 코드가 돈다. 답변 문장은 정해진 문장이라 LLM 출력 자체는 스캔 대상이 아니다.
 - 모든 요청에 스캔용 사용자(사본 DB에만 있음)의 `Authorization: Bearer` 토큰을 붙인다. ZAP이 대상 호스트로 가는 요청에 헤더를 붙이게 하는 환경 변수(`ZAP_AUTH_HEADER*`)로 넘기고, `zap/run_zap.sh`가 정한다. 토큰 하나로 스캔이 끝나도록 대상의 토큰 수명을 240분으로 늘린다.
-- 관리자 적재 토큰은 주지 않는다. 그래서 `POST /admin/documents/ingest`는 토큰 헤더 확인(헤더가 없으면 422)에서 멈춘다. 적재는 GitHub에서 문서를 받아 DB를 바꾸는 작업이라 스캐너가 실행하지 않게 했다.
+- 관리자 적재 토큰은 ZAP에 주지 않는다. 적재는 GitHub에서 문서를 받아 DB를 바꾸는 작업이라 스캐너가 실행하지 않게 했다.
+  - 1·2차: 대상에 관리자 토큰이 없고(관리자 적재 API 꺼짐) 계획도 `X-Admin-Token` 헤더를 보내지 않아, `POST /admin/documents/ingest`는 모두 헤더 필수 검사(422)에서 멈췄다. 그래서 토큰 비교 경로는 스캔되지 않았다.
+  - 3차부터: 대상에 스캔마다 새로 만든 무작위 토큰(`SCAN_ADMIN_TOKEN`, 환경 변수로만 넘기고 저장하지 않음)을 설정해 관리자 적재 API를 켜 두고, 계획의 `requestor`가 틀린 값·빈 값·ASCII 밖 문자 값의 `X-Admin-Token`으로 관리자 요청 세 개를 보낸다. `activeScan-config` 작업으로 헤더도 공격 대상에 넣어(ZAP 기본은 쿼리·본문만), 스캐너가 이 헤더 값을 바꿔 가며 보낸다. 모두 '틀린 토큰(403)'이어야 하고 적재는 한 번도 돌지 않아야 한다.
 - OpenAPI에서 만든 예시 질문에는 한글이 없어 영어 경로만 지난다. 그래서 한국어 질문 하나를 `requestor` 작업으로 보내 한국어 임베딩 경로도 액티브 스캔 대상에 넣는다.
 
 ## 실행
@@ -17,6 +19,8 @@
 # DB만 띄운 상태에서 사본을 만들고 스캔 대상을 띄운다
 docker compose up -d --wait db
 docker compose exec -T db createdb -U raguser -T ragdb ragdb_scan
+# 3차부터: 관리자 토큰을 스캔마다 새로 만들어 환경 변수로만 넘긴다(ZAP에는 주지 않음)
+export SCAN_ADMIN_TOKEN=$(python -c "import secrets; print(secrets.token_urlsafe(32))")
 docker compose -f docker-compose.yml -f zap/compose.scan.yml up -d --wait api
 # 스캔용 사용자 (사본 DB에만 생김). 이메일과 비밀번호는 아무 값이나
 curl -X POST localhost:8000/auth/register -H "Content-Type: application/json" \
@@ -26,6 +30,16 @@ TOKEN=$(curl -s -X POST localhost:8000/auth/login -d "username=<이메일>&passw
 # ZAP_DIR은 zap-2.17.0.jar가 있는 폴더. 리포트(<이름>.json, <이름>.md)와 로그는 work/zap/<이름>/
 ZAP_DIR=<폴더> ACCESS_TOKEN=$TOKEN bash zap/run_zap.sh <이름>
 ```
+
+## 3차 통과 기준 (2026-10-15, 스캔 전에 적음)
+
+3차 대상은 JWT 라이브러리 교체(python-jose → PyJWT, 같은 토큰 형식), 약한 JWT 비밀키 경고, compose 포트를 127.0.0.1로 묶기, `exec uvicorn`, 관리자 토큰 비교(`compare_digest`, 빈 값·공개 예시 값이면 꺼짐), 기본값이 꺼진 생성 설정 세 개를 넣은 커밋 뒤의 이미지다. 계획은 위 3차 변경(관리자 요청 세 개 + 헤더 공격)을 더했다.
+
+- High 0, Medium 0, Low는 2차와 같은 40014 하나까지
+- 500 응답 0, 앱 예외(api 컨테이너 로그의 Traceback) 0
+- 관리자 적재 요청(`/admin/documents/ingest`)의 응답은 모두 307·403·405·422 중 하나이고, 403이 1건 이상(토큰 비교 경로를 실제로 지났다는 증거)
+- 스캔 DB 사본 `ragdb_scan`의 documents·chunks 행 수와 `max(documents.fetched_at)`이 스캔 전과 같음(적재가 한 번도 돌지 않았다는 증거), 원래 DB `ragdb`의 행 수도 스캔 전과 같음
+- 하나라도 어기면 원인을 고친 뒤 4차로 다시 돌린다. 이 기준은 결과를 보기 전에 정했다
 
 ## 결과
 

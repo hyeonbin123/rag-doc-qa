@@ -19,3 +19,8 @@ services:
       OLLAMA_BASE_URL: http://ollama-stub:11434
       # One token has to last the whole scan (the default is 30 minutes).
       ACCESS_TOKEN_EXPIRE_MINUTES: "240"
+      # 관리자 적재 API를 켜 두되 ZAP은 이 값을 모르게 한다(3차부터). 그래야 스캐너가 보내는 X-Admin-Token이
+      # '꺼짐(403 disabled)'에서 멈추지 않고 '틀린 토큰(403 Invalid admin token)' 비교 경로까지 간다. 값은 스캔을
+      # 띄우는 쪽이 python -c "import secrets; print(secrets.token_urlsafe(32))"로 만들어 환경 변수로만 넘기고,
+      # 어디에도 저장하지 않는다. 비어 있으면 compose가 시작을 거부한다.
+      ADMIN_INGEST_TOKEN: ${SCAN_ADMIN_TOKEN:?set SCAN_ADMIN_TOKEN to a random value for the scan}

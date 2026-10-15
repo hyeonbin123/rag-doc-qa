@@ -9,7 +9,9 @@
 #
 # The token is not a plan variable: ZAP itself adds `Authorization: Bearer <token>` to every request it sends
 # to the target host when ZAP_AUTH_HEADER, ZAP_AUTH_HEADER_VALUE and ZAP_AUTH_HEADER_SITE are set (run_zap.sh
-# sets them). No admin token is given, so the admin ingest endpoint is only reached up to its token check.
+# sets them).
+# 관리자 적재 토큰은 ZAP에 주지 않는다. 3차부터는 스캔 대상에 ZAP이 모르는 무작위 토큰이 설정돼 있어, 아래
+# 관리자 요청들은 '틀린 토큰(403)' 경로를 지나고 적재 자체는 실행되지 않는다.
 env:
   contexts:
     - name: rag-doc-qa
@@ -38,6 +40,29 @@ jobs:
         headers:
           - "Content-Type:application/json"
         data: '{"question": "\uacbd\ub85c \ub9e4\uac1c\ubcc0\uc218\ub294 \uc5b4\ub5bb\uac8c \uc120\uc5b8\ud558\ub098\uc694?", "top_k": 5, "language": "auto"}'
+      # 3\ucc28\ubd80\ud130: \uad00\ub9ac\uc790 \uc801\uc7ac \uc694\uccad\uc5d0 X-Admin-Token \ud5e4\ub354\ub97c \uc2e4\uc5b4 \ubcf4\ub0b8\ub2e4. OpenAPI\uc5d0\uc11c \ub9cc\ub4e0 \uc694\uccad\uc5d0\ub294 \uc774 \ud5e4\ub354\uac00 \uc5c6\uc5b4
+      # 1\u00b72\ucc28\uc5d0\uc11c\ub294 \uad00\ub9ac\uc790 \uc694\uccad 639\uac74\uc774 \ubaa8\ub450 \ud5e4\ub354 \ud544\uc218 \uac80\uc0ac(422)\uc5d0\uc11c \uba48\ucdc4\ub2e4. \uc2a4\uce94 \ub300\uc0c1\uc5d0\ub294 ZAP\uc774 \ubaa8\ub974\ub294 \ubb34\uc791\uc704
+      # \ud1a0\ud070\uc774 \uc124\uc815\ub3fc \uc788\uc5b4(zap/compose.scan.yml) \uc544\ub798 \uac12\ub4e4\uc740 \ubaa8\ub450 \ud2c0\ub9b0 \ud1a0\ud070(403)\uc774\uc5b4\uc57c \ud55c\ub2e4. \ubcf8\ubb38\uc5d0 \ub9e4\uac1c\ubcc0\uc218\ub97c
+      # \ub123\uc5b4(dry_run, limit 1) \uc561\ud2f0\ube0c \uc2a4\uce94\uc774 \uc774 \uc694\uccad\uc758 \ubcf8\ubb38\uacfc \ud5e4\ub354\ub97c \uacf5\uaca9 \ub300\uc0c1\uc73c\ub85c \uc0bc\uac8c \ud55c\ub2e4. \uc138 \uc694\uccad\uc740 \ud2c0\ub9b0 ASCII
+      # \uac12, \ube48 \uac12, ASCII \ubc16 \ubb38\uc790(\ub77c\ud2f4-1\ub85c \ud480\ub9ac\ub294 \ubc14\uc774\ud2b8, compare_digest\uc5d0 bytes\ub85c \ub118\uae30\ub294 \uc774\uc720) \uacbd\ub85c\ub2e4.
+      - url: ${TARGET}/admin/documents/ingest
+        method: POST
+        headers:
+          - "Content-Type:application/json"
+          - "X-Admin-Token:zap-not-the-token"
+        data: '{"commit_sha": "50113da16fec53b66b80d75e80a89296de4fa5a5", "limit": 1, "dry_run": true}'
+      - url: ${TARGET}/admin/documents/ingest
+        method: POST
+        headers:
+          - "Content-Type:application/json"
+          - "X-Admin-Token:"
+        data: '{"limit": 1, "dry_run": true}'
+      - url: ${TARGET}/admin/documents/ingest
+        method: POST
+        headers:
+          - "Content-Type:application/json"
+          - "X-Admin-Token:\u00e9\u00e8-not-the-token"
+        data: '{"limit": 1, "dry_run": true}'
 
   - type: spider
     parameters:
@@ -47,6 +72,37 @@ jobs:
   - type: passiveScan-wait
     parameters:
       maxDuration: 5
+
+  # 3차부터: 액티브 스캔이 HTTP 헤더 값도 공격하게 한다(ZAP 기본은 쿼리·본문만). activeScan 작업 자체에는 입력
+  # 벡터 설정이 없고, 이 작업이 전역 스캐너 설정을 바꾸면 다음 activeScan이 그대로 쓴다(automation 0.58.0의
+  # ActiveScanConfigJob이 전역 ScannerParam을 고친다). allRequests는 끈다: 매개변수가 있는 요청의 헤더만
+  # 공격해(위 관리자 요청의 X-Admin-Token 포함) 요청 수가 지나치게 늘지 않게 한다. 나머지 값은 ZAP 기본값을
+  # 그대로 적은 것이다.
+  - type: activeScan-config
+    parameters:
+      threadPerHost: 4
+    inputVectors:
+      urlQueryStringAndDataDrivenNodes:
+        enabled: true
+        addParam: false
+        odata: true
+      postData:
+        enabled: true
+        multiPartFormData: true
+        xml: true
+        json:
+          enabled: true
+          scanNullValues: false
+        googleWebToolkit: false
+        directWebRemoting: false
+      urlPath: false
+      httpHeaders:
+        enabled: true
+        allRequests: false
+      cookieData:
+        enabled: false
+        encodeCookieValues: false
+      scripts: true
 
   # Default policy. Four threads, as in the other projects' plans; the app runs model calls on six threads.
   - type: activeScan
