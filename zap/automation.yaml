@@ -80,7 +80,7 @@ jobs:
   # 그대로 적은 것이다.
   - type: activeScan-config
     parameters:
-      threadPerHost: 4
+      threadPerHost: 1
     inputVectors:
       urlQueryStringAndDataDrivenNodes:
         enabled: true
@@ -105,10 +105,14 @@ jobs:
       scripts: true
 
   # Default policy. Four threads, as in the other projects' plans; the app runs model calls on six threads.
+  # 4차부터 스레드 1개: 3차에서 SQL Injection(40018) High가 GET /logs의 Accept 헤더에 났는데, 같은 스캔
+  # 사용자의 POST /query/ask가 다른 스레드에서 질문 기록을 계속 더해 /logs 응답(최근 20개)이 '1'='1'과 '1'='2'
+  # 요청 사이에 바뀐 것이었다(동시 쓰기가 없을 때는 두 응답이 원래 응답과 같았고, Accept 헤더는 어떤 쿼리에도
+  # 쓰이지 않는다, docs/security-scan.md 3차). 요청을 한 줄로 보내 이런 경합 없이 응답을 비교하게 한다.
   - type: activeScan
     parameters:
       context: rag-doc-qa
-      threadPerHost: 4
+      threadPerHost: 1
       maxScanDurationInMins: 120
 
   - type: passiveScan-wait
