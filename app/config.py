@@ -78,6 +78,16 @@ class Settings(BaseSettings):
     # 언어 가드: 한국어 답변이 중국어나 일본어로 새면 한 번 다시 생성한다(v13에서 도입, v13 채택 때부터
     # 켜 둠).
     language_guard: bool = True
+    # v15 후보 세 가지(docs/experiments.md v15). 기본값은 모두 지금 동작이고, 측정으로 채택이 정해지기 전에는
+    # 바꾸지 않는다. 자세한 동작은 app/services/generation.py.
+    # - citation_mode: separate(기본)는 인용을 다른 프롬프트로 따로 부른다. followup은 답변 대화에 이어 붙여
+    #   프롬프트 캐시를 다시 쓰고 정수 배열로 받는다(인용 호출 시간을 줄이려는 후보).
+    # - refuse_without_context: 검색된 청크가 0개면 LLM 없이 고정 거절문을 돌려준다(바닥값으로 청크가 다
+    #   걸러졌을 때 지어낸 답을 막는 후보).
+    # - empty_citations_on_refusal: '문서에 내용이 없다'는 거절 답에는 인용을 붙이지 않는다.
+    citation_mode: Literal["separate", "followup"] = "separate"
+    refuse_without_context: bool = False
+    empty_citations_on_refusal: bool = False
     # 영어 문서·질문 임베딩 모델. v8에서 다국어 모델 하나로 통일하면 영어 테스트셋 MRR이 0.933 → 0.638로
     # 떨어져 영어는 이 모델을 유지했다(docs/experiments.md v8).
     embedding_model_name: str = "BAAI/bge-small-en-v1.5"

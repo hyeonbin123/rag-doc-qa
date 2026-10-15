@@ -349,3 +349,189 @@ def test_the_defaults_are_the_v13_adoption(monkeypatch):
     assert settings.ollama_model_name == "a.x-4.0-light:q4_k_m"
     assert settings.ollama_think is None
     assert settings.language_guard is True
+
+
+# --- v15 후보: 인용 호출을 답변 대화에 이어 붙이기, 청크 0개 거절, 거절 답의 인용 비우기 ---
+# (docs/experiments.md v15. 셋 다 설정으로만 켜지고 기본값에서는 요청·응답이 전과 같다.)
+
+# 짧은 숫자 배열 스키마로 받는 인용 응답(이어 붙이기 모드).
+COMPACT_CITE_2 = (json.dumps({"citations": [2]}), {})
+
+
+# 이어 붙이기 모드: 인용 호출은 답변 호출의 메시지(같은 system, 같은 user) 뒤에 모델이 쓴 답(assistant)과 짧은
+# 질문(user)을 붙인 대화이고, 출력은 정수 배열 스키마다. 앞부분이 답변 호출과 같아야 Ollama가 프롬프트 캐시를
+# 다시 쓴다.
+@pytest.mark.asyncio
+async def test_followup_citations_continue_the_answer_conversation(scripted_ollama):
+    payloads, script = scripted_ollama
+    raw_answer = CLEAN_KO + "\n"  # 모델이 보낸 그대로(끝 줄바꿈 포함)를 assistant 메시지로 되돌려 준다
+    script += [(raw_answer, {}), COMPACT_CITE_2]
+
+    service = OllamaGenerationService("http://ollama.test", "m", citation_mode="followup")
+    result = await service.answer(KOREAN_Q, [make_chunk(1), make_chunk(2)], "ko")
+
+    answer_call, citation_call = payloads
+    assert citation_call["messages"][:2] == answer_call["messages"]
+    assert citation_call["messages"][2] == {"role": "assistant", "content": raw_answer}
+    assert citation_call["messages"][3] == {
+        "role": "user",
+        "content": generation.CITATION_FOLLOWUP_PROMPT,
+    }
+    assert citation_call["format"] == generation.COMPACT_CITATIONS_SCHEMA
+    assert citation_call["options"] == answer_call["options"]
+    assert result.answer == CLEAN_KO
+    assert result.cited_chunk_numbers == [2]
+    assert result.diagnostics["citation_mode"] == "followup"
+    assert result.diagnostics["citation_schema_error"] is None
+
+
+# 이어 붙이기 모드에서 언어 가드가 다시 만들었으면, 인용 호출은 '다시 만든 요청'(KOREAN_RETRY_RULE system)과
+# 다시 만든 답을 잇는다.
+@pytest.mark.asyncio
+async def test_followup_citations_continue_the_guarded_retry(scripted_ollama):
+    payloads, script = scripted_ollama
+    script += [(MIXED_KO, {}), (CLEAN_KO, {}), COMPACT_CITE_2]
+
+    service = OllamaGenerationService(
+        "http://ollama.test", "m", language_guard=True, citation_mode="followup"
+    )
+    result = await service.answer(KOREAN_Q, [make_chunk(1), make_chunk(2)], "ko")
+
+    _, retry, citation = payloads
+    assert citation["messages"][:2] == retry["messages"]
+    assert citation["messages"][2]["content"] == CLEAN_KO
+    assert result.cited_chunk_numbers == [2]
+
+
+# 짧은 스키마를 어긴 응답(빈 배열, 예전 객체 모양, 정수가 아닌 값)은 평가 모드에서 이유와 함께 기록한다.
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "reply, error",
+    [
+        ('{"citations": []}', "empty citations array"),
+        ('{"citations": [{"chunk_number": 2}]}', "is not an integer"),
+        ('{"citations": [true]}', "is not an integer"),
+    ],
+)
+async def test_followup_citation_schema_errors_are_recorded(scripted_ollama, reply, error):
+    payloads, script = scripted_ollama
+    script += [(CLEAN_KO, {}), (reply, {})]
+
+    service = OllamaGenerationService(
+        "http://ollama.test", "m", citation_mode="followup", strict_citations=False
+    )
+    result = await service.answer(KOREAN_Q, [make_chunk(1), make_chunk(2)], "ko")
+
+    assert error in result.diagnostics["citation_schema_error"]
+    assert result.cited_chunk_numbers == []
+
+
+# 청크 0개 거절을 켜면 검색 결과가 없을 때 LLM을 부르지 않고 언어별 고정 거절문을 돌려준다. 인용은 비고,
+# 그 거절문은 거절 분류기에도 거절로 잡힌다.
+@pytest.mark.asyncio
+@pytest.mark.parametrize("language", ["en", "ko"])
+async def test_no_chunks_returns_the_fixed_refusal_without_calling_the_llm(scripted_ollama, language):
+    payloads, script = scripted_ollama
+
+    service = OllamaGenerationService("http://ollama.test", "m", refuse_without_context=True)
+    result = await service.answer("anything", [], language)
+
+    assert payloads == []
+    assert result.answer == generation.NO_CONTEXT_REFUSAL[language]
+    assert result.cited_chunk_numbers == []
+    assert result.diagnostics["refused_without_context"] is True
+    assert generation.is_refusal_answer(result.answer, language)
+
+
+# 기본값에서는 청크가 0개여도 예전처럼 LLM을 부른다(지금 바닥값 0.3에서는 청크 0개가 생기지 않는다).
+@pytest.mark.asyncio
+async def test_by_default_no_chunks_still_calls_the_llm(scripted_ollama):
+    payloads, script = scripted_ollama
+    script += [("I don't know.", {}), CITE_2]
+
+    await OllamaGenerationService("http://ollama.test", "m").answer("anything", [], "en")
+
+    assert len(payloads) == 2
+
+
+# 거절 답의 인용 비우기를 켜면, 거절로 분류된 답은 인용 호출을 하지 않고 인용 없이 돌려준다. 거절이 아닌 답은
+# 그대로 두 호출이다.
+@pytest.mark.asyncio
+async def test_a_refusal_answer_gets_no_citation_call_when_enabled(scripted_ollama):
+    payloads, script = scripted_ollama
+    script += [("I don't know. The passages do not cover this.", {})]
+
+    service = OllamaGenerationService("http://ollama.test", "m", empty_citations_on_refusal=True)
+    result = await service.answer("Q?", [make_chunk(1)], "en")
+
+    assert len(payloads) == 1
+    assert result.cited_chunk_numbers == []
+    assert result.diagnostics["citation_skipped"] == "refusal"
+    assert result.diagnostics["citation_call"] is None
+
+
+@pytest.mark.asyncio
+async def test_a_normal_answer_is_still_cited_when_refusal_emptying_is_on(scripted_ollama):
+    payloads, script = scripted_ollama
+    script += [(CLEAN_KO, {}), CITE_2]
+
+    service = OllamaGenerationService("http://ollama.test", "m", empty_citations_on_refusal=True)
+    result = await service.answer(KOREAN_Q, [make_chunk(1), make_chunk(2)], "ko")
+
+    assert len(payloads) == 2
+    assert result.cited_chunk_numbers == [2]
+
+
+# 거절 분류기는 답의 첫 문장만 본다. '문서에 정보가 없다'로 시작하는 답은 거절이고, 첫 문장에서 답한 뒤
+# 뒤쪽에서
+# 일부만 모른다고 한 답이나, '할 수 없습니다'가 답의 내용인 경우는 거절이 아니다(저장된 답에서 본 모양들).
+@pytest.mark.parametrize(
+    "answer, language, expected",
+    [
+        ("I don't know.", "en", True),
+        ("I don't know. The passages discuss routers.", "en", True),
+        ("The provided context passages do not contain information about status codes.", "en", True),
+        ("Based on the provided context passages, there is no information explaining it.", "en", True),
+        ("This is not covered in the provided passages.", "en", True),
+        ("Use `Query(alias=...)`. The docs do not mention other options.", "en", False),
+        ("You cannot send JSON and files together; use Form fields.", "en", False),
+        ("모르겠습니다. 찾은 문서 구절에는 이 질문에 대한 내용이 없습니다.", "ko", True),
+        ("제공된 문맥에는 deprecated 매개변수에 대한 정보가 포함되어 있지 않습니다.", "ko", True),
+        ("주어진 문서에 해당 내용이 없습니다.", "ko", True),
+        ("죄송하지만, 주어진 문맥에서는 그 방법에 대한 정보가 없습니다.", "ko", True),
+        ("제공된 문서에서는 이 질문에 답할 수 없습니다.", "ko", True),
+        (
+            "아니요, 파일과 JSON 본문을 함께 받을 수 없습니다. 요청이 multipart로 인코딩되기 때문입니다.",
+            "ko",
+            False,
+        ),
+        ("`--workers` 옵션으로 여러 워커를 띄울 수 있습니다. gunicorn에 대한 정보는 없습니다.", "ko", False),
+    ],
+)
+def test_is_refusal_answer_reads_the_first_sentence(answer, language, expected):
+    assert generation.is_refusal_answer(answer, language) is expected
+
+
+# 세 설정이 환경 변수 → 설정 → 생성기로 넘어가고, 기본값은 모두 꺼짐(지금 동작)이다.
+def test_the_v15_switches_come_from_settings_and_default_off(monkeypatch):
+    for name in ("CITATION_MODE", "REFUSE_WITHOUT_CONTEXT", "EMPTY_CITATIONS_ON_REFUSAL"):
+        monkeypatch.delenv(name, raising=False)
+    settings = Settings(database_url="x", jwt_secret_key="y", _env_file=None)
+    assert settings.citation_mode == "separate"
+    assert settings.refuse_without_context is False
+    assert settings.empty_citations_on_refusal is False
+
+    monkeypatch.setenv("CITATION_MODE", "followup")
+    monkeypatch.setenv("REFUSE_WITHOUT_CONTEXT", "true")
+    monkeypatch.setenv("EMPTY_CITATIONS_ON_REFUSAL", "true")
+    monkeypatch.setenv("GENERATION_PROVIDER", "ollama")
+    get_settings.cache_clear()
+    generation.get_generation_service.cache_clear()
+    try:
+        service = generation.get_generation_service()
+        assert service._citation_mode == "followup"
+        assert service._refuse_without_context is True
+        assert service._empty_citations_on_refusal is True
+    finally:
+        get_settings.cache_clear()
+        generation.get_generation_service.cache_clear()
