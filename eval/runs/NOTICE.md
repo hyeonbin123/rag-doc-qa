@@ -3,7 +3,7 @@
 답변 평가의 문항별 기록 (`<tag>.gen.jsonl`, `<tag>.<판정 이름>.judge.jsonl`, 각각의 `.meta.json`).
 형식은 `eval/run_answer_eval.py`, `eval/run_judge.py`, 측정 조건과 결과는 `docs/experiments.md`(v11~)에 있음.
 
-`*.gen.jsonl`의 `chunks[].content`는 FastAPI 공식 문서(https://github.com/fastapi/fastapi, `docs/en/docs/`, `docs/ko/docs/`)에서
+`*.gen.jsonl`의 `chunks[].content`와 `v15_i5_panel_sample.jsonl`의 `context_passages`는 FastAPI 공식 문서(https://github.com/fastapi/fastapi, `docs/en/docs/`, `docs/ko/docs/`)에서
 잘라 온 발췌문임. 이 발췌문에는 FastAPI의 라이선스가 적용됨:
 
 ```

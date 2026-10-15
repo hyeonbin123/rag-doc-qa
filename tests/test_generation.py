@@ -483,8 +483,8 @@ async def test_a_normal_answer_is_still_cited_when_refusal_emptying_is_on(script
 
 
 # 거절 분류기는 답의 첫 문장만 본다. '문서에 정보가 없다'로 시작하는 답은 거절이고, 첫 문장에서 답한 뒤
-# 뒤쪽에서
-# 일부만 모른다고 한 답이나, '할 수 없습니다'가 답의 내용인 경우는 거절이 아니다(저장된 답에서 본 모양들).
+# 뒤쪽에서 일부만 모른다고 한 답이나, '할 수 없습니다'가 답의 내용인 경우는 거절이 아니다(저장된 답에서 본
+# 모양들).
 @pytest.mark.parametrize(
     "answer, language, expected",
     [

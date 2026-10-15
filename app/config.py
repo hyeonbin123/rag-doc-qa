@@ -17,8 +17,7 @@ logger = logging.getLogger(__name__)
 
 # JWT 비밀키로 받지 않는 값: .env.example에 있는 공개 예시 문자열. 저장소가 공개라 누구나 아는 값이고, 이
 # 값으로 서명하면 사용자 UUID만 알아도 그 사용자의 토큰을 만들 수 있다(관리자 토큰의
-# PLACEHOLDER_ADMIN_TOKENS와
-# 같은 생각, app/dependencies.py).
+# PLACEHOLDER_ADMIN_TOKENS와 같은 생각, app/dependencies.py).
 PUBLIC_EXAMPLE_JWT_SECRETS = frozenset({"change-me-to-a-random-secret"})
 # HS256(HMAC-SHA256) 비밀키의 최소 길이(바이트). 해시 출력 길이(32바이트)보다 짧은 키는 RFC 7518 3.2절이
 # 금지하고, PyJWT도 이보다 짧으면 InsecureKeyLengthWarning을 낸다.

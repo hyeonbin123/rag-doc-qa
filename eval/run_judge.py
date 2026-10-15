@@ -7,7 +7,7 @@ eval/runs/<tag>.<label>.judge.jsonl과 eval/reports/의 리포트를 쓴다. 여
 사용법:
     python -m eval.run_judge eval/runs/v11_A_test2.gen.jsonl [more .gen.jsonl ...]
         --label J0 --num-ctx 0 [--model qwen2.5:7b-instruct] [--order dataset|reverse]
-        [--no-token-count]
+        [--no-token-count] [--think false] [--flush]
 
 --num-ctx 0은 v11 이전 판정 호출을 보낸다(num_ctx 없음: Ollama 기본 문맥이고, 너무 긴 프롬프트는 조용히
 잘린다). 그 밖의 값이면 모든 프롬프트가 들어가는지 확인한 뒤 truncate=false와 함께 보낸다.
@@ -44,6 +44,7 @@ from eval.judge import (
     DEFAULT_JUDGE_NUM_CTX,
     JudgeConfig,
     TokenCounter,
+    flush_ollama,
     judge_call_for,
     judge_items,
 )
@@ -122,8 +123,13 @@ async def judge_and_save(
 ) -> tuple[list[dict], dict]:
     """기록을 받은 순서대로 판정하고, 판정 기록과 그 실행 메모를 쓴다."""
     started = datetime.now(UTC).isoformat()
+    # 판정 직전 Ollama 상태(올라간 모델). 판정 모델이 다른 모델과 함께 올라와 있었는지를 진단에 남긴다(v15
+    # I2).
+    state_before = await ollama_state(base_url) if provider == "ollama" else {}
     call = judge_call_for(provider, config, base_url, api_key)
-    judgments = await judge_items(records, config, call, count_tokens)
+    # JudgeConfig.flush면 문항마다 판정 직전에 캐시 되돌리기 요청을 보낸다(Ollama만).
+    before_each = (lambda: flush_ollama(base_url, config)) if config.flush and provider == "ollama" else None
+    judgments = await judge_items(records, config, call, count_tokens, before_each=before_each)
     write_jsonl(out_path, judgments)
 
     # 판정이 끝난 직후의 Ollama 상태를 읽어야 판정 모델이 올라간 상태(문맥 크기, GPU 적재)가 기록된다.
@@ -137,7 +143,10 @@ async def judge_and_save(
         "truncate": None if config.legacy else False,
         "provider": provider,
         "order": order,
+        "think": config.think,
+        "flush": config.flush,
         "ollama_version": (state.get("version") or {}).get("version"),
+        "ollama_ps_before": state_before.get("ps"),
         "ollama_ps_after": state.get("ps"),
         "context_in_use": context_in_use(state, config.model),
         "tokenizer": f"{source[0]}@{source[1][:7]}" if source else None,
@@ -194,7 +203,13 @@ async def main(args: argparse.Namespace) -> int:
         # --model을 주지 않으면 그 답을 만든 생성 모델이 판정한다. v13 이후 기본 생성 모델이 A.X라서 README는
         # --model qwen2.5:7b-instruct를 꼭 주라고 적는다.
         model = args.model or records[0].get("model") or settings.ollama_model_name
-        config = JudgeConfig(model=model, num_ctx=num_ctx, label=args.label or default_label(num_ctx))
+        config = JudgeConfig(
+            model=model,
+            num_ctx=num_ctx,
+            label=args.label or default_label(num_ctx),
+            think=args.think,
+            flush=args.flush,
+        )
         count_tokens = None
         if not args.no_token_count and settings.generation_provider == "ollama":
             count_tokens = counter_for_model(model)
@@ -242,5 +257,18 @@ if __name__ == "__main__":
     )
     parser.add_argument("--order", choices=["dataset", "reverse"], default="dataset")
     parser.add_argument("--no-token-count", action="store_true", help="토크나이저로 토큰 수 세기를 건너뛴다")
+    # v15: 다른 계열 판정기(gemma4:12b-it-qat, qwen3.5:9b)는 추론을 꺼야 하므로 think false를 보낸다. 주지
+    # 않으면 think 필드를 보내지 않는다(J1 요청 그대로).
+    parser.add_argument(
+        "--think",
+        type=lambda v: {"true": True, "false": False}[v.lower()],
+        default=None,
+        help="Ollama think 필드 값(true/false). 주지 않으면 보내지 않는다",
+    )
+    parser.add_argument(
+        "--flush",
+        action="store_true",
+        help="문항마다 판정 직전에 짧은 무관한 요청을 보내 프롬프트 캐시를 같은 상태로 되돌린다(v15 I2 진단)",
+    )
     sys.stdout.reconfigure(errors="backslashreplace")  # 이유는 eval/run_answer_eval.py 참고
     sys.exit(asyncio.run(main(parser.parse_args())))

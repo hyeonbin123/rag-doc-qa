@@ -111,12 +111,9 @@ def needs_language_retry(answer: str, language: Language) -> bool:
 # 2) 설정 EMPTY_CITATIONS_ON_REFUSAL: 거절 답에는 인용을 붙이지 않는다. 지금 인용 스키마(minItems 1)는 거절한
 #    답에도 인용을 하나 이상 강제해, 화면에 '근거'가 붙은 거절이 나온다.
 # 왜 첫 문장만 보나: 저장된 답을 보면 거절은 거의 늘 첫 문장에서 한다("I don't know.", "제공된 문맥에는 …에
-# 대한
-# 정보가 포함되어 있지 않습니다."). 첫 문장에서 답한 뒤 뒤쪽에서 일부만 모른다고 하는 답(부분 답)이나, '함께
-# 받을 수
-# 없습니다'처럼 '없다'가 답의 내용인 문장을 거절로 잘못 세지 않으려고 첫 문장과 '정보·내용이 없다' 같은 꼴로
-# 좁혔다.
-# 그래도 정규식이라 틀릴 수 있으므로, 평가는 이 분류와 함께 판정 모델 점수를 보고한다.
+# 대한 정보가 포함되어 있지 않습니다."). 첫 문장에서 답한 뒤 뒤쪽에서 일부만 모른다고 하는 답(부분 답)이나,
+# '함께 받을 수 없습니다'처럼 '없다'가 답의 내용인 문장을 거절로 잘못 세지 않으려고 첫 문장과 '정보·내용이
+# 없다' 같은 꼴로 좁혔다. 그래도 정규식이라 틀릴 수 있으므로, 평가는 이 분류와 함께 판정 모델 점수를 보고한다.
 _REFUSAL_PATTERNS: dict[str, re.Pattern] = {
     "en": re.compile(
         r"\b(?:i (?:do not|don't) know"
@@ -196,8 +193,7 @@ CITATIONS_SCHEMA = {
 #   읽는다. 답변 호출과 같은 system·user 메시지 뒤에 모델이 쓴 답과 이 질문을 이어 붙이면, 앞부분이 Ollama의
 #   프롬프트 캐시와 같아 다시 읽지 않아도 된다.
 # - 출력도 객체 배열({"chunk_number": N}) 대신 정수 배열로 줄여 출력 토큰을 줄인다. 숫자만이라 따옴표 문제는
-#   여전히 없다.
-# 아래 문장은 모델에게 그대로 가는 글이라 영어 원문을 유지한다.
+#   여전히 없다. 아래 문장은 모델에게 그대로 가는 글이라 영어 원문을 유지한다.
 CITATION_FOLLOWUP_PROMPT = (
     "Which of the numbered context passages did your answer above rely on? "
     "Reply with their [N] numbers."
@@ -327,8 +323,7 @@ class GenerationService(ABC):
 # API로는 돌려 보지 않았다(크레딧 없음).
 class AnthropicGenerationService(GenerationService):
     # refuse_without_context·empty_citations_on_refusal은 Ollama 생성기와 같은 v15 설정이다(기본 꺼짐). 이
-    # 경로는
-    # 인용을 답과 한 번에 받으므로, 거절 답이면 받은 인용을 비우기만 한다.
+    # 경로는 인용을 답과 한 번에 받으므로, 거절 답이면 받은 인용을 비우기만 한다.
     def __init__(
         self,
         api_key: str,
@@ -491,8 +486,7 @@ class OllamaGenerationService(GenerationService):
         self, question: str, chunks: list[RetrievedChunk], language: Language = "en"
     ) -> GenerationResult:
         # 0) 청크 0개 거절(REFUSE_WITHOUT_CONTEXT, 기본 꺼짐): 근거가 하나도 없으면 LLM을 부르지 않는다.
-        #    토큰은
-        #    쓰지 않았으므로 0이다.
+        #    토큰은 쓰지 않았으므로 0이다.
         if self._refuse_without_context and not chunks:
             return GenerationResult(
                 answer=NO_CONTEXT_REFUSAL["ko" if language == "ko" else "en"],
@@ -571,8 +565,8 @@ class OllamaGenerationService(GenerationService):
         # - separate(기본): 다른 system 프롬프트로 질문·문맥·최종 답을 다시 보여 주고 CITATIONS_SCHEMA로
         #   받는다.
         # - followup(v15 후보): 최종 답을 만든 대화(같은 system·user) 뒤에 모델이 보낸 답 원문과 짧은 질문을
-        # 붙이고 정수 배열 스키마로 받는다. 원문(final_raw)을 그대로 넣어야 토큰이 생성 때와 같아 캐시를 더
-        #      길게 다시 쓸 수 있다.
+        #   붙이고 정수 배열 스키마로 받는다. 원문(final_raw)을 그대로 넣어야 토큰이 생성 때와 같아 캐시를 더
+        #   길게 다시 쓸 수 있다.
         compact = self._citation_mode == "followup"
         if compact:
             citation_messages = [

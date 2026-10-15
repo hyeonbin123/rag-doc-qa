@@ -10,8 +10,7 @@ python-jose로 만든 토큰을 그대로 적어 두고, 바꾼 뒤에도 같은
 # - 토큰 형식이 바뀌면 배포 순간 모든 사용자가 로그아웃된다. 머리글·클레임·서명이 바이트 단위로 같아야 한다.
 # - 알고리즘을 HS256 하나로 고정해야 'alg: none'이나 다른 알고리즘을 주장하는 토큰을 받지 않는다.
 # - 공개 예시 비밀키(.env.example 값)로 서명하면 누구나 토큰을 만들 수 있다. 기본은 경고,
-#   APP_ENV=production이면
-#   시작 거부다.
+#   APP_ENV=production이면 시작 거부다.
 
 import logging
 import uuid

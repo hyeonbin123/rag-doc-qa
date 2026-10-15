@@ -98,6 +98,13 @@ class JudgeConfig:
     # 프롬프트는 조용히 잘림).
     num_ctx: int | None = DEFAULT_JUDGE_NUM_CTX
     label: str = "J1"
+    # v15: 값이 있으면 Ollama 요청의 think 필드로 보낸다(qwen3.5·gemma4 같은 추론 모델을 판정기로 쓸 때
+    # false). None이면 보내지 않아 J1(qwen2.5) 요청은 전과 바이트 단위로 같다.
+    think: bool | None = None
+    # v15: True면 문항마다 판정 직전에 짧은 무관한 요청(FLUSH_MESSAGES)을 같은 모델·같은 num_ctx로 보내,
+    # Ollama의 프롬프트 캐시를 늘 같은 상태로 되돌린다. 판정이 앞 문항(캐시에 남은 앞부분)에 따라 흔들리는지
+    # 가르는 진단용이다(docs/experiments.md v15 I2).
+    flush: bool = False
 
     @property
     def legacy(self) -> bool:
@@ -117,6 +124,8 @@ class JudgeOutcome:
     done_reason: str | None = None
     judge_ms: float | None = None
     error: str | None = None
+    # v15: Ollama가 응답에 캐시에서 다시 쓴 프롬프트 토큰 수를 알려 주면 그 값(필드가 없는 버전이면 None).
+    prompt_eval_cached_count: int | None = None
 
 
 # 보내기 전 길이 확인에서 들어가지 않는 프롬프트가 있을 때 내는 예외. 한 건도 보내지 않으므로 실행이 일부만
@@ -163,7 +172,48 @@ def ollama_judge_payload(prompt: str, config: JudgeConfig) -> dict:
         payload["options"]["num_ctx"] = config.num_ctx
         # 이것이 없으면 Ollama는 너무 긴 프롬프트를 잘라 낸 채로 그냥 답한다.
         payload["truncate"] = False
+    if config.think is not None:
+        payload["think"] = config.think
     return payload
+
+
+# 캐시 되돌리기 요청(JudgeConfig.flush). 판정과 다른 system 메시지로 시작하는 아주 짧은 대화라, 다음 판정
+# 프롬프트와 겹치는 앞부분이 채팅 템플릿의 첫 몇 토큰뿐이다. 늘 같은 요청이므로 판정 직전 캐시 상태가 문항과
+# 순서에 상관없이 같아진다. 모델에게 그대로 가는 글이라 영어 원문이다.
+FLUSH_MESSAGES = [
+    {"role": "system", "content": "You are a calculator. Reply with a number."},
+    {"role": "user", "content": "1+1="},
+]
+
+
+# 캐시 되돌리기 요청 본문. num_ctx·think를 판정과 같게 해야 Ollama가 모델을 다른 문맥 크기로 다시 올리지
+# 않는다. num_predict 1이라 출력은 한 토큰뿐이다.
+def ollama_flush_payload(config: JudgeConfig) -> dict:
+    payload = {
+        "model": config.model,
+        "messages": FLUSH_MESSAGES,
+        "stream": False,
+        "options": {"temperature": 0, "num_predict": 1},
+    }
+    if not config.legacy:
+        payload["options"]["num_ctx"] = config.num_ctx
+    if config.think is not None:
+        payload["think"] = config.think
+    return payload
+
+
+# 캐시 되돌리기 요청을 한 번 보내고 Ollama가 알려 준 토큰 수를 돌려준다(기록용).
+async def flush_ollama(base_url: str, config: JudgeConfig, timeout: float = 180.0) -> dict:
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        response = await client.post(
+            f"{base_url.rstrip('/')}/api/chat", json=ollama_flush_payload(config)
+        )
+    response.raise_for_status()
+    data = response.json()
+    return {
+        "prompt_eval_count": data.get("prompt_eval_count"),
+        "prompt_eval_cached_count": data.get("prompt_eval_cached_count"),
+    }
 
 
 # 점수가 1~5 밖이면 오류를 낸다. 스키마로 강제해도 제공자가 범위를 지키지 않을 수 있어 코드에서 한 번 더
@@ -225,6 +275,7 @@ async def judge_with_ollama(
         eval_count=data.get("eval_count"),
         done_reason=data.get("done_reason"),
         judge_ms=elapsed_ms,
+        prompt_eval_cached_count=data.get("prompt_eval_cached_count"),
     )
 
 
@@ -284,6 +335,7 @@ async def judge_items(
     config: JudgeConfig,
     call: JudgeCall,
     count_tokens: TokenCounter | None = None,
+    before_each: Callable[[], Awaitable[dict]] | None = None,
 ) -> list[dict]:
     """저장된 답들을 받은 순서대로 판정한다. 문항마다 판정 기록 하나를 만든다.
 
@@ -314,6 +366,8 @@ async def judge_items(
     # 문항마다 판정하고, 판정 설정·순서·답 해시·토큰 수·잘림 상태를 함께 기록한다. dataset, run_tag는 어느
     # 셋·어느 생성 실행의 문항인지 남긴다(eval/run_judge.py는 생성 파일 여러 개를 한 번에 판정할 수 있다).
     for order_index, r in enumerate(records):
+        # v15: before_each(캐시 되돌리기 요청 등)가 있으면 판정 직전에 부르고 그 결과를 기록에 남긴다.
+        flush = await before_each() if before_each is not None and r["id"] in prompts else None
         # 검색된 것이 없으면 충실도를 판단할 근거가 없으므로 판정하지 않는다(v11 이전과 같음).
         outcome = await call(prompts[r["id"]]) if r["id"] in prompts else JudgeOutcome()
         counted = counts.get(r["id"])
@@ -335,6 +389,8 @@ async def judge_items(
                 "prompt_tokens_counted": counted,
                 **asdict(outcome),
                 "truncation": truncation,
+                "judge_think": config.think,
+                "flush": flush,
             }
         )
         # 문항마다 한 줄씩 출력해, 오래 걸리는 실행의 로그에서 진행 상황(과 멈춤)이 보이게 한다.

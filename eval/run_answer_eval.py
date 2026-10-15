@@ -55,6 +55,7 @@ from app.services.generation import (
     OllamaGenerationService,
     _build_user_message,
     get_generation_service,
+    is_refusal_answer,
     system_prompt_for,
 )
 from app.services.language import Language, detect_language
@@ -116,6 +117,9 @@ def build_generator(settings: Settings) -> GenerationService:
         think=settings.ollama_think,
         language_guard=settings.language_guard,
         strict_citations=False,
+        citation_mode=settings.citation_mode,
+        refuse_without_context=settings.refuse_without_context,
+        empty_citations_on_refusal=settings.empty_citations_on_refusal,
     )
 
 
@@ -262,6 +266,13 @@ async def generate_answer(
         "citation_reply": diagnostics.get("citation_reply"),
         "think": diagnostics.get("think"),
         "think_tag_in_answer": diagnostics.get("think_tag_in_answer"),
+        # v15: 인용 호출 방식(separate/followup), 청크 0개라 LLM 없이 거절했는지, 인용 호출을 건너뛴 이유
+        # (no_context/refusal), 그리고 거절 분류기(app/services/generation.py의 is_refusal_answer)의 판단.
+        # 거절 판단은 설정과 무관하게 모든 답에 기록해, 답 없는 질문의 거절률을 같은 기준으로 센다.
+        "citation_mode": diagnostics.get("citation_mode"),
+        "refused_without_context": bool(diagnostics.get("refused_without_context")),
+        "citation_skipped": diagnostics.get("citation_skipped"),
+        "refusal": is_refusal_answer(generation_result.answer, language),
     }
 
 
@@ -272,6 +283,15 @@ async def main(args: argparse.Namespace) -> int:
     embedder = get_embedding_service  # 언어별 조회 함수. 질문마다 그 질문의 언어로 부른다
     generator = build_generator(settings)
     questions = load_dataset(args.dataset)
+    # v15: --ids-file이 있으면 그 파일에 적힌 id(한 줄에 하나)의 문항만 생성한다. 바닥값 후보로 문맥이 바뀌는
+    # 문항만 다시 생성할 때 쓴다(eval/refusal.py changed). 순서는 데이터셋 순서 그대로이고, dataset_index는
+    # 걸러 낸 목록 안의 위치가 된다(두 팔의 문항은 id로 맞춘다).
+    if args.ids_file is not None:
+        wanted = set(args.ids_file.read_text(encoding="utf-8").split())
+        questions = [q for q in questions if q.id in wanted]
+        if not questions:
+            print(f"no questions of {args.dataset.name} are listed in {args.ids_file}; nothing to do")
+            return 0
     ollama = settings.generation_provider == "ollama"
     model_in_use = settings.ollama_model_name if ollama else settings.claude_model_name
     # --judge-model을 주지 않으면 생성 모델이 판정도 한다. v10부터는 생성 모델을 바꿔도 같은 채점자로
@@ -364,6 +384,10 @@ async def main(args: argparse.Namespace) -> int:
         "model_digest": model_digest(state, model_in_use) if ollama else None,
         "think": settings.ollama_think if ollama else None,
         "language_guard": settings.language_guard if ollama else False,
+        # v15 설정 세 가지(기본값이면 separate, False, False).
+        "citation_mode": settings.citation_mode if ollama else None,
+        "refuse_without_context": settings.refuse_without_context,
+        "empty_citations_on_refusal": settings.empty_citations_on_refusal,
         "records_path": display_path(gen_path),
     }
     write_json(meta_path(gen_path), gen_meta)
@@ -438,6 +462,10 @@ if __name__ == "__main__":
     parser.add_argument(
         "--no-vector-check", action="store_true",
         help="저장된 벡터가 설정된 모델로 만든 것인지 확인하는 단계를 건너뛴다",
+    )
+    parser.add_argument(
+        "--ids-file", type=Path, default=None,
+        help="이 파일에 적힌 문항 id(한 줄에 하나)만 생성한다(docs/experiments.md v15 I4)",
     )
     # 콘솔 코드 페이지에 답의 어떤 글자가 없더라도 오래 걸리는 실행이 그 때문에 끝나면 안 된다.
     sys.stdout.reconfigure(errors="backslashreplace")
