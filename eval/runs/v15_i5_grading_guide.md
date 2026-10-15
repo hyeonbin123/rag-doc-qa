@@ -1,5 +1,7 @@
 # Grading guide for the judge-panel reference labels (Claude labels)
 
+(공개 저장소에 넣으면서 이 PC의 절대 경로가 든 한 곳만 일반 표현으로 바꿈. 나머지는 라벨러가 받은 그대로임.)
+
 You grade answers produced by a documentation QA system (questions about the FastAPI web framework). Your grades are
 used as reference labels to check automatic LLM judges. Grade each item independently and carefully, the way a
 careful human expert would.
@@ -7,7 +9,8 @@ careful human expert would.
 ## Contamination rules (do not break)
 
 - Read ONLY your assigned input file. Do not open, list or search any other file or folder (in particular nothing under
-  `D:\coding\rag-doc-qa\eval\`, `docs\`, `work\` other than your input file, and not the other half or any key file).
+  the repository's `eval/`, `docs/` or working folders other than your input file, and not the other half or any key
+  file).
 - No web access, no running code that reads other files. You may use Python only to parse your input file and to write
   and validate your output file.
 - Do not try to infer which system or condition produced an answer; grade the text in front of you.
