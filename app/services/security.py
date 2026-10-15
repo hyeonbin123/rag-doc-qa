@@ -10,10 +10,14 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 
-# bcrypt: 일부러 느리게 만든 비밀번호 해시 함수(무차별 대입을 비싸게 만든다). python-jose의 jwt: JWT
-# 서명·검증.
+# bcrypt: 일부러 느리게 만든 비밀번호 해시 함수(무차별 대입을 비싸게 만든다). jwt: PyJWT, JWT 서명·검증.
+# 2026-10까지는 python-jose를 썼다. python-jose 3.5.0에 고친 판이 없는 보안 권고(GHSA-3qf3-8w2g-rqmx)가 붙고
+# 의존하는 ecdsa도 고칠 계획이 없는 권고가 있어 PyJWT로 바꿨다. 이 앱은 HS256 대칭키만 쓰고 algorithms를
+# 고정해 그 권고의 공격 경로는 없었지만, 의존성 검사(CI의 pip-audit)에 늘 걸리기 때문이다. 같은 클레임이면
+# 두 라이브러리가 바이트 단위로 같은 토큰을 만들어(머리글 키 정렬, 숫자 타임스탬프, 같은 JSON 구분자) 이미
+# 발급된 토큰도 그대로 풀린다(tests/test_security.py).
 import bcrypt
-from jose import JWTError, jwt
+import jwt
 
 from app.config import get_settings
 
@@ -51,9 +55,13 @@ def verify_password(password: str, hashed_password: str) -> bool:
 
 
 # JWT를 만든다. sub=사용자 id(문자열), type=토큰 종류, iat=발급 시각, exp=만료 시각. 시각은 시간대가 있는
-# UTC로 만들고, python-jose가 숫자 타임스탬프로 바꿔 넣는다. 설정의 비밀키·알고리즘(HS256)으로 서명한다.
-def _create_token(subject: uuid.UUID, token_type: TokenType, expires_delta: timedelta) -> str:
-    now = datetime.now(UTC)
+# UTC로 만들고, PyJWT가 숫자 타임스탬프(초)로 바꿔 넣는다. 설정의 비밀키·알고리즘(HS256)으로 서명한다.
+# now는 테스트가 발급 시각을 고정할 때만 넘긴다(python-jose 토큰과 바이트 단위로 같은지 보는 테스트). 앱은
+# 넘기지 않아 지금 시각을 쓴다.
+def _create_token(
+    subject: uuid.UUID, token_type: TokenType, expires_delta: timedelta, *, now: datetime | None = None
+) -> str:
+    now = now or datetime.now(UTC)
     payload = {
         "sub": str(subject),
         "type": token_type.value,
@@ -83,17 +91,28 @@ class InvalidTokenError(Exception):
     pass
 
 
+# decode_token이 요구하는 클레임. 이 앱이 발급하는 토큰에는 늘 들어 있다. 특히 exp가 없는 토큰(만료되지 않는
+# 토큰)은 서명이 맞아도 받지 않는다. python-jose는 exp가 있을 때만 확인했으므로 이 점은 더 엄격해졌다.
+REQUIRED_CLAIMS = ["exp", "iat", "sub"]
+
+
 # 토큰을 검증하고 사용자 id를 돌려준다. 순서대로 확인한다.
-# 1) 서명과 만료: jwt.decode가 비밀키로 서명을 확인하고 exp가 지났으면 거부한다. algorithms를 설정값 하나로
-#    고정해, 토큰 머리글이 다른 알고리즘을 주장해도 받아들이지 않는다.
+# 1) 서명·만료·필수 클레임: jwt.decode가 비밀키로 서명을 확인하고, exp가 지났거나 iat가 미래이거나 위 필수
+#    클레임이 빠졌으면 거부한다. algorithms를 설정값 하나(HS256)로 고정해, 토큰 머리글이 다른 알고리즘('none',
+#    HS512 등)을 주장해도 받아들이지 않는다.
 # 2) 종류: 기대한 type(access/refresh)이 아니면 거부한다.
 # 3) sub가 있어야 하고 UUID로 바꾼다.
+# PyJWT의 모든 검증 예외는 jwt.PyJWTError를 상속한다. 이름이 같은 jwt.InvalidTokenError도 그 하위
+# 클래스지만, 이 파일에는 아래 앱 자체의 InvalidTokenError가 있으므로 헷갈리지 않게 상위 클래스로 잡는다.
 def decode_token(token: str, expected_type: TokenType) -> uuid.UUID:
     try:
         payload = jwt.decode(
-            token, settings.jwt_secret_key, algorithms=[settings.jwt_algorithm]
+            token,
+            settings.jwt_secret_key,
+            algorithms=[settings.jwt_algorithm],
+            options={"require": REQUIRED_CLAIMS},
         )
-    except JWTError as exc:
+    except jwt.PyJWTError as exc:
         raise InvalidTokenError("could not validate token") from exc
 
     if payload.get("type") != expected_type.value:

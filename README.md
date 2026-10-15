@@ -13,7 +13,7 @@ FastAPI 공식 문서(영어 원문 154개, 한국어 번역 123개, 청크 1,53
 | AI | 언어별 로컬 임베딩(영어 `BAAI/bge-small-en-v1.5`, 한국어 `ibm-granite/granite-embedding-311m-multilingual-r2`를 384차원으로 잘라 씀. v13 단계 B에서 `intfloat/multilingual-e5-small` 대신 채택), 로컬 LLM A.X-4.0-Light(Qwen2.5-7B 계열의 한국어 특화 모델을 직접 4비트 GGUF로 변환, Ollama. v13에서 Qwen2.5-7B 대신 채택) 또는 Claude API, 언어별 cross-encoder 재정렬 |
 | 검색 모드 | `dense` / `hybrid`(벡터 + SQL로 계산한 BM25, 가중 RRF) / `rerank`(cross-encoder 재채점). 기본값은 `dense` (영어는 아래 v7, 한국어는 v9) |
 | 평가 | 질문셋 9개(영어: 테스트 30, 튜닝용 32, 새 테스트 43문항 / 한국어: 튜닝용 32·40, 테스트 43·40, 다음 단계용 40문항 / 다음 단계용 40문항의 영어판), Hit@k·MRR·검색 지연, LLM 판정 답변 정확도 |
-| 품질 관리 | pytest 212개(통합 테스트는 실제 Postgres + pgvector 사용), push마다 CI에서 ruff + pytest |
+| 품질 관리 | pytest 226개(통합 테스트는 실제 Postgres + pgvector 사용), push마다 CI에서 ruff + pytest + 의존성 취약점 검사(pip-audit) |
 | 응답 시간 | 답변 생성 중앙값 약 9초 (v13 채택 측정: 영어 10.2초, 한국어 7.6초. 로컬 A.X-4.0-Light, RTX 2080 Ti, 데스크톱 앱이 GPU를 약 25% 쓰던 부하 조건). v12까지의 Qwen2.5-7B는 약 4~5초 (v10: 영어 5.3초, 한국어 4.3초) |
 
 ## 구조
@@ -137,6 +137,8 @@ flowchart LR
 cp .env.example .env
 # .env를 열어 ANTHROPIC_API_KEY 등을 채운다
 ```
+`JWT_SECRET_KEY`는 반드시 `python -c "import secrets; print(secrets.token_urlsafe(48))"` 같은 무작위 값(32바이트 이상)으로 바꾼다. `.env.example`의 값은 공개돼 있어서, 그대로 두면 누구나 로그인 토큰을 만들 수 있다. 예시 값이거나 짧은 값이면 서버가 시작할 때 큰 경고를 남기고, `APP_ENV=production`이면 시작하지 않는다(기본 `development`는 경고만).
+
 관리자 적재 API(`POST /admin/documents/ingest`, `X-Admin-Token` 헤더)는 `ADMIN_INGEST_TOKEN`이 비어 있으면(기본값) 꺼져 있고 403을 돌려준다. 예전 예시 값 `change-me-admin-token`도 공개된 값이라 같은 취급을 한다. 쓰려면 `python -c "import secrets; print(secrets.token_urlsafe(32))"`로 만든 값을 넣는다. 아래 3단계의 CLI 적재는 이 토큰이 필요 없다.
 
 호스트의 5432 포트를 쓸 수 없으면 `.env`의 `POSTGRES_HOST_PORT`와 `DATABASE_URL`의 포트를 같이 바꾼다(테스트용 `TEST_DATABASE_URL`도 마찬가지). 로컬에 Postgres가 이미 떠 있는 경우도 있지만, Windows에서는 Hyper-V/WSL이 부팅할 때 이 포트를 예약 범위에 넣는 경우도 있다(`netsh interface ipv4 show excludedportrange protocol=tcp`로 확인).
@@ -145,7 +147,7 @@ cp .env.example .env
 ```bash
 docker compose up --build
 ```
-DB 헬스체크 통과 후 API가 마이그레이션(`alembic upgrade head`)을 자동 적용하고 `http://localhost:8000`에서 뜬다. 이 주소를 브라우저로 열면 채팅 화면이 나오고, `http://localhost:8000/docs`를 열면 Swagger UI가 나온다.
+DB 헬스체크 통과 후 API가 마이그레이션(`alembic upgrade head`)을 자동 적용하고 `http://localhost:8000`에서 뜬다. 이 주소를 브라우저로 열면 채팅 화면이 나오고, `http://localhost:8000/docs`를 열면 Swagger UI가 나온다. compose는 API와 DB 포트를 호스트의 `127.0.0.1`에만 연다(DB 기본 비밀번호가 공개 값이라서). 같은 네트워크의 다른 기기에서 열어야 하면 `.env`에 `HOST_BIND_ADDRESS=0.0.0.0`을 두되, 그 전에 `JWT_SECRET_KEY`와 DB 비밀번호를 바꾼다.
 
 `.env`는 호스트에서 실행하는 기준(`localhost`)으로 그대로 두면 된다. compose가 API 컨테이너의 `DATABASE_URL`은 `db` 서비스로, `OLLAMA_BASE_URL`은 `host.docker.internal:11434`(호스트에서 실행 중인 Ollama)로 덮어쓴다. 임베딩 모델(영어 1개, 한국어 2개)과 재정렬 모델(`rerank` 모드용, 언어별 2개)은 빌드할 때 이미지에 넣어 두므로 실행 중에는 HuggingFace에 접속하지 않는다. 한국어 임베딩은 기본값 Granite R2 311M(측정한 리비전으로 고정) 말고 v13 단계 B 전의 e5-small도 들어 있어서, `EMBEDDING_MODEL_NAME_KO`만 바꾸고 한국어를 다시 적재하면 이미지를 다시 빌드하지 않고 되돌릴 수 있다. torch는 CPU 빌드를 쓰고, 모델 다섯 개가 들어 있어 이미지 크기는 `docker image ls` 기준 약 5.2GB다 (v13 단계 B 전 4.0GB. Granite 층은 658MB인데, 이 표시는 압축한 크기와 풀어 놓은 크기를 함께 세어 더 많이 늘어남).
 
@@ -201,7 +203,7 @@ uv run uvicorn app.main:app --reload
 docker compose up -d db
 uv run pytest
 ```
-`tests/conftest.py`는 `ragdb_test` 데이터베이스와 스키마에 필요한 확장(`vector`, `pgcrypto`)이 없으면 직접 만들고, 테스트마다 스키마를 생성·정리한다. 임베딩·생성·재정렬 모델은 외부 API를 부르지 않는 결정론적 fake로 대체된다. push와 PR마다 GitHub Actions가 pgvector 서비스 컨테이너를 띄워 같은 ruff + pytest를 실행한다 (`.github/workflows/ci.yml`).
+`tests/conftest.py`는 `ragdb_test` 데이터베이스와 스키마에 필요한 확장(`vector`, `pgcrypto`)이 없으면 직접 만들고, 테스트마다 스키마를 생성·정리한다. 임베딩·생성·재정렬 모델은 외부 API를 부르지 않는 결정론적 fake로 대체된다. push와 PR마다 GitHub Actions가 pgvector 서비스 컨테이너를 띄워 같은 ruff + pytest를 실행하고, 별도 작업으로 `uv.lock`에 고정된 의존성의 알려진 취약점을 pip-audit로 검사한다(권고가 하나라도 있으면 실패, `.github/workflows/ci.yml`). 2026-10에 python-jose에 고친 판이 없는 권고가 붙어 JWT 라이브러리를 PyJWT로 바꿨고, 같은 클레임이면 바이트 단위로 같은 토큰을 만들어 이미 발급된 토큰도 그대로 쓰인다.
 
 서비스 코드를 바꾼 뒤에는 실행 중인 API를 OWASP ZAP으로 스캔한다(OpenAPI 설명, 스파이더, 패시브 스캔, 액티브 스캔). DB 사본과 생성기 대역으로 띄운 이미지를 스캔하며, 방법과 결과는 [docs/security-scan.md](docs/security-scan.md)에 있다. 첫 스캔(2026-10-09)에서는 High 0, 채팅 화면의 보안 헤더(CSP, 클릭재킹 방지)가 없다는 Medium 2개, 질문에 NUL 문자가 있으면 500이 나는 문제 1개가 나왔다. 둘 다 고친 뒤의 두 번째 스캔에서는 High 0, Medium 0, Low 1(질문 기록 JSON에 스캐너의 스크립트 문장이 그대로 있다는 신뢰도 Low 경보), 500 0이다.
 

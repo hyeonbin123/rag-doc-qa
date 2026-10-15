@@ -27,4 +27,7 @@ COPY . .
 
 EXPOSE 8000
 
-CMD ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"]
+# exec: 마이그레이션이 끝나면 셸을 uvicorn으로 바꿔 uvicorn이 PID 1이 되게 한다. docker stop의 SIGTERM이
+# uvicorn에 바로 가서 요청을 마무리하고 정상 종료한다(exec가 없으면 sh가 신호를 넘기지 않아 10초 뒤 SIGKILL로
+# 끝났다).
+CMD ["sh", "-c", "alembic upgrade head && exec uvicorn app.main:app --host 0.0.0.0 --port 8000"]

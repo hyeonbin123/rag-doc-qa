@@ -6,10 +6,36 @@
 # [연결] get_settings()로 앱 곳곳(DB 세션, 보안, 임베딩, 재정렬, 생성, 스레드 풀)과 Alembic(alembic/env.py),
 # 평가 스크립트가 같은 인스턴스를 읽는다. 각 기본값의 근거는 아래 기존 영어 주석과 docs/experiments.md에 있다.
 
+import logging
 from functools import lru_cache
 from typing import Literal
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+logger = logging.getLogger(__name__)
+
+# JWT 비밀키로 받지 않는 값: .env.example에 있는 공개 예시 문자열. 저장소가 공개라 누구나 아는 값이고, 이
+# 값으로 서명하면 사용자 UUID만 알아도 그 사용자의 토큰을 만들 수 있다(관리자 토큰의
+# PLACEHOLDER_ADMIN_TOKENS와
+# 같은 생각, app/dependencies.py).
+PUBLIC_EXAMPLE_JWT_SECRETS = frozenset({"change-me-to-a-random-secret"})
+# HS256(HMAC-SHA256) 비밀키의 최소 길이(바이트). 해시 출력 길이(32바이트)보다 짧은 키는 RFC 7518 3.2절이
+# 금지하고, PyJWT도 이보다 짧으면 InsecureKeyLengthWarning을 낸다.
+MIN_JWT_SECRET_BYTES = 32
+
+
+# JWT 비밀키의 문제를 사람이 읽을 문장으로 돌려준다(문제가 없으면 None). 비어 있음, 공개 예시 값, 32바이트
+# 미만을 본다. 앞뒤 공백은 떼고 비교한다(.env에서 실수로 붙은 공백 때문에 검사를 피하지 않게).
+def jwt_secret_problem(secret: str) -> str | None:
+    stripped = secret.strip()
+    if not stripped:
+        return "JWT_SECRET_KEY is empty"
+    if stripped in PUBLIC_EXAMPLE_JWT_SECRETS:
+        return "JWT_SECRET_KEY is the public example value from .env.example"
+    if len(secret.encode("utf-8")) < MIN_JWT_SECRET_BYTES:
+        return f"JWT_SECRET_KEY is shorter than {MIN_JWT_SECRET_BYTES} bytes"
+    return None
 
 
 # 설정 모델. 필드 이름의 대문자 형태가 환경 변수 이름이다(예: retrieval_mode ↔ RETRIEVAL_MODE).
@@ -23,6 +49,12 @@ class Settings(BaseSettings):
     # 토큰 수명: 접근 토큰 30분, 갱신 토큰 7일(/auth/refresh로 접근 토큰만 새로 받는다).
     database_url: str
     jwt_secret_key: str
+    # 실행 환경. development(기본)는 JWT 비밀키가 약해도(빈 값, 공개 예시 값, 32바이트 미만) 큰 경고만 남기고
+    # 시작한다. 지금 로컬에서 .env.example을 그대로 복사해 쓰는 실행을 깨지 않기 위해서다. production이면 같은
+    # 경우에 설정 검증 오류로 시작하지 않는다(아래 _refuse_weak_secret_in_production). 바깥에 여는 배포는
+    # production으로 두고 비밀키를 python -c "import secrets; print(secrets.token_urlsafe(48))" 같은 값으로
+    # 바꾼다.
+    app_env: Literal["development", "production"] = "development"
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 30
     refresh_token_expire_days: int = 7
@@ -85,6 +117,35 @@ class Settings(BaseSettings):
     # eval/run_retrieval_eval.py가 쓴다.
     def reranker_model_for(self, language: str) -> str:
         return self.reranker_model_name_ko if language == "ko" else self.reranker_model_name
+
+    # APP_ENV=production일 때만 약한 JWT 비밀키를 거부한다. ValueError는 pydantic의 ValidationError가 되어
+    # Settings()가 실패하므로, uvicorn 시작(app/main.py)과 Alembic(alembic/env.py)이 모두 멈춘다.
+    @model_validator(mode="after")
+    def _refuse_weak_secret_in_production(self) -> "Settings":
+        problem = jwt_secret_problem(self.jwt_secret_key)
+        if self.app_env == "production" and problem:
+            raise ValueError(f"{problem}; refusing to start with APP_ENV=production")
+        return self
+
+
+# 개발 모드에서 JWT 비밀키가 약하면 눈에 띄는 경고를 남기고 True를 돌려준다(괜찮으면 False). 서버 시작 때
+# app/main.py의 lifespan이 한 번 부른다. 값 자체는 로그에 쓰지 않는다.
+def warn_if_weak_jwt_secret(settings: Settings) -> bool:
+    problem = jwt_secret_problem(settings.jwt_secret_key)
+    if problem is None:
+        return False
+    logger.warning(
+        "\n%s\nINSECURE: %s. Anyone who knows it can forge login tokens for this server.\n"
+        "Set JWT_SECRET_KEY in .env to a random value of at least %d bytes, e.g.\n"
+        '  python -c "import secrets; print(secrets.token_urlsafe(48))"\n'
+        "(existing tokens stop working; log in again). APP_ENV=production refuses to start "
+        "with such a key.\n%s",
+        "=" * 78,
+        problem,
+        MIN_JWT_SECRET_BYTES,
+        "=" * 78,
+    )
+    return True
 
 
 # Settings를 프로세스당 한 번만 만들어 재사용한다(.env를 매 요청 다시 읽지 않는다). FastAPI의

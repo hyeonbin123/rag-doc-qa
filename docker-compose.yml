@@ -13,7 +13,10 @@ services:
       # Override when 5432 is taken on the host: a local Postgres, or a Windows
       # Hyper-V/WSL excluded port range (see `netsh interface ipv4 show excludedportrange
       # protocol=tcp`). DATABASE_URL/TEST_DATABASE_URL on the host must use the same port.
-      - "${POSTGRES_HOST_PORT:-5432}:5432"
+      # 호스트의 127.0.0.1에만 연다(기본). DB 기본 비밀번호(ragpass)가 공개돼 있으므로 같은 네트워크의 다른
+      # 기기가 접속하지 못하게 한다. 컨테이너끼리(api → db)는 이 게시와 상관없이 compose 네트워크로 붙는다.
+      # 다른 기기에서 써야 하면 .env에 HOST_BIND_ADDRESS=0.0.0.0을 두고 비밀번호도 바꾼다.
+      - "${HOST_BIND_ADDRESS:-127.0.0.1}:${POSTGRES_HOST_PORT:-5432}:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-raguser}"]
       interval: 5s
@@ -33,9 +36,15 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
-      - "8000:8000"
+      # API도 기본은 호스트의 127.0.0.1:8000에만 연다. 컨테이너 안의 uvicorn은 0.0.0.0에서 듣지만(그래야
+      # Docker가 포워딩할 수 있다) 바깥에 보이는 범위는 이 게시가 정한다. 같은 네트워크의 다른 기기에서 데모를
+      # 보려면 .env에 HOST_BIND_ADDRESS=0.0.0.0을 두고, 그 전에 JWT_SECRET_KEY를 무작위 값으로 바꾼다.
+      - "${HOST_BIND_ADDRESS:-127.0.0.1}:${API_HOST_PORT:-8000}:8000"
+    # exec: 마이그레이션 뒤 셸을 uvicorn으로 바꿔 uvicorn이 PID 1이 되게 한다. 그래야 docker stop의 SIGTERM이
+    # uvicorn에 바로 가서 정상 종료된다. exec가 없으면 sh가 신호를 넘기지 않아 10초 뒤 SIGKILL(종료 코드
+    # 137)로 끝났다. Dockerfile의 CMD와 같은 명령이다.
     command: >
-      sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"
+      sh -c "alembic upgrade head && exec uvicorn app.main:app --host 0.0.0.0 --port 8000"
 
 volumes:
   pgdata:

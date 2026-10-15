@@ -21,7 +21,7 @@ from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 # 앱 내부: 설정, 로깅 설정, 각 라우터, 시작 시 미리 올릴 모델 조회 함수, 지원 언어 목록.
-from app.config import get_settings
+from app.config import get_settings, warn_if_weak_jwt_secret
 from app.core.logging import configure_logging
 from app.routers import auth, documents, health, logs, query
 from app.services.embedding import get_embedding_service
@@ -34,10 +34,14 @@ from app.services.reranking import get_reranker_service
 # get_*_service는 lru_cache라 여기서 만든 객체를 이후 요청이 그대로 쓴다. (Ollama 생성 모델은 별도 서버에
 # 있으므로 여기서 올리지 않는다.)
 # 재정렬 모델은 RETRIEVAL_MODE=rerank일 때만 올린다(기본 dense에서는 쓰지 않으므로).
+# JWT 비밀키가 공개 예시 값이거나 짧으면 로깅을 켠 직후 큰 경고를 남긴다(APP_ENV=production이면 설정을 만들 때
+# 이미 시작이 거부된다, app/config.py).
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     configure_logging()
-    rerank = get_settings().retrieval_mode == "rerank"
+    settings = get_settings()
+    warn_if_weak_jwt_secret(settings)
+    rerank = settings.retrieval_mode == "rerank"
     for language in SUPPORTED_LANGUAGES:  # 시작할 때 언어마다 모델을 한 번씩 올린다
         get_embedding_service(language)
         if rerank:
