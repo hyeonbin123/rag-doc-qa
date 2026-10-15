@@ -1,0 +1,110 @@
+async def 랑 그냥 def 중에 언제 뭘 써야 해요? requests 같은 블로킹 라이브러리를 async def 안에서 호출하면 어떻게 되나요?
+/users/me 랑 /users/{user_id} 두 개 만들었는데 /users/me 호출하면 자꾸 user_id 쪽으로 가요. 선언 순서 문제인가요?
+파일 업로드 받을 때 bytes로 받는 거랑 UploadFile로 받는 거 차이가 뭐예요? 용량 큰 파일이면 뭘 써야 하나요?
+프론트는 localhost:3000, 백엔드는 8000인데 브라우저에서 CORS 에러가 나요. CORSMiddleware 설정 어떻게 하나요?
+datetime 들어간 Pydantic 모델을 JSON만 받는 저장소에 넣으려는데 jsonable_encoder를 써야 하는 상황이 이런 건가요?
+pydantic-settings BaseSettings로 .env 읽어서 Depends로 설정 주입하는데, get_settings에 @lru_cache 붙이는 이유가 뭐예요?
+기본값 없는 파라미터를 기본값 있는 파라미터 뒤에 두면 파이썬 문법 에러 나잖아요. 문서에 나온 * 트릭이 뭐였죠?
+404일 때 응답 형식도 OpenAPI 문서에 보이게 하고 싶어요. responses={404: {"model": Message}} 이런 식으로 하면 되나요?
+yield 쓰는 의존성으로 DB 세션 열고 닫을 때 try/finally로 감싸는 이유가 뭔가요?
+경로 매개변수를 int로 선언했는데 문자열 넣으면 어떤 에러 응답이 나와요?
+fastapi dev main.py 랑 fastapi run main.py 차이가 뭐임? 운영에서 --reload 켜면 안 되는 이유도 궁금
+응답이 두 모델 중 하나일 수 있을 때 Union으로 response_model 선언하는 방법이랑 순서 주의할 점 있나요?
+"items:read" 같은 scope를 엔드포인트마다 다르게 요구하려면 Security()랑 SecurityScopes를 어떻게 조합해야 하나요?
+?tag=a&tag=b 처럼 같은 키로 여러 값 받아서 list로 쓰려면 Query()를 꼭 명시해야 하나요?
+큰 CSV를 메모리에 다 안 올리고 제너레이터로 흘려보내고 싶은데 StreamingResponse 쓰면 되나요?
+SQLModel로 DB 붙일 때 세션 의존성 만들고 SessionDep 같은 Annotated 별칭 쓰는 예제 있나요? SQLite면 check_same_thread 옵션도 필요하다던데
+바디에 모델 하나밖에 없는데 {"item": {...}} 처럼 키로 한 번 감싸서 받고 싶으면 Body(embed=True) 쓰면 돼요?
+WebSocket 연결 끊기면 WebSocketDisconnect 잡고, 접속한 여러 클라이언트에 메시지 브로드캐스트하는 예제 있어?
+422 에러 응답 포맷을 회사 표준 형식으로 바꾸고 싶어요. RequestValidationError 핸들러를 오버라이드하면 되나요?
+APIRouter(prefix=, tags=, dependencies=)에 주는 거랑 app.include_router()에서 주는 거랑 무슨 차이예요?
+main.py 맨 아래에 if __name__ == "__main__": uvicorn.run(app) 넣으면 디버거로 실행할 수 있다던데 그게 무슨 뜻이에요?
+response_model 지정하면 응답에서 password 같은 필드는 자동으로 걸러지나요?
+OAuth2PasswordBearer(tokenUrl="token")의 tokenUrl은 뭐예요? 이게 토큰 발급 엔드포인트까지 만들어 주는 건가요?
+Dockerfile에서 requirements.txt 먼저 COPY해서 pip install 하고 나중에 앱 코드 복사하는 게 빌드 캐시 때문인가요?
+쿼리 파라미터 여러 개를 Pydantic 모델 하나로 묶어 받을 수 있나요? 정의 안 된 쿼리가 오면 거절하고 싶어요
+앱 시작할 때 ML 모델 로드하고 종료 때 해제하려면 lifespan에 asynccontextmanager 쓰면 되죠? @app.on_event랑 섞어 써도 돼요?
+로그인 성공하면 응답에 쿠키를 심고 싶은데 Response 파라미터 받아서 set_cookie 하면 되나요? 커스텀 헤더도 같은 방식인가요?
+의존성을 함수 말고 클래스로 만들면 뭐가 좋아요? commons: CommonQueryParams = Depends() 처럼 괄호를 비워도 된다던데
+Query(min_length=3, max_length=50, pattern="^fixedquery$") 같은 문자열 검증 거는 법 알려주세요
+Nginx 뒤에 /api 프리픽스로 배포했더니 /docs 에서 Failed to load API definition 뜨면서 openapi.json 을 못 찾아요
+HTTP Basic 인증에서 아이디 비번 비교할 때 == 말고 secrets.compare_digest 쓰라는 이유가 뭐예요?
+Swagger에 요청 바디 예시 넣고 싶은데 json_schema_extra, Field(examples=...), openapi_examples 셋이 뭐가 다른가요?
+테스트에서 lifespan 시작/종료 코드도 실행되게 하려면 with TestClient(app) as client: 로 써야 하나요?
+경로 매개변수 값을 몇 개로 제한하고 싶은데 str 상속한 Enum 쓰면 docs에도 선택지로 나오나요?
+openapi-ts로 TS 클라이언트 생성했더니 메서드 이름이 readItemsItemsGet 처럼 길게 나와요. generate_unique_id_function 으로 바꿀 수 있나요?
+POST 성공하면 201 주려고 하는데 데코레이터에 status_code=201 넣으면 되나요? status.HTTP_201_CREATED 상수 쓰는 게 나은가요?
+yield 의존성에서 yield 뒤 코드는 응답 보내기 전에 돌아요, 후에 돌아요? 버전에 따라 바뀌었다는 얘기가 있던데
+SQLModel 예제에서 Hero, HeroCreate, HeroPublic, HeroUpdate 처럼 모델을 여러 개로 쪼개는 이유가 뭔가요?
+모든 요청의 처리 시간을 X-Process-Time 응답 헤더로 넣어주는 미들웨어 만들고 싶어요
+중첩 모델이나 list[Image], set[str] 같은 필드는 어떻게 선언해요?
+클라이언트 IP 알아내려면 Request 객체를 직접 받아서 request.client.host 쓰면 되나요?
+운영 환경에선 /docs 를 꺼두고 싶어요. 환경 변수 보고 openapi_url 을 None 으로 주는 방식이면 되나요?
+파일이랑 JSON 바디를 한 요청에 같이 받으려고 했는데 안 된다네요. 왜 안 되는 건가요?
+JWT 발급할 때 문서에서는 어떤 라이브러리를 쓰고, SECRET_KEY는 어떻게 생성하라고 하나요?
+item, user 두 모델을 바디로 같이 받으면 요청 JSON 모양이 어떻게 돼요? 여기에 importance: int 단일 값도 바디로 넣고 싶은데 그냥 선언하면 쿼리로 잡혀요
+정적 파일(css, js, 이미지)을 /static 으로 서빙하려면 StaticFiles를 mount 하면 되나요? mount랑 include_router는 뭐가 달라요?
+q: str = Query(None) 이랑 q: Annotated[str | None, Query()] = None 중에 뭐가 권장이에요?
+서브 의존성 구조에서 같은 의존성이 여러 군데서 쓰이면 요청당 한 번만 호출되나요? 캐싱 끄는 옵션도 있어요?
+WebSocket 엔드포인트에서 쿼리 파라미터나 쿠키로 토큰 받아서 Depends로 인증하려면 어떻게 해요?
+Swagger UI 구문 강조를 끄거나 deepLinking 같은 옵션을 바꾸려면 swagger_ui_parameters 쓰면 되나요?
+로그인 폼(application/x-www-form-urlencoded) 데이터 받으려면 Form 쓰고 python-multipart 따로 설치해야 해요?
+UserIn, UserOut, UserInDB 처럼 모델 여러 개 만들 때 필드 중복 줄이려면 상속 쓰는 게 맞나요?
+파일 다운로드 엔드포인트에서 FileResponse로 filename 지정해서 내려주는 방법 알려주세요
+fastapi의 HTTPException이랑 starlette의 HTTPException 차이가 있나요? 예외 핸들러는 어느 쪽 기준으로 등록해야 해요?
+쿼리 파라미터 기본값을 None으로만 줘도 선택 파라미터가 되나요, 아니면 타입도 str | None 으로 써줘야 하나요?
+--workers 4 로 워커 여러 개 띄우면 되나요? 쿠버네티스에선 컨테이너당 프로세스 하나가 낫다던데 왜 그래요?
+테스트할 때 진짜 인증 의존성 대신 가짜 유저 돌려주게 app.dependency_overrides 쓰는 방법
+PUT으로 필드 몇 개만 보냈더니 나머지가 기본값으로 덮어써졌어요. 부분 업데이트는 PATCH랑 exclude_unset 조합이 맞나요?
+Strawberry 같은 GraphQL 라이브러리를 FastAPI에 붙여서 쓸 수 있나요?
+allow_origins=["*"]에 allow_credentials=True 같이 줬는데 쿠키 인증이 안 돼요. 와일드카드 쓰면 안 되는 건가요?
+Path()에 ge=1, le=1000 같은 숫자 범위 검증 거는 법
+Response를 직접 반환하는 엔드포인트에 반환 타입 달았더니 앱 시작할 때 에러가 나요. response_model=None 주면 해결되나요?
+tiangolo/uvicorn-gunicorn-fastapi 베이스 이미지 아직 써도 되나요? deprecated 됐다는 말이 있던데
+없는 아이템 조회하면 404 주려는데 HTTPException은 return 해요 raise 해요? 응답 헤더도 같이 실어 보낼 수 있어요?
+쿠키 값 읽으려면 Cookie() 써야 하죠? 그냥 str 파라미터로 선언하면 쿼리로 인식되는 거 맞나요?
+초기화할 때 인자 받는 의존성(예: 특정 문자열 포함 여부 체크)을 __call__ 있는 클래스 인스턴스로 만드는 방법
+HTMLResponse로 HTML 직접 반환할 때 response_class로 지정해야 docs에 text/html 로 표시되나요?
+토큰 검증 실패할 때 401이랑 WWW-Authenticate: Bearer 헤더를 같이 보내는 이유가 뭐예요?
+회원가입 후 환영 메일을 응답 보낸 뒤에 보내고 싶은데 BackgroundTasks 쓰면 돼요? 무거운 작업이면 Celery 같은 걸로 가야 하나요?
+앱 title, version, description이랑 태그별 설명(openapi_tags) 설정하는 법
+파일 경로 전체를 path parameter로 받고 싶어요. /files/{file_path} 에 슬래시가 들어가면 어떻게 선언해야 하죠?
+Pydantic v2 쓰니까 docs에 같은 모델이 Item-Input, Item-Output 두 개로 나와요. 하나로 합칠 수 있나요?
+기존 Flask 앱을 FastAPI 안에 붙여서 같이 돌리고 싶어요. WSGIMiddleware 쓰면 되나요?
+함수에 반환 타입 -> Item 도 달고 response_model 도 지정하면 어느 쪽이 우선이에요?
+앱 전체 엔드포인트에 X-Key 헤더 검사 의존성을 한 번에 걸고 싶어요. FastAPI(dependencies=[...]) 쓰면 되나?
+Pydantic 모델 대신 dataclasses로 바디나 response_model 선언해도 동작해요?
+POST 바디를 BaseModel로 받을 때 필드에 기본값 주면 선택 필드 되는 거 맞죠?
+WebSocket 엔드포인트도 TestClient로 테스트할 수 있나요? websocket_connect 쓰는 거요
+HTTPS 인증서는 FastAPI 앱이 직접 처리하나요, 아니면 앞단 TLS termination proxy가 하나요?
+HTTPSRedirectMiddleware, TrustedHostMiddleware, GZipMiddleware 각각 어떤 상황에서 쓰는 건가요?
+커스텀 예외 핸들러에서 로그만 찍고 나머지는 FastAPI 기본 핸들러에 그대로 넘길 수 있나요?
+특정 쿼리 파라미터를 deprecated로 표시하거나 OpenAPI 스키마에서 아예 숨기는 방법
+같은 엔드포인트에서 상황 따라 200도 주고 201도 주고 싶어요. Response 파라미터로 status_code를 바꾸면 되나요?
+비밀번호 해싱 라이브러리 뭐 추천해요? 해시 알고리즘은요?
+우리 API가 외부로 보내는 웹훅 요청 형식을 OpenAPI 문서에 표시하려면 app.webhooks 쓰나요? callbacks랑은 뭐가 달라요?
+UUID, datetime, timedelta, Decimal 같은 타입도 파라미터로 받을 수 있어요? timedelta는 응답에서 어떻게 표현되나요?
+TestClient로 테스트 짤 때 테스트 함수는 async def 말고 그냥 def로 써도 되죠?
+앱 전체 기본 응답 클래스를 ORJSONResponse 같은 걸로 바꿀 수 있나요?
+Field()로 모델 필드에 description이랑 gt=0 검증 붙이는 방법
+서브 앱을 /subapi 에 mount 했는데, 서브 앱 docs가 /subapi/docs 에 따로 떠요?
+pip install fastapi 랑 pip install "fastapi[standard]" 차이가 뭐예요?
+헤더 여러 개를 Pydantic 모델로 묶어서 Header()로 한 번에 받을 수 있다던데 어떻게 써요?
+yield 의존성에서 except로 예외 잡고 다시 raise 안 했더니 에러 로그가 하나도 안 남아요. 다시 raise 해야 하나요?
+여러 파일을 한 번에 받으려면 list[UploadFile]로 선언하면 되나요?
+사내망이라 CDN이 막혀서 Swagger UI가 하얗게 나와요. JS/CSS 파일을 직접 호스팅할 수 있나요?
+response_model_exclude_unset=True는 어떤 상황에서 쓰는 거예요?
+Jinja2Templates로 HTML 렌더링할 때 템플릿 안에서 url_for로 static 파일 경로 만드는 법
+쿼리 이름이 item-query처럼 하이픈이 들어가서 파이썬 변수명으로 못 쓰는데, alias 쓰면 되나요?
+클라이언트가 요청 바디를 gzip으로 압축해서 보내는데 커스텀 Request 클래스랑 APIRoute로 풀어줄 수 있나요?
+Depends가 정확히 뭐 하는 건지 감이 안 와요. skip, limit 같은 공통 페이징 파라미터를 여러 엔드포인트에서 재사용하려는데
+add_middleware로 미들웨어 여러 개 등록하면 실행 순서가 어떻게 돼요? 마지막에 추가한 게 제일 바깥인가요?
+바디 모델이랑 경로, 쿼리 파라미터를 한 함수에 같이 선언하면 FastAPI가 각각 어디서 읽을지 어떻게 정해요?
+Dockerfile CMD를 exec form으로 써야 한다는데, shell form으로 쓰면 lifespan 종료 이벤트가 안 도는 거랑 관련 있나요?
+Form 필드들도 Pydantic 모델 하나로 받을 수 있어요?
+uvicorn을 리버스 프록시 뒤에서 돌릴 때 --proxy-headers 랑 --forwarded-allow-ips 옵션은 무슨 역할이에요?
+다른 팀이 만든 라우터라 코드를 못 고치는데, include_router 할 때 prefix랑 인증 의존성만 덧붙일 수 있나요?
+엔드포인트에 tags, summary 붙이고 docstring을 마크다운 설명으로 쓰는 방법
+테스트 안에서 async DB 함수도 await 해야 해서 httpx AsyncClient랑 pytest.mark.anyio 쓰려는데 어떻게 설정해요?
+반환값은 안 쓰고 검증만 하는 의존성은 데코레이터에 dependencies=[Depends(verify_token)]로 넣으면 되죠?
+직접 만든 UnicornException을 던지면 418 응답으로 바꿔주는 예외 핸들러 등록하는 법

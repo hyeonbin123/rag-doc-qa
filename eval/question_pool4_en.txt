@@ -1,0 +1,110 @@
+Can you explain concurrency vs parallelism and how it relates to choosing async def in FastAPI?
+Why does /items/{item_id} catch requests meant for /items/latest, and how should I order my routes?
+I'm getting "TypeError: Object of type datetime is not JSON serializable" when storing a model in my fake DB dict. Is jsonable_encoder the fix?
+How do I allow CORS for a specific list of frontend origins with all methods and headers allowed?
+How do I use SQLModel with FastAPI and create the tables at startup?
+How do I keep internal fields like hashed_password out of my API responses?
+Can I attach a custom check, like requiring an "isbn-" prefix, to a query parameter using Pydantic's AfterValidator?
+How many Uvicorn workers should I run, and should I still use --workers inside a container on Kubernetes?
+I get an error saying Form data requires "python-multipart" to be installed. What do I need to do?
+How do I override the database dependency in tests so they hit a separate test database?
+I want the body to look like {"item": {...}, "user": {...}, "importance": 5}. How do I declare that?
+My server has no internet access, so Swagger UI loads blank. How do I serve its JS and CSS from my own app?
+In a dependency with yield, what happens if my endpoint raises HTTPException after the yield?
+I'm getting a 422 with "type": "missing", "loc": ["query", "q"] even though I meant q to be optional. What decides whether a query param is required?
+How do I stream a large video file from disk without reading it all into memory?
+How do I set a custom operationId, or just use each function's name as its operationId?
+How do I load settings from environment variables and a .env file with pydantic-settings?
+I return a RedirectResponse in one branch and a dict in another, and startup fails with "Invalid args for response field!". How do I fix the annotation?
+How do I split a large FastAPI app across multiple files using APIRouter?
+I'm new to Python type hints. What does a parameter annotated as list[str] | None = None actually mean to FastAPI?
+What does the Authorize button in Swagger UI do and how is it wired to OAuth2PasswordBearer?
+Which extra types like UUID, datetime, timedelta, frozenset and bytes can I use as parameters, and how are they converted?
+My app runs behind Traefik with a /api/v1 path prefix and /docs says "Failed to load API definition" for openapi.json. How do I set root_path?
+How do I return a 404 with a custom message when a record isn't found?
+Why does /docs show Item-Input and Item-Output as separate schemas, and how do I make it a single schema?
+Are @app.on_event("startup") handlers deprecated now?
+How do I avoid repeating Annotated[User, Depends(get_current_user)] in dozens of endpoints?
+How can I capture something like /files/home/johndoe/myfile.txt as one path parameter, slashes included?
+How do I document an OpenAPI callback that my API will send to the client's URL after an invoice is paid?
+When should I use File() with bytes versus UploadFile, and when does UploadFile spool to disk?
+How should I pin the FastAPI version in requirements.txt given it's still 0.x?
+How do I run something after the response is sent, like writing a notification to a log file?
+My endpoint takes item_id from the path, q from the query string and an Item body. How does FastAPI tell them apart?
+How do I build a simple WebSocket chat endpoint that receives and sends text messages?
+How do I write a custom APIRoute class that logs the request body when an exception occurs?
+What's the difference between response_model_exclude_unset, response_model_exclude_defaults and response_model_exclude_none?
+In a typical deployment, who handles HTTPS certificates, and what is a TLS termination proxy?
+FastAPI converts the underscores in my header parameter name to hyphens. Can I turn that off?
+How do I apply a dependency to every route in the whole application?
+My test needs to await an async helper. How do I write async tests against a FastAPI app?
+What's the right way to make a query parameter optional with a default of 10, like a limit for pagination?
+How do I set the title, summary, version, license and contact info shown at the top of the docs?
+How do I group endpoints under tags and give each tag a description in the docs?
+How do I add a description and max_length to individual fields inside a request model?
+How do I decode a JWT in a dependency and return 401 when it's expired or tampered with?
+How do I make ORJSONResponse the default for all endpoints, and do I need to install anything for it?
+Is Annotated the recommended style for Query, Path and Depends, and does it work on older Python versions?
+Can I nest one APIRouter inside another?
+How do I run my FastAPI app under the PyCharm or VS Code debugger with breakpoints?
+How do I implement a PATCH endpoint that only touches the fields the client actually sent?
+What's the cleanest way to show an example payload for a Pydantic model in the /docs page?
+What does a good Dockerfile for FastAPI look like, and why copy requirements.txt before the source code?
+How do I make a DELETE endpoint return 204 by default?
+How do I write a middleware that adds a header to every response?
+How do I declare outgoing webhooks in my OpenAPI schema with app.webhooks?
+How do I read several cookies and group them into one Pydantic model?
+How do I serve files from a static directory, and what is the name parameter in app.mount for?
+How do I register a global handler so my custom exception becomes a JSON response with status 418?
+Why does the settings example wrap get_settings with lru_cache?
+How do I validate that a numeric path parameter is > 0 and <= 1000?
+Can I use standard Python dataclasses instead of Pydantic models for request bodies and response_model?
+How do I build username/password login that returns a bearer token using OAuth2PasswordRequestForm?
+How do I access the raw Request object, for example to get the client IP or the full URL?
+How can the same endpoint return 201 when it creates a resource but 200 when it already exists?
+How do I change Swagger UI's syntax highlighting theme or turn highlighting off?
+What is dependency injection in FastAPI and how is it different from just calling a helper function inside my endpoint?
+Should I use regex= or pattern= for a string constraint on a query parameter? I've seen both in examples.
+How do I mount a separate FastAPI app under /v2 with its own docs?
+I want requests with unknown query parameters to fail instead of being silently ignored. How?
+How do I get an uploaded file's original filename and content type?
+How do I force all incoming requests to be redirected to HTTPS?
+Why should each project have its own virtual environment, and how do I activate it?
+When validation fails I want to log the body the client sent. Can I get it inside a RequestValidationError handler?
+How do I make sure my lifespan startup and shutdown code runs during tests?
+How can one endpoint's response schema be either a PlaneItem or a CarItem?
+Can I use GraphQL with FastAPI, and which libraries does it work with?
+How do I require different OAuth2 scopes on different endpoints and check them inside the dependency?
+How do I accept a request body that is a JSON array of objects rather than a single object?
+Besides running uvicorn, what deployment concerns should I plan for, like restarts after crashes, replication and memory?
+How do I use the lifespan parameter to load a resource at startup and release it at shutdown?
+I parse the raw request body myself because it's YAML, but I still want a request body schema in the docs. Is openapi_extra the way?
+How do I restrict a path parameter to a fixed set of values like alexnet, resnet and lenet?
+How do I return a file so that the browser downloads it as an attachment?
+How do I change the URLs of /docs, /redoc and /openapi.json, or disable them in production?
+How do I require authentication for every route in a router without adding it to each function?
+How do I mount an existing Flask or Django WSGI app under a path inside FastAPI?
+How do I read a custom header such as X-Request-ID in a path operation?
+What's the difference between fastapi dev and fastapi run, and which should I use in production?
+How do I hide an internal endpoint from the OpenAPI schema completely?
+Can I include the same router twice under different prefixes, like /api/v1 and /api/v2?
+Can I make a query parameter required while still attaching Query() validation to it?
+How can I add a custom logo to ReDoc by modifying the generated OpenAPI schema?
+How do I make a configurable dependency, like a checker instance that takes a fixed_content argument?
+How do I receive HTML form fields (application/x-www-form-urlencoded) in FastAPI?
+Can I use Depends, Query or Cookie in a WebSocket endpoint, and how do I reject the connection if the token is invalid?
+Should I declare the return type annotation or pass response_model, and what happens if I do both?
+How do I set an environment variable for just one command in PowerShell versus bash?
+How do I gzip-compress large responses?
+How do I get the JSON request body parsed into a Pydantic model?
+How do I render a Jinja2 template and pass the request object into it?
+How do I mark an endpoint as deprecated without removing it?
+How can I generate a TypeScript client from my OpenAPI schema and get shorter method names than readItemsItemsGet?
+How do I write a dependency that depends on another dependency, like a query_or_cookie_extractor?
+My main.py is at the project root instead of inside an app/ package. What should the Docker CMD be?
+If I declare an endpoint with plain def, does it block the event loop while it runs?
+Can I accept multiple files plus some regular form fields in the same request?
+How do I document extra responses in OpenAPI, like a 404 with a Message model and a 200 that returns image/png?
+How do I offer several named examples (normal, converted, invalid) for one body parameter in Swagger UI?
+How do I write a basic pytest test for a GET endpoint with TestClient?
+How do I add HTTP Basic auth so the browser shows a username/password prompt?

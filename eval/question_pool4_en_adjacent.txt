@@ -1,0 +1,30 @@
+How do I tune Gunicorn's max_requests and max_requests_jitter so workers that leak memory get recycled?
+What's the AWS console sequence to put an Application Load Balancer in front of an ECS Fargate service running my FastAPI container?
+On Azure App Service, where do I set the startup command and WEBSITES_PORT for a custom Python container?
+Why does touching a lazy-loaded relationship in an SQLAlchemy AsyncSession raise MissingGreenlet, and how does the greenlet bridge work internally?
+How does Alembic's batch mode work when altering columns in SQLite migrations?
+In Tortoise ORM, how do I define a reverse ForeignKey relation and prefetch it in one query?
+How do I configure Celery with RabbitMQ so failed tasks retry with exponential backoff?
+How do I use Redis Streams consumer groups as a job queue and reclaim pending messages after a worker crash?
+What Nginx proxy_read_timeout and proxy_buffering settings should I use for long-lived streaming responses?
+How do I write a Caddyfile that load-balances two upstream app servers with active health checks?
+In Vue 3, how do I write an Axios interceptor that refreshes an expired JWT and replays the original request?
+How do I set TanStack Query's staleTime so my React app stops refetching my API every time the window regains focus?
+Which Pydantic 2.x release added the experimental pipeline API, and when did it come out?
+Roughly how many requests per second can a FastAPI app serve on a Raspberry Pi 5 versus an Intel NUC?
+What round-trip latency should I expect calling my API hosted in AWS us-east-1 from a client in Seoul?
+For a small startup, is Litestar or Sanic a safer bet than FastAPI in terms of hiring and long-term maintenance?
+How does Django Ninja's per-router authentication compare with Django REST Framework's permission classes?
+How should I size PostgreSQL max_connections and choose PgBouncer's pool_mode when I have many async workers?
+How do I register my API in Okta and find the issuer URL and JWKS endpoint I need to validate its tokens?
+Where in the Auth0 dashboard do I set an API's audience and turn on RBAC permissions in access tokens?
+How do I create an AWS WAF rate-based rule that blocks IPs sending too many requests to my API?
+On Ubuntu, how do I raise the open file descriptor limit for the service user running my app server?
+How do I write Helm chart values for liveness and readiness probes on a Python web service?
+How do I set up OpenTelemetry auto-instrumentation for a Python service and ship traces to Jaeger?
+How does pydantic-core compile a model schema into validators internally, and why is that faster than Pydantic v1?
+What's the difference between Poetry dependency groups and PEP 735 dependency groups in pyproject.toml?
+How do I configure a Cloudflare Tunnel so my local dev server is reachable from a public hostname?
+How do I use Locust to simulate 1,000 concurrent users against my API and interpret its percentile charts?
+How do I persist APScheduler cron jobs in a SQL job store so they survive restarts?
+How do I enable mypy strict mode only for some modules in pyproject.toml so legacy code doesn't break CI?

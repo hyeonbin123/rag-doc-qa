@@ -1,0 +1,30 @@
+DRF에서 FastAPI로 옮기는 중인데, DRF ModelSerializer의 read_only_fields랑 extra_kwargs는 정확히 뭐가 달랐죠?
+FastAPI를 Mangum으로 감싸서 Lambda에 올리려는데 AWS 콘솔에서 API Gateway 연결하는 클릭 순서 좀 알려주세요
+SQLAlchemy 2.0에서 relationship에 lazy="selectin" 주는 거랑 쿼리에서 joinedload 쓰는 거 성능 차이가 어느 정도예요?
+Alembic autogenerate가 컬럼 타입 변경을 못 잡는데 compare_type 옵션은 env.py 어디에 넣어야 해요?
+Celery beat로 매일 새벽 3시에 배치 돌리려면 crontab 스케줄 설정을 어떻게 써요?
+slowapi로 IP당 분당 10회 제한 거는 데코레이터 사용법이랑 Redis 백엔드 연결하는 방법
+업로드하면 Nginx에서 413 Request Entity Too Large가 떠요. client_max_body_size는 http, server, location 중 어디에 넣어야 해요?
+React 18 StrictMode에서 useEffect로 백엔드 API 호출하면 요청이 두 번씩 가는데 이거 어떻게 막아요?
+Next.js App Router server action에서 FastAPI 백엔드 호출하면 쿠키가 안 넘어가요. Next 쪽에서 뭘 설정해야 하나요?
+Ubuntu 22.04에서 uvicorn을 systemd 서비스로 등록하려는데 unit 파일에 Restart=always랑 RestartSec 어떻게 써?
+윈도우 방화벽에서 8000번 포트 인바운드 규칙 여는 방법 알려줘요
+Google Cloud Console에서 OAuth 클라이언트 ID 만들 때 승인된 리디렉션 URI는 어느 화면에서 입력해요?
+Keycloak 관리 콘솔에서 realm 만들고 client secret 확인하는 메뉴가 어디 있어요?
+PostgreSQL jsonb 컬럼에 GIN 인덱스 걸면 @> 조회가 실제로 얼마나 빨라지나요?
+Redis 캐시 서버 maxmemory-policy를 allkeys-lru로 할지 volatile-lru로 할지 고민인데 차이가 뭐예요?
+RTX 4090 한 장으로 FastAPI 뒤에 Llama 3 8B 올리면 초당 토큰 몇 개 정도 나와요?
+AWS t3.small 인스턴스에서 FastAPI hello world 띄우면 RPS가 보통 얼마나 나오나요?
+회사에서 Litestar랑 FastAPI 중에 고민 중인데 커뮤니티 규모나 국내 채용 시장 기준으로 비교해 줄 수 있어요?
+SQLAlchemy 2.0 정식 릴리스가 언제였죠? 레거시 Query API 쓰는 우리 코드가 얼마나 오래된 건지 가늠해 보려고요
+MongoDB 붙이려고 Beanie ODM 쓰는데 Document 클래스에 복합 인덱스 정의하는 법
+Sentry Python SDK의 traces_sample_rate는 몇으로 둬야 비용이 적당한가요?
+prometheus-fastapi-instrumentator로 메트릭 노출했는데 Grafana에서 가져다 쓸 만한 대시보드 ID 추천해 주세요
+쿠버네티스 HPA를 CPU 사용률 70% 기준으로 만드는 yaml 예시 좀 보여줘
+GitHub Actions에서 Docker 이미지 빌드해서 ECR로 푸시하는 워크플로 작성하는 법
+Stripe 웹훅 받는 엔드포인트 만드는 중인데 서명 검증용 signing secret은 Stripe 대시보드 어디서 확인해요?
+Poetry로 관리하던 프로젝트를 uv로 옮기려는데 poetry.lock을 uv.lock으로 변환하는 방법 있나요?
+aiokafka로 컨슈머 만들었는데 consumer group 리밸런스가 자꾸 일어나요. 원인이 뭘까요?
+VS Code에서 Pylance가 Pydantic 모델 필드에 빨간 줄 긋는데 Pylance 타입 체크 수준은 어디서 바꿔요?
+Let's Encrypt certbot 자동 갱신이 실패하는데 certbot renew --dry-run 로그는 어디서 봐요?
+Docker Compose에서 postgres에 healthcheck 걸고 depends_on에 condition: service_healthy 쓰는 문법 알려주세요
