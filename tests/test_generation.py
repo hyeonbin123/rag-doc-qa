@@ -493,7 +493,8 @@ async def test_a_normal_answer_is_still_cited_when_refusal_emptying_is_on(script
         ("The provided context passages do not contain information about status codes.", "en", True),
         ("Based on the provided context passages, there is no information explaining it.", "en", True),
         ("This is not covered in the provided passages.", "en", True),
-        # 2026-10-18 보강: v15 I4 dev 답에서 놓쳤던 거절 꼴(A.X의 "You don't know", 한국어 '제공되지/제공하지 않')
+        # 2026-10-18 보강: v15 I4 dev 답에서 놓쳤던 거절 꼴
+        # (A.X의 "You don't know", 한국어 '제공되지/제공하지 않')
         ("You don't know how to tune it based on the provided context passages.", "en", True),
         ("죄송하지만, 그 방법에 대한 정보는 제공되지 않았습니다.", "ko", True),
         ("죄송하지만, 주어진 문맥에서는 그 방법에 대한 정보를 제공하지 않습니다.", "ko", True),
