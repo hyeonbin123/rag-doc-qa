@@ -83,10 +83,12 @@ class Settings(BaseSettings):
     #   프롬프트 캐시를 다시 쓰고 정수 배열로 받는다(인용 호출 시간을 줄이려는 후보).
     # - refuse_without_context: 검색된 청크가 0개면 LLM 없이 고정 거절문을 돌려준다(바닥값으로 청크가 다
     #   걸러졌을 때 지어낸 답을 막는 후보).
-    # - empty_citations_on_refusal: '문서에 내용이 없다'는 거절 답에는 인용을 붙이지 않는다.
+    # - empty_citations_on_refusal: '문서에 내용이 없다'는 거절 답에는 인용을 붙이지 않는다. v15 I4에서 채택해
+    #   2026-10-18부터 기본으로 켬(dev에서 잘 답한 답을 거절로 잘못 분류한 경우가 언어별 1개 이하였고, 답 없는
+    #   test 질문의 거절 답 27개에 붙던 인용이 모두 사라짐). 나머지 둘은 측정에서 채택되지 않아 꺼진 채로 둠.
     citation_mode: Literal["separate", "followup"] = "separate"
     refuse_without_context: bool = False
-    empty_citations_on_refusal: bool = False
+    empty_citations_on_refusal: bool = True
     # 영어 문서·질문 임베딩 모델. v8에서 다국어 모델 하나로 통일하면 영어 테스트셋 MRR이 0.933 → 0.638로
     # 떨어져 영어는 이 모델을 유지했다(docs/experiments.md v8).
     embedding_model_name: str = "BAAI/bge-small-en-v1.5"

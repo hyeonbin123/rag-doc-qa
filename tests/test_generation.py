@@ -518,14 +518,16 @@ def test_is_refusal_answer_reads_the_first_sentence(answer, language, expected):
     assert generation.is_refusal_answer(answer, language) is expected
 
 
-# 세 설정이 환경 변수 → 설정 → 생성기로 넘어가고, 기본값은 모두 꺼짐(지금 동작)이다.
-def test_the_v15_switches_come_from_settings_and_default_off(monkeypatch):
+# 세 설정이 환경 변수 → 설정 → 생성기로 넘어간다. 기본값은 v15 결정대로: 인용 호출은 separate(I3 채택 안 함),
+# 청크 0개 거절은 꺼짐(I4 바닥값과 함께 채택 안 함), 거절 답의 인용 비우기는 켜짐(I4에서 채택,
+# docs/experiments.md v15).
+def test_the_v15_switches_come_from_settings_with_the_v15_defaults(monkeypatch):
     for name in ("CITATION_MODE", "REFUSE_WITHOUT_CONTEXT", "EMPTY_CITATIONS_ON_REFUSAL"):
         monkeypatch.delenv(name, raising=False)
     settings = Settings(database_url="x", jwt_secret_key="y", _env_file=None)
     assert settings.citation_mode == "separate"
     assert settings.refuse_without_context is False
-    assert settings.empty_citations_on_refusal is False
+    assert settings.empty_citations_on_refusal is True
 
     monkeypatch.setenv("CITATION_MODE", "followup")
     monkeypatch.setenv("REFUSE_WITHOUT_CONTEXT", "true")
