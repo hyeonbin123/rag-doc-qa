@@ -1,0 +1,61 @@
+{
+  "date": "2026-10-18T16:07:04.764497+00:00",
+  "label": "J3v15r2",
+  "model": "qwen3.5:9b",
+  "num_ctx": 8192,
+  "truncate": false,
+  "provider": "ollama",
+  "order": "dataset",
+  "think": false,
+  "flush": false,
+  "ollama_version": "0.35.1",
+  "ollama_ps_before": {
+    "models": [
+      {
+        "name": "qwen3.5:9b",
+        "model": "qwen3.5:9b",
+        "size": 5729167604,
+        "digest": "6488c96fa5faab64bb65cbd30d4289e20e6130ef535a93ef9a49f42eda893ea7",
+        "details": {
+          "parent_model": "",
+          "format": "gguf",
+          "family": "qwen35",
+          "families": [
+            "qwen35"
+          ],
+          "parameter_size": "9.7B",
+          "quantization_level": "Q4_K_M"
+        },
+        "expires_at": "2026-10-19T01:12:04.2371824+09:00",
+        "size_vram": 5729167604,
+        "context_length": 8192
+      }
+    ]
+  },
+  "ollama_ps_after": {
+    "models": [
+      {
+        "name": "qwen3.5:9b",
+        "model": "qwen3.5:9b",
+        "size": 5729167604,
+        "digest": "6488c96fa5faab64bb65cbd30d4289e20e6130ef535a93ef9a49f42eda893ea7",
+        "details": {
+          "parent_model": "",
+          "format": "gguf",
+          "family": "qwen35",
+          "families": [
+            "qwen35"
+          ],
+          "parameter_size": "9.7B",
+          "quantization_level": "Q4_K_M"
+        },
+        "expires_at": "2026-10-19T01:13:40.8256266+09:00",
+        "size_vram": 5729167604,
+        "context_length": 8192
+      }
+    ]
+  },
+  "context_in_use": 8192,
+  "tokenizer": "Qwen/Qwen3.5-9B@c202236",
+  "judgments_path": "eval/runs/v14_c4_qa_dev2_ko.lg.J3v15r2.judge.jsonl"
+}
