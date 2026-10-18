@@ -153,10 +153,10 @@ def load_answers(gen_paths: list[Path], label: str | None) -> dict[tuple[str, st
     return out
 
 
-# 기록의 거절 여부. 예전 기록(refusal 필드 없음)은 같은 분류기로 다시 계산한다.
+# 기록의 거절 여부. 생성 기록의 refusal 필드는 생성할 때의 분류기 값이므로 쓰지 않고, 지금 분류기로 답을 다시
+# 분류한다. 2026-10-18 분류기 보강(docs/experiments.md v15 규칙 변경) 뒤에도 dev와 test, 두 팔이 같은 분류기로
+# 세어지게 하려는 것이다.
 def refused(record: dict) -> bool:
-    if "refusal" in record:
-        return bool(record["refusal"])
     return is_refusal_answer(record["answer"], record.get("language", "en"))
 
 

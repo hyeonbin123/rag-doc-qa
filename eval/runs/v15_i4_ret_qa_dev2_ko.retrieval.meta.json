@@ -1,0 +1,45 @@
+{
+  "date": "2026-10-18T12:37:28.730799+00:00",
+  "tag": "v15_i4_ret_qa_dev2_ko",
+  "git_commit": "9db6ac00fa711e7203377c91bf7c8ddc954eb097",
+  "database": "ragdb",
+  "embedding_models": {
+    "ko": "ibm-granite/granite-embedding-311m-multilingual-r2@44399559930365213510b1ee2eb15ded83374f0e:dim384"
+  },
+  "mode": "dense",
+  "top_k": 10,
+  "score_floors": {
+    "ko": 0.0
+  },
+  "cross_lingual": false,
+  "exact": false,
+  "dense_plans": {
+    "ko": [
+      "Sort",
+      "Seq Scan on chunks c",
+      "Seq Scan on documents d"
+    ]
+  },
+  "datasets": [
+    "qa_dev2_ko.jsonl"
+  ],
+  "vector_checks": [
+    {
+      "language": "ko",
+      "model": "ibm-granite/granite-embedding-311m-multilingual-r2@44399559930365213510b1ee2eb15ded83374f0e:dim384",
+      "checked": 3,
+      "min_cosine": 1.0
+    }
+  ],
+  "torch_threads": 6,
+  "aggregate": {
+    "n": 40,
+    "hit@3": 0.95,
+    "hit@5": 0.975,
+    "hit@10": 0.975,
+    "mrr": 0.9145833333333332,
+    "short": 0,
+    "p50": 7.018700009211898,
+    "p95": 7.869844979722984
+  }
+}

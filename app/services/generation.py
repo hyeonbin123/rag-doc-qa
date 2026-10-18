@@ -114,9 +114,12 @@ def needs_language_retry(answer: str, language: Language) -> bool:
 # 대한 정보가 포함되어 있지 않습니다."). 첫 문장에서 답한 뒤 뒤쪽에서 일부만 모른다고 하는 답(부분 답)이나,
 # '함께 받을 수 없습니다'처럼 '없다'가 답의 내용인 문장을 거절로 잘못 세지 않으려고 첫 문장과 '정보·내용이
 # 없다' 같은 꼴로 좁혔다. 그래도 정규식이라 틀릴 수 있으므로, 평가는 이 분류와 함께 판정 모델 점수를 보고한다.
+# 2026-10-18 보강(docs/experiments.md v15 규칙 변경, I4 test 전): dev 답에서 놓친 거절 꼴 두 가지를 더했다.
+# A.X가 영어로 쓰는 "You don't know."와, 한국어 "…정보는 제공되지 않았습니다", "…정보를 제공하지 않습니다"처럼
+# '제공·설명·언급되지(하지) 않'는다는 꼴이다. 저장된 답 약 500개에 대 보면 새로 걸리는 답은 모두 거절이었다.
 _REFUSAL_PATTERNS: dict[str, re.Pattern] = {
     "en": re.compile(
-        r"\b(?:i (?:do not|don't) know"
+        r"\b(?:(?:i|you) (?:do not|don't) know"
         r"|(?:do|does|did) not (?:contain|include|mention|cover|provide|specify|say|describe|explain|address)"
         r"|(?:don't|doesn't|didn't) "
         r"(?:contain|include|mention|cover|provide|specify|say|describe|explain|address)"
@@ -130,7 +133,8 @@ _REFUSAL_PATTERNS: dict[str, re.Pattern] = {
         r"(?:모르겠|모릅니다|알 수 없"
         r"|(?:정보|내용|언급|설명|방법|자료|답)(?:이|가|은|는|도)?\s?(?:없|부족)"
         r"|(?:나와|언급되어|포함되어|제공되어|설명되어|나타나|기술되어|다뤄지|다루어지|명시되어|소개되어)\s?있지\s?않"
-        r"|다루지\s?않|찾을 수 없|(?:답|답변|확인)(?:하기|할 수)\s?(?:없|어렵))"
+        r"|다루지\s?않|찾을 수 없|(?:답|답변|확인)(?:하기|할 수)\s?(?:없|어렵)"
+        r"|(?:제공|설명|언급|포함|기술|명시|소개|안내)(?:되|하)지\s?않)"
     ),
 }
 # 첫 문장의 끝: 마침표·물음표·느낌표 뒤 공백, 또는 줄바꿈. 300자를 넘으면 거기서 자른다(한 문장이 아주 길게

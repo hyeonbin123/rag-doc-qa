@@ -1,0 +1,176 @@
+{
+  "tag": "v15_i2",
+  "date": "2026-10-18T11:45:33.601439+00:00",
+  "base_label": "J1sA1",
+  "pass_labels": {
+    "A2": "J1sA2",
+    "R": "J1sR",
+    "F1": "J1sF1",
+    "F2": "J1sF2",
+    "L": "J1sL"
+  },
+  "gen_files": [
+    "eval\\runs\\v14_c3_qa_dev.lg.gen.jsonl",
+    "eval\\runs\\v14_c3_qa_dev_ko.lg.gen.jsonl",
+    "eval\\runs\\v14_c3_qa_dev2_ko.lg.gen.jsonl"
+  ],
+  "diffs": {
+    "A2": {
+      "raw_diff": 14,
+      "score_diff": 8,
+      "correctness_sum_base": 496,
+      "correctness_sum": 497,
+      "changed_ids": [
+        "kd010",
+        "kd013",
+        "kd014",
+        "kd016",
+        "kd019",
+        "n058",
+        "n066",
+        "n094"
+      ]
+    },
+    "R": {
+      "raw_diff": 14,
+      "score_diff": 10,
+      "correctness_sum_base": 496,
+      "correctness_sum": 495,
+      "changed_ids": [
+        "kd010",
+        "kd013",
+        "kd014",
+        "kd016",
+        "kd019",
+        "kd022",
+        "n041",
+        "n058",
+        "n092",
+        "n094"
+      ]
+    },
+    "F1": {
+      "raw_diff": 15,
+      "score_diff": 12,
+      "correctness_sum_base": 496,
+      "correctness_sum": 496,
+      "changed_ids": [
+        "d022",
+        "d030",
+        "kd010",
+        "kd013",
+        "kd014",
+        "kd016",
+        "kd019",
+        "kd022",
+        "n058",
+        "n092",
+        "n094",
+        "n119"
+      ]
+    },
+    "L": {
+      "raw_diff": 0,
+      "score_diff": 0,
+      "correctness_sum_base": 496,
+      "correctness_sum": 496,
+      "changed_ids": []
+    },
+    "F2": {
+      "raw_diff": 6,
+      "score_diff": 4,
+      "correctness_sum_base": 496,
+      "correctness_sum": 497,
+      "changed_ids": [
+        "d023",
+        "d030",
+        "n092",
+        "n119"
+      ]
+    }
+  },
+  "stats": {
+    "A1": {
+      "n": 104,
+      "judge_ms_p50": 2103.4069000161253,
+      "cached_tokens_seen": 104,
+      "cached_tokens_p50": 26.0,
+      "cached_tokens_max": 3083
+    },
+    "A2": {
+      "n": 104,
+      "judge_ms_p50": 2168.294849980157,
+      "cached_tokens_seen": 104,
+      "cached_tokens_p50": 26.0,
+      "cached_tokens_max": 29
+    },
+    "R": {
+      "n": 104,
+      "judge_ms_p50": 1328.3842500241008,
+      "cached_tokens_seen": 104,
+      "cached_tokens_p50": 1886.0,
+      "cached_tokens_max": 2689
+    },
+    "F1": {
+      "n": 104,
+      "judge_ms_p50": 1324.966050015064,
+      "cached_tokens_seen": 104,
+      "cached_tokens_p50": 1934.5,
+      "cached_tokens_max": 3083
+    },
+    "F2": {
+      "n": 104,
+      "judge_ms_p50": 1314.6442500001285,
+      "cached_tokens_seen": 104,
+      "cached_tokens_p50": 1886.0,
+      "cached_tokens_max": 2689
+    },
+    "L": {
+      "n": 104,
+      "judge_ms_p50": 2028.9829499670304,
+      "cached_tokens_seen": 104,
+      "cached_tokens_p50": 26.0,
+      "cached_tokens_max": 3083
+    }
+  },
+  "ps_before": {
+    "J1sA1": [
+      {
+        "name": "qwen2.5:7b-instruct",
+        "full_gpu": true
+      }
+    ],
+    "J1sA2": [
+      {
+        "name": "qwen2.5:7b-instruct",
+        "full_gpu": true
+      }
+    ],
+    "J1sR": [
+      {
+        "name": "qwen2.5:7b-instruct",
+        "full_gpu": true
+      }
+    ],
+    "J1sF1": [
+      {
+        "name": "qwen2.5:7b-instruct",
+        "full_gpu": true
+      }
+    ],
+    "J1sF2": [
+      {
+        "name": "qwen2.5:7b-instruct",
+        "full_gpu": true
+      }
+    ],
+    "J1sL": [
+      {
+        "name": "qwen2.5:7b-instruct",
+        "full_gpu": true
+      }
+    ]
+  },
+  "outcome": "b",
+  "judge_method": "J1x3_same_order_median"
+}
