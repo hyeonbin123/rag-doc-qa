@@ -3,11 +3,14 @@
 # [왜 중요한가] ZAP 1차 스캔에서 채팅 화면에 CSP와 클릭재킹 방지 헤더가 없다는 Medium 2개와 nosniff 헤더가
 # 없다는 Low가 나왔고, 고친 뒤 2차 스캔에서 사라졌다(docs/security-scan.md, 커밋 ce7a847). 헤더와 '인라인 코드
 # 없는 페이지'가 다시 깨지지 않게 고정한다.
-# [import] re는 HTML에서 스크립트·스타일·이벤트 속성과 외부 파일 주소를 찾는 데 쓴다.
+# [import] re는 HTML에서 스크립트·스타일·이벤트 속성과 외부 파일 주소를 찾는 데 쓴다. generation은 생성기 장애
+# code 목록(503 응답의 detail.code)을 가져오는 데 쓴다.
 
 import re
 
 import pytest
+
+from app.services import generation
 
 
 # 루트(/)가 채팅 화면 HTML을 돌려주는지 화면 제목 문구로 확인한다.
@@ -98,3 +101,16 @@ async def test_the_docs_pages_may_load_their_cdn_files_but_not_be_framed(client,
     assert all(host in csp for host in hosts), hosts
     assert "frame-ancestors 'none'" in csp
     assert resp.headers["x-frame-options"] == "DENY"
+
+
+# /query/ask의 503(생성기 장애)은 detail.code로 원인을 알리고, 채팅 화면(app/web/static/chat.js)이 code마다
+# 다른 안내(모델 만들기, Ollama 실행 확인, 잠시 뒤 다시)를 보인다. 서버가 code를 더하거나 이름을 바꾸고
+# 화면을 빠뜨리면 화면은 원인을 모르는 일반 문구로 돌아가므로, 서버의 code 목록이 화면 스크립트에 모두 있는지
+# 본다.
+@pytest.mark.asyncio
+async def test_the_chat_page_explains_every_generator_error_code(client):
+    script = (await client.get("/static/chat.js")).text
+
+    assert generation.GENERATOR_ERROR_MESSAGES
+    for code in generation.GENERATOR_ERROR_MESSAGES:
+        assert f"'{code}'" in script, code

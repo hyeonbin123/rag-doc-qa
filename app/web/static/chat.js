@@ -54,7 +54,8 @@
   // 실패하면 ApiError를 던진다.
   // 네트워크 오류(fetch 자체 실패)는 서버가 꺼진 경우로 보고 안내 문구를 담는다. 실패 응답에서는 detail이
   // 문자열이면 그대로 쓰고, 422처럼 목록이면 어떤 필드가 거부됐는지(loc의 마지막 값)와 거부 이유(type, 예:
-  // string_too_long)를 모아 둔다.
+  // string_too_long)를 모아 둔다. 질문의 503(생성기 장애)은 detail이 {code, message} 객체라 code를 담고,
+  // Retry-After 헤더(다시 시도할 만한 초)도 함께 담는다(app/main.py).
   async function api(path, options = {}) {
     const headers = { ...(options.headers || {}) };
     if (token) headers.Authorization = 'Bearer ' + token;
@@ -68,6 +69,7 @@
       let detail = '';
       let fields = [];
       let types = [];
+      let code = '';
       try {
         const body = await res.json();
         if (typeof body.detail === 'string') detail = body.detail;
@@ -75,14 +77,39 @@
         if (Array.isArray(body.detail)) {
           fields = body.detail.map((d) => (d.loc || []).at(-1));
           types = body.detail.map((d) => d.type);
+        } else if (body.detail && typeof body.detail === 'object') {
+          code = typeof body.detail.code === 'string' ? body.detail.code : '';
+          detail = typeof body.detail.message === 'string' ? body.detail.message : '';
         }
       } catch (e) { /* 오류 본문이 JSON이 아님 */ }
       const err = new ApiError(res.status, detail);
       err.fields = fields;
       err.types = types;
+      err.code = code;
+      err.retryAfter = Number.parseInt(res.headers.get('Retry-After') || '', 10) || 0;
       throw err;
     }
     return res.json();
+  }
+
+  // 질문의 503(생성기 장애) code별 안내. code는 서버의 GENERATOR_ERROR_MESSAGES(app/services/generation.py)와
+  // 같은 이름이고, 모르는 code면 null을 돌려 일반 5xx 안내로 넘긴다. Retry-After가 있으면 그 초를 함께 알린다.
+  // - 모델 없음: Ollama는 켜져 있지만 설정한 모델 태그가 없다. 기본 모델 A.X는 직접 만들어야 해서(README
+  //   '사전 준비') 가장 흔한 첫 실패이고, 예전 화면은 이때도 'Ollama가 켜져 있는지'만 안내했다.
+  // - 연결 실패: Ollama가 꺼졌거나 주소가 틀렸다.
+  // - 시간 초과: Ollama가 제한 시간 안에 답하지 못했다(GPU를 다른 프로그램이 쓰는 중 등).
+  function generatorErrorText(code, retryAfter) {
+    const later = retryAfter > 0 ? `${retryAfter}초쯤 뒤에` : '잠시 뒤에';
+    switch (code) {
+      case 'generator_model_missing':
+        return '답변 모델이 Ollama에 없어요. 서버 PC에서 ollama list로 모델이 있는지 확인하고, 없으면 README의 사전 준비 절을 따라 모델을 만든 뒤 다시 보내 주세요.';
+      case 'generator_unavailable':
+        return `답변 생성기(Ollama)에 연결하지 못했어요. Ollama가 실행 중인지 확인하고 ${later} 다시 보내 주세요.`;
+      case 'generator_timeout':
+        return `답변 생성이 제한 시간 안에 끝나지 않았어요. ${later} 다시 보내 주세요.`;
+      default:
+        return null;
+    }
   }
 
   // 오류를 상황별 한국어 안내로 바꾼다. context는 login, register, ask 중 하나다.
@@ -90,7 +117,8 @@
   //   저장할 수 없는 문자(NUL 같은 제어 문자, 짝이 없는 서로게이트) 안내다. 예전에는 이유와 상관없이 늘 길이
   //   안내였다. 가입이면 거부된 필드가 password인지로 비밀번호 규칙(8자 이상, 72바이트 이하)과 이메일 형식
   //   오류를 구분한다. 서버의 비밀번호 규칙(app/schemas/auth.py)과 같은 숫자다.
-  // - 질문의 5xx는 대개 생성 단계(Ollama) 문제라 Ollama 확인을 권한다.
+  // - 질문의 503은 서버가 알려 준 생성기 장애 code로 안내를 고른다(generatorErrorText).
+  // - 그 밖의 질문 5xx는 대개 생성 단계(Ollama) 문제라 Ollama 확인을 권한다.
   function errorText(err, context) {
     if (err.status === 0) return err.message;
     if (context === 'login' && err.status === 401) return '이메일이나 비밀번호가 맞지 않아요.';
@@ -104,6 +132,10 @@
         return '비밀번호는 8자 이상, 72바이트(한글은 24자) 이하로 정해 주세요.';
       }
       return '이메일 형식을 확인해 주세요.';
+    }
+    if (context === 'ask' && err.status === 503) {
+      const text = generatorErrorText(err.code, err.retryAfter);
+      if (text) return text;
     }
     if (context === 'ask' && err.status >= 500) {
       return `답변을 만들지 못했어요 (HTTP ${err.status}). Ollama가 켜져 있는지 확인한 뒤 다시 보내 주세요.`;

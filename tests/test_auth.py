@@ -5,6 +5,8 @@
 # 401이 나던 것(커밋 bdece46), 예전 시드 스크립트가 입력 그대로 저장한 계정이 로그인 못 하던 것(커밋
 # 1d520fb), NUL 문자가 든 입력이 500을 내던 것(ZAP 1차 스캔, docs/security-scan.md, 커밋 55002dc).
 
+import json
+
 import pytest
 
 # 예전 시드 스크립트가 만든 '입력 그대로 저장된 행'을 테스트에서 직접 넣으려고 사용자 모델과 해시 함수를
@@ -144,6 +146,56 @@ async def test_register_rejects_passwords_outside_the_rules(client, password):
     )
     assert resp.status_code == 422
     assert resp.json()["detail"][0]["loc"][-1] == "password"
+
+
+# 422 본문은 제출한 값을 되돌려 주지 않는다. pydantic 오류 항목의 input(제출값)에는 규칙에 걸린 비밀번호
+# 원문이나 본문 전체가 그대로 들어 있었다. 화면이 쓰는 loc·type과 msg·ctx(예: min_length)는 그대로 남는다.
+# 한글 비밀번호는 ASCII JSON 안에서 유니코드 이스케이프로 나오므로, 파싱한 값에서도 찾는다.
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("password", "error_type"),
+    [
+        ("S3cret!", "string_too_short"),  # 8자 미만
+        ("가" * 25, "value_error"),  # 25자, UTF-8로 75바이트라 72바이트를 넘는다
+    ],
+)
+async def test_a_rejected_password_is_not_echoed_back_in_the_422(client, password, error_type):
+    resp = await client.post("/auth/register", json={"email": "dave@example.com", "password": password})
+
+    assert resp.status_code == 422
+    [error] = resp.json()["detail"]
+    assert error["loc"] == ["body", "password"]
+    assert error["type"] == error_type
+    assert error["msg"]
+    assert "ctx" in error
+    assert "input" not in error and "url" not in error
+    assert password not in resp.text
+    assert password not in json.dumps(resp.json(), ensure_ascii=False)
+
+
+# 필드가 빠졌을 때(missing)의 input은 요청 본문 전체이고, /auth/refresh에서 키 이름을 틀리면 보낸 갱신 토큰이
+# 그 안에 들어 있었다. 두 경우 모두 본문의 값이 422 응답에 나오지 않아야 한다.
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("path", "payload", "secret", "field"),
+    [
+        ("/auth/register", {"email": "dave@example.com"}, "dave@example.com", "password"),
+        (
+            "/auth/refresh",
+            {"refreshToken": "refresh-token-value-from-the-client"},
+            "refresh-token-value-from-the-client",
+            "refresh_token",
+        ),
+    ],
+)
+async def test_a_missing_field_422_does_not_echo_the_request_body(client, path, payload, secret, field):
+    resp = await client.post(path, json=payload)
+
+    assert resp.status_code == 422
+    [error] = resp.json()["detail"]
+    assert error["type"] == "missing"
+    assert error["loc"] == ["body", field]
+    assert secret not in resp.text
 
 
 # 경계값: 정확히 72바이트(한글 24자)는 가입과 로그인 모두 성공해야 한다.

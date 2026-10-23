@@ -190,6 +190,8 @@ API를 직접 호출해 보려면 Swagger UI를 쓴다.
 
 로컬 Ollama로 답변을 생성하므로 한 번에 몇 초가 걸린다. 생성 시간 중앙값은 A.X-4.0-Light로 약 9초(v13, 부하 조건), Qwen2.5-7B로 약 4~5초(v10)였고, 서버를 막 띄운 직후에는 10~20초가 걸린 적도 있다.
 
+생성기를 쓸 수 없으면 `POST /query/ask`는 503과 `Retry-After` 헤더, `{"detail": {"code": ..., "message": ...}}`를 돌려준다. code는 `generator_unavailable`(연결 실패, 생성기의 5xx), `generator_timeout`(제한 시간 초과), `generator_model_missing`(설정한 모델이 Ollama에 없음) 셋이고, 채팅 화면은 code에 맞춰 안내한다(모델이 없으면 `ollama list`와 위 '사전 준비'). 이때 질문 기록은 남지 않는다.
+
 ## 로컬 개발 (Docker 없이 코드만 보는 경우)
 
 ```bash

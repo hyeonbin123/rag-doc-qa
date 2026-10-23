@@ -5,15 +5,20 @@
 # 53250be), NUL 문자·고립 서로게이트가 든 질문이 LLM 답변까지 마친 뒤 500으로 끝나던 것(ZAP 1차 스캔,
 # 커밋 55002dc).
 
+import logging
+
 import pytest
 
+# ASGITransport·AsyncClient: 앱 예외를 테스트로 올리지 않고 500 응답 그대로 받는 클라이언트를 따로 만든다.
+from httpx import ASGITransport, AsyncClient
+
 # 바꿔 끼울 의존성(임베딩, 생성기), 앱, 직접 넣을 문서·청크 모델, 바닥값 표(SCORE_FLOORS)를 바꿀 검색 모듈,
-# conftest의 가짜와 벡터 차원.
+# 생성 모듈(생성기 장애 예외), conftest의 가짜와 벡터 차원.
 from app.dependencies import get_embedder, get_generator
 from app.main import app
 from app.models.chunk import Chunk
 from app.models.document import Document
-from app.services import retrieval
+from app.services import generation, retrieval
 from tests.conftest import EMBEDDING_DIM, FakeEmbeddingService, FakeGenerationService
 
 
@@ -217,3 +222,59 @@ async def test_a_too_long_question_and_a_nul_character_differ_in_the_422_type(au
     assert too_long.status_code == with_nul.status_code == 422
     assert [d["type"] for d in too_long.json()["detail"]] == ["string_too_long"]
     assert "string_too_long" not in [d["type"] for d in with_nul.json()["detail"]]
+
+
+# 생성기가 답 대신 예외를 내는 가짜. 생성기 장애(GenerationUnavailableError)와 예기치 않은
+# 버그(RuntimeError)를 흉내 낸다.
+class FailingGenerator(FakeGenerationService):
+    def __init__(self, error: Exception) -> None:
+        self.error = error
+
+    async def answer(self, question, chunks, language="en"):
+        raise self.error
+
+
+# 생성기 장애(Ollama 꺼짐, 시간 초과, 모델 태그 없음)는 500이 아니라 503과 detail.code, Retry-After로 알린다.
+# 채팅 화면은 code로 안내 문구를 고른다(app/web/static/chat.js). 업스트림 오류 본문은 응답에 싣지 않고 서버
+# 로그에만 남기며, 응답에도 보안 헤더 세 개가 붙는다. 생성은 질문 기록 저장 전 단계라 query_logs에 행이 생기지
+# 않는다.
+@pytest.mark.asyncio
+@pytest.mark.parametrize("code", ["generator_unavailable", "generator_timeout", "generator_model_missing"])
+async def test_a_generator_outage_is_a_503_with_a_code_and_no_query_log(authed_client, caplog, code):
+    error = generation.GenerationUnavailableError(code, upstream="Ollama HTTP 404: upstream-only detail")
+    app.dependency_overrides[get_generator] = lambda: FailingGenerator(error)
+
+    with caplog.at_level(logging.WARNING):
+        resp = await authed_client.post("/query/ask", json={"question": "What is FastAPI?"})
+
+    assert resp.status_code == 503
+    assert resp.json()["detail"] == {"code": code, "message": error.message}
+    assert resp.headers["retry-after"] == str(error.retry_after)
+    assert "upstream-only detail" not in resp.text
+    assert "upstream-only detail" in caplog.text
+    assert resp.headers["x-content-type-options"] == "nosniff"
+    assert resp.headers["x-frame-options"] == "DENY"
+    assert "frame-ancestors 'none'" in resp.headers["content-security-policy"]
+    assert (await authed_client.get("/logs")).json() == []
+
+
+# 예기치 않은 예외의 500은 Starlette가 사용자 미들웨어 바깥(ServerErrorMiddleware)에서 만들어 보안 헤더
+# 미들웨어를 지나지 않는다. 앱의 500 처리기가 같은 헤더를 직접 붙이는지, 본문은 예외 내용 없이 예전과 같은
+# 'Internal Server Error'인지 확인한다. 기본 테스트 클라이언트는 앱 예외를 테스트로 올리므로, 응답을 받으려고
+# raise_app_exceptions=False 클라이언트를 따로 만든다(인증 헤더는 authed_client의 것을 쓴다).
+@pytest.mark.asyncio
+async def test_an_unexpected_error_is_a_plain_500_that_keeps_the_security_headers(authed_client):
+    app.dependency_overrides[get_generator] = lambda: FailingGenerator(RuntimeError("bug in the generator"))
+    transport = ASGITransport(app=app, raise_app_exceptions=False)
+
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=authed_client.headers
+    ) as raw_client:
+        resp = await raw_client.post("/query/ask", json={"question": "What is FastAPI?"})
+
+    assert resp.status_code == 500
+    assert resp.text == "Internal Server Error"
+    assert resp.headers["x-content-type-options"] == "nosniff"
+    assert resp.headers["x-frame-options"] == "DENY"
+    assert "frame-ancestors 'none'" in resp.headers["content-security-policy"]
+    assert (await authed_client.get("/logs")).json() == []
