@@ -17,23 +17,27 @@
 #   못해 코드가 든 답이 잘렸기 때문에, 답변은 자유 텍스트로 받고 인용(숫자 목록)만 따로 스키마로 받는다.
 # - 한국어 질문에만 한국어 답변 규칙을 붙이고, 한국어 답에 한자·가나가 섞이면 한 번 다시 만드는 언어 가드를
 #   둔다(v8, v13).
+# - 생성기를 쓸 수 없을 때(연결 실패·시간 초과·모델 없음)는 GenerationUnavailableError(code)로 바꿔 올린다.
+#   /query/ask는 이것을 503 + Retry-After로 응답하고(app/main.py), 채팅 화면은 code마다 다른 안내를 보인다.
 # [연결] /query/ask(app/routers/query.py)가 get_generation_service 결과를 의존성으로 받아 answer를 부른다.
 # 평가(eval/run_answer_eval.py)도 같은 생성기를 strict_citations=False로 만들어 쓰고, 프롬프트 상수를 가져다
-# 토큰 수를 센다.
+# 토큰 수를 센다. 판정 호출(eval/judge.py, eval/run_judge.py)은 이 파일의 공유 SSL 컨텍스트를 함께 쓴다.
 
 from __future__ import annotations
 
 import json
 import re
+import ssl
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from functools import lru_cache
+from functools import cache, lru_cache
 
 # httpx: Ollama REST API(/api/chat)를 비동기로 부른다. AsyncAnthropic: Claude Messages API 비동기 클라이언트.
+# API*Error: Claude SDK 예외(연결 실패·시간 초과·HTTP 상태 오류)를 생성기 장애로 바꿀 때 가른다.
 # RetrievedChunk: 검색 결과 청크(본문·헤딩)를 프롬프트로 만들 때 쓴다.
 import httpx
-from anthropic import AsyncAnthropic
+from anthropic import APIConnectionError, APIError, APIStatusError, APITimeoutError, AsyncAnthropic
 
 from app.config import get_settings
 from app.services.language import Language
@@ -286,6 +290,123 @@ CITE_ANSWER_TOOL = {
 }
 
 
+# --- 생성기 호출 경로: 공유 SSL 컨텍스트와 생성기 장애 ---
+
+# Ollama 호출(생성, 판정, 상태 읽기)이 함께 쓰는 SSL 컨텍스트를 프로세스당 한 번만 만든다.
+# - 왜: httpx는 클라이언트(기본 transport)를 만들 때마다 기본 SSL 컨텍스트를 새로 만들며 certifi CA 번들을
+#   동기로 읽는다. 이 모듈은 호출마다 클라이언트를 열므로 그 일이 호출마다 일어났고, Windows 호스트에서 호출당
+#   CPU 약 0.3초(부하 때는 그 이상)가 들면서 그동안 이벤트 루프 전체가 멈췄다. 기록된 호스트 생성·인용·판정
+#   시간에도 이 비용이 들어 있다(docs/experiments.md '기타 관찰'). Ollama 기본 주소는 http라 이 컨텍스트는
+#   쓰이지도 않는다. 미리 만든 컨텍스트를 verify=로 넘기면 클라이언트 생성은 1ms 안쪽이다.
+# - 클라이언트 대신 컨텍스트만 공유하는 이유: AsyncClient(연결 풀)는 만든 이벤트 루프에 묶여, 테스트마다 새
+#   루프를 쓰는 pytest나 asyncio.run을 여러 번 부르는 평가 스크립트 사이에서 공유하면 문제가 되고 닫는 처리도
+#   따로 필요하다. 반면 keep-alive로 아끼는 localhost 연결은 1ms 안팎이다. SSL 컨텍스트는 이벤트 루프와
+#   상관없이 여러 연결이 함께 써도 된다.
+# - verify=False는 쓰지 않는다. OLLAMA_BASE_URL을 https로 둔 배포에서 인증서 검증이 꺼지기 때문이다.
+#   httpx.create_ssl_context()는 클라이언트 기본값과 같은 검증 컨텍스트(certifi 번들,
+#   SSL_CERT_FILE·SSL_CERT_DIR 환경 변수가 있으면 그것)를 만든다.
+# 주의: 처음 부를 때의 환경 변수로 정해져 프로세스가 끝날 때까지 바뀌지 않는다. 모든 호출이 같은 객체를 쓰므로
+# 읽기만 하고 고치지 않는다(예: load_cert_chain을 부르면 모든 호출에 퍼진다).
+@cache
+def ollama_ssl_context() -> ssl.SSLContext:
+    """Ollama 호출이 함께 쓰는 검증용 SSL 컨텍스트. 처음 부를 때 한 번 만든다."""
+    return httpx.create_ssl_context()
+
+
+# 생성기 장애 code와 503 응답의 detail.message. 생성기(LLM 서버)를 쓸 수 없어 답을 못 만든 경우를 셋으로
+# 나눈다. app/main.py가 503 JSON {"detail": {"code", "message"}}와 Retry-After 헤더로 바꾸고, 채팅
+# 화면(app/web/static/chat.js)은 code마다 다른 안내를 보인다(tests/test_web.py가 code 목록이 화면에 모두
+# 있는지 확인). 문구는 API 응답으로 그대로 나가는 글이라 다른 API 오류 문구처럼 영어로 둔다.
+# - generator_unavailable: 연결 실패, 생성기의 5xx(Ollama 모델 실행기 중단, Claude 과부하 529 등)
+# - generator_timeout: 한 호출의 제한 시간(Ollama는 180초)을 넘김
+# - generator_model_missing: 설정한 모델이 서버에 없음(Ollama 404). README 설치 절대로 A.X 모델을 직접
+#   만들어야 해서, 모델 태그를 아직 만들지 않은 것이 가장 흔한 첫 실패다.
+GENERATOR_ERROR_MESSAGES: dict[str, str] = {
+    "generator_unavailable": "The answer generator could not be reached or failed. Try again later.",
+    "generator_timeout": "The answer generator did not respond in time. Try again later.",
+    "generator_model_missing": "The configured generation model is not available on the generator server.",
+}
+
+# 503 응답의 Retry-After(초). 다시 띄운 Ollama가 모델을 올리고 첫 답을 내기까지 README '화면'의 첫 질문에서
+# 15.8초가 걸렸으므로 그보다 넉넉한 30초로 둔다. 잰 회복 시간이 아니라, 클라이언트가 곧바로 되풀이해 보내지
+# 않게 하는 안내값이다.
+GENERATION_RETRY_AFTER_SECONDS = 30
+
+# 업스트림 오류 본문을 원인 요약(upstream)에 넣을 때의 최대 글자 수. Ollama 오류 본문은 {"error": "..."} 한
+# 줄이라 충분하고, 예상 밖의 큰 본문(HTML 오류 페이지 등)이 로그를 채우지 않게 자른다.
+UPSTREAM_TEXT_LIMIT = 300
+
+
+class GenerationUnavailableError(RuntimeError):
+    """생성기(LLM 서버)를 쓸 수 없어 답을 만들지 못했다. /query/ask는 이것을 503으로 응답한다.
+
+    code: GENERATOR_ERROR_MESSAGES의 키. 다른 값이면 ValueError를 낸다(응답 계약 밖의 code를 막으려고).
+    upstream: 원인 요약(업스트림 HTTP 상태와 오류 본문 앞부분, 또는 예외 이름과 문구). 서버 로그와 예외
+        문구(평가 스크립트의 트레이스백)에만 쓰고 HTTP 응답에는 싣지 않는다.
+    retry_after: 503 응답의 Retry-After(초).
+    원래 예외는 `raise ... from`으로 __cause__에 남긴다.
+    """
+
+    def __init__(
+        self, code: str, *, upstream: str = "", retry_after: int = GENERATION_RETRY_AFTER_SECONDS
+    ) -> None:
+        if code not in GENERATOR_ERROR_MESSAGES:
+            raise ValueError(f"unknown generator error code {code!r}")
+        super().__init__(f"{code}: {upstream}" if upstream else code)
+        self.code = code
+        self.upstream = upstream
+        self.retry_after = retry_after
+
+    # 503 응답의 detail.message(영어 고정 문구).
+    @property
+    def message(self) -> str:
+        return GENERATOR_ERROR_MESSAGES[self.code]
+
+
+# Ollama 호출의 httpx 예외를 생성기 장애로 바꾼다. 장애로 보지 않을 예외면 None을 돌려줘 호출한 쪽이 원래
+# 예외를 그대로 올리게 한다.
+# - 시간 초과(TimeoutException: 연결·읽기·쓰기·풀 대기) → generator_timeout
+# - HTTP 404 → generator_model_missing (Ollama /api/chat은 모델 태그가 없으면 404와 "model ... not found")
+# - HTTP 5xx → generator_unavailable
+# - 404가 아닌 4xx → None. 요청 본문이나 think 설정처럼 이쪽 요청의 문제라, 503 뒤에 숨기지 않고 500과
+#   트레이스백으로 드러나게 한다.
+# - 그 밖의 전송 오류(ConnectError 등, Ollama가 꺼졌거나 주소가 틀림) → generator_unavailable
+def _ollama_unavailable(exc: httpx.HTTPError) -> GenerationUnavailableError | None:
+    if isinstance(exc, httpx.HTTPStatusError):
+        status = exc.response.status_code
+        upstream = f"Ollama HTTP {status}: {exc.response.text[:UPSTREAM_TEXT_LIMIT]}"
+        if status == 404:
+            return GenerationUnavailableError("generator_model_missing", upstream=upstream)
+        if status >= 500:
+            return GenerationUnavailableError("generator_unavailable", upstream=upstream)
+        return None
+    upstream = f"{type(exc).__name__}: {exc}"
+    if isinstance(exc, httpx.TimeoutException):
+        return GenerationUnavailableError("generator_timeout", upstream=upstream)
+    return GenerationUnavailableError("generator_unavailable", upstream=upstream)
+
+
+# Claude SDK 예외를 생성기 장애로 바꾼다(Ollama와 같은 code). 장애로 보지 않을 예외면 None.
+# - APITimeoutError → generator_timeout. APIConnectionError의 하위 클래스라 먼저 본다.
+# - APIConnectionError → generator_unavailable
+# - HTTP 404 → generator_model_missing (모델 이름이 없음), HTTP 5xx(529 과부하 포함) → generator_unavailable
+# - 나머지(400 잘못된 요청, 401 키 오류, 403, 413, 422, 429 한도 초과, 응답 검증 오류) → None. 우리
+#   요청·설정의 문제를 503으로 숨기지 않으려고 넓게 묶지 않는다. SDK는 연결 오류·429·5xx를 스스로 몇 번 다시
+#   시도한 뒤에 예외를 내므로, 여기 오는 것은 재시도가 다 실패한 경우다.
+def _claude_unavailable(exc: APIError) -> GenerationUnavailableError | None:
+    upstream = f"{type(exc).__name__}: {str(exc)[:UPSTREAM_TEXT_LIMIT]}"
+    if isinstance(exc, APITimeoutError):
+        return GenerationUnavailableError("generator_timeout", upstream=upstream)
+    if isinstance(exc, APIConnectionError):
+        return GenerationUnavailableError("generator_unavailable", upstream=upstream)
+    if isinstance(exc, APIStatusError):
+        if exc.status_code == 404:
+            return GenerationUnavailableError("generator_model_missing", upstream=upstream)
+        if exc.status_code >= 500:
+            return GenerationUnavailableError("generator_unavailable", upstream=upstream)
+    return None
+
+
 # 생성 결과. answer는 답 글, cited_chunk_numbers는 1부터 시작하는 [N] 번호 목록, 토큰 수와 모델 이름은 질문
 # 기록(query_logs)에 저장된다.
 @dataclass
@@ -354,15 +475,22 @@ class AnthropicGenerationService(GenerationService):
                 diagnostics={"refused_without_context": True},
             )
         # tool_choice로 cite_answer 도구를 강제해, 모델이 자유 텍스트 대신 스키마에 맞는 도구 입력을 내게
-        # 한다. 출력은 최대 1024토큰.
-        response = await self._client.messages.create(
-            model=self._model_name,
-            max_tokens=1024,
-            system=system_prompt_for(ANTHROPIC_SYSTEM_PROMPT, language),
-            tools=[CITE_ANSWER_TOOL],
-            tool_choice={"type": "tool", "name": "cite_answer"},
-            messages=[{"role": "user", "content": _build_user_message(question, chunks)}],
-        )
+        # 한다. 출력은 최대 1024토큰. 연결 실패·시간 초과·404·5xx는 GenerationUnavailableError로 바꾸고(503),
+        # 나머지 SDK 오류는 그대로 올린다(_claude_unavailable).
+        try:
+            response = await self._client.messages.create(
+                model=self._model_name,
+                max_tokens=1024,
+                system=system_prompt_for(ANTHROPIC_SYSTEM_PROMPT, language),
+                tools=[CITE_ANSWER_TOOL],
+                tool_choice={"type": "tool", "name": "cite_answer"},
+                messages=[{"role": "user", "content": _build_user_message(question, chunks)}],
+            )
+        except APIError as exc:
+            unavailable = _claude_unavailable(exc)
+            if unavailable is None:
+                raise
+            raise unavailable from exc
 
         # 응답 내용 중 도구 호출 블록을 찾아 그 입력(answer, citations)을 꺼낸다.
         tool_use_block = next(block for block in response.content if block.type == "tool_use")
@@ -441,7 +569,10 @@ class OllamaGenerationService(GenerationService):
     #   v13에 따르면 그래도 실행마다 완전히 같지는 않았다).
     # - response_schema가 있으면 format으로 넘겨 제약 디코딩을 켠다(인용 호출만).
     # - think는 설정됐을 때만 보낸다. 값이 없으면 v13 이전과 똑같은 요청이 된다.
-    # 호출마다 새 AsyncClient를 연다. HTTP 오류는 raise_for_status로 예외가 된다.
+    # 호출마다 클라이언트를 새로 열되, 인증서 번들은 프로세스에서 한 번만 읽는다(공유 SSL 컨텍스트
+    # ollama_ssl_context. 호출마다 읽던 때는 Windows 호스트에서 호출당 CPU 약 0.3초였다). 요청 본문은
+    # 그대로다. HTTP 오류는 raise_for_status로 예외가 되고, 생성기 장애(연결 실패·시간 초과·404·5xx)는
+    # GenerationUnavailableError로 바꿔 올린다(_ollama_unavailable). 404가 아닌 4xx는 원래 예외 그대로다.
     async def _chat(self, messages: list[dict], response_schema: dict | None) -> dict:
         payload = {
             "model": self._model_name,
@@ -458,10 +589,16 @@ class OllamaGenerationService(GenerationService):
         if self._think is not None:
             payload["think"] = self._think
 
-        async with httpx.AsyncClient(timeout=self._timeout) as client:
-            response = await client.post(f"{self._base_url}/api/chat", json=payload)
-            response.raise_for_status()
-            return response.json()
+        try:
+            async with httpx.AsyncClient(timeout=self._timeout, verify=ollama_ssl_context()) as client:
+                response = await client.post(f"{self._base_url}/api/chat", json=payload)
+                response.raise_for_status()
+                return response.json()
+        except httpx.HTTPError as exc:
+            unavailable = _ollama_unavailable(exc)
+            if unavailable is None:
+                raise
+            raise unavailable from exc
 
     # _chat에 호출별 진단을 더한다: 실제로 읽은 프롬프트 토큰 수(prompt_eval_count), 출력 토큰 수(eval_count),
     # 끝난 이유(done_reason, length면 1024토큰에서 잘린 것), 추론 출력 길이, 걸린 시간(ms). 앱은 쓰지 않고

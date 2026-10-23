@@ -17,18 +17,24 @@ v13(docs/experiments.md)은 기본으로 추론하는 모델을 위한 선택적
 # 한다(docs/experiments.md v13).
 
 import json
+import ssl
 import uuid
 
-# httpx: MockTransport로 Ollama 응답을 메모리에서 돌려준다. pytest: 픽스처와 parametrize.
+# anthropic: Claude 경로의 SDK 예외 클래스(장애 코드 변환 테스트). httpx2: anthropic SDK가 쓰는 HTTP
+# 라이브러리로, SDK 예외를 만들 때 필요한 Request·Response 객체를 만든다. httpx: MockTransport로 Ollama
+# 응답을 메모리에서 돌려준다. pytest: 픽스처와 parametrize.
+import anthropic
 import httpx
+import httpx2
 import pytest
 
 # 설정 기본값·캐시, 생성 모듈(httpx를 바꿔 끼울 대상과 규칙 문자열), 인용 스키마, 생성기, 검색 결과 데이터
-# 클래스를 가져온다.
+# 클래스, 판정 호출(eval/judge.py)과 Ollama 상태 읽기(eval/run_judge.py)를 가져온다.
 from app.config import Settings, get_settings
 from app.services import generation
 from app.services.generation import CITATIONS_SCHEMA, OllamaGenerationService
 from app.services.retrieval import RetrievedChunk
+from eval import judge, run_judge
 
 # 큰따옴표가 든 코드가 들어간 답. 스키마 제약 디코딩으로 답을 받던 시절 7B가 이런 답을 첫 따옴표에서 잘랐던
 # 것이 두 단계 호출로 바꾼 이유다.
@@ -543,3 +549,289 @@ def test_the_v15_switches_come_from_settings_with_the_v15_defaults(monkeypatch):
     finally:
         get_settings.cache_clear()
         generation.get_generation_service.cache_clear()
+
+
+# --- 생성기 호출 경로: 인증서 번들은 한 번만 읽기, 장애를 코드로 알리기, 요청 본문 고정 ---
+# httpx는 클라이언트를 만들 때마다(정확히는 기본 transport를 만들 때마다) 기본 SSL 컨텍스트를 만들면서 certifi
+# CA 번들을 동기로 읽는다. Ollama 주소는 http라 그 컨텍스트는 쓰이지도 않는데, Windows 호스트에서는 호출당 CPU
+# 약 0.3초가 들고 그동안 이벤트 루프가 멈췄다. 위 픽스처들은 AsyncClient에 MockTransport를 넣어 기본 transport
+# 생성을 건너뛰므로 이 비용이 보이지 않았다. 그래서 아래 테스트는 실제 클라이언트·transport 생성 경로를 그대로
+# 두고, 요청을 보내는 단계(AsyncHTTPTransport.handle_async_request)만 가짜로 바꾼다.
+
+
+# ssl.SSLContext.load_verify_locations(CA 번들 파일 읽기) 호출을 센다. 실제 읽기는 그대로 한다.
+@pytest.fixture
+def ca_bundle_loads(monkeypatch):
+    """CA 번들 읽기 호출의 인자를 순서대로 모은 목록을 돌려준다."""
+    loads: list[tuple] = []
+    real_load = ssl.SSLContext.load_verify_locations
+
+    def counting_load(self, *args, **kwargs):
+        loads.append(args)
+        return real_load(self, *args, **kwargs)
+
+    monkeypatch.setattr(ssl.SSLContext, "load_verify_locations", counting_load)
+    return loads
+
+
+# 실제 AsyncClient·AsyncHTTPTransport는 그대로 만들고, 네트워크로 보내는 단계만 reply(request)의 응답(또는
+# reply가 낸 httpx 예외)으로 바꾼다. 보낸 요청 목록을 돌려준다.
+def fake_network(monkeypatch, reply) -> list[httpx.Request]:
+    sent: list[httpx.Request] = []
+
+    async def handle_async_request(self, request):
+        sent.append(request)
+        return reply(request)
+
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", handle_async_request)
+    return sent
+
+
+# Ollama /api/chat 성공 응답. format(스키마)이 붙은 호출이면 1번 문단 인용 JSON, 아니면 답 글을 돌려준다.
+def answer_then_citation(request: httpx.Request) -> httpx.Response:
+    body = json.loads(request.content)
+    content = json.dumps({"citations": [{"chunk_number": 1}]}) if "format" in body else "Use a path."
+    return httpx.Response(
+        200, json={"message": {"content": content}, "prompt_eval_count": 7, "eval_count": 3}
+    )
+
+
+# 질문 두 개(답변·인용 호출 4번)를 해도 CA 번들은 많아야 한 번 읽는다(프로세스 첫 호출에서 공유 SSL 컨텍스트를
+# 만들 때). 고치기 전에는 호출마다 한 번씩, 4번 읽었다.
+@pytest.mark.asyncio
+async def test_ollama_calls_read_the_ca_bundle_at_most_once(monkeypatch, ca_bundle_loads):
+    sent = fake_network(monkeypatch, answer_then_citation)
+    service = OllamaGenerationService("http://ollama.test", "m")
+
+    for _ in range(2):
+        result = await service.answer("How do I declare a path parameter?", [make_chunk(1)], "en")
+
+    assert len(sent) == 4
+    assert result.cited_chunk_numbers == [1]
+    assert len(ca_bundle_loads) <= 1
+
+
+# 판정 호출(eval/judge.py의 judge_with_ollama)과 캐시 되돌리기 요청(flush_ollama)도 같은 공유 SSL 컨텍스트를
+# 쓴다. 판정 450회짜리 실행이면 호출마다 읽는 비용이 몇 분이 된다.
+@pytest.mark.asyncio
+async def test_judge_and_flush_calls_read_the_ca_bundle_at_most_once(monkeypatch, ca_bundle_loads):
+    scores = {"faithfulness_score": 4, "hallucinated": False, "correctness_score": 5}
+
+    def reply(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        content = json.dumps(scores) if "format" in body else "2"
+        return httpx.Response(
+            200, json={"message": {"content": content}, "prompt_eval_count": 5, "eval_count": 1}
+        )
+
+    sent = fake_network(monkeypatch, reply)
+    config = judge.JudgeConfig(model="m")
+
+    for _ in range(2):
+        await judge.flush_ollama("http://ollama.test", config)
+        outcome = await judge.judge_with_ollama("http://ollama.test", "prompt", config)
+
+    assert len(sent) == 4
+    assert outcome.correctness_score == 5
+    assert len(ca_bundle_loads) <= 1
+
+
+# 실행 조건 기록용 Ollama 상태 읽기(eval/run_judge.py의 ollama_state, 실행당 1~2번)도 같은 컨텍스트를 쓴다.
+@pytest.mark.asyncio
+async def test_ollama_state_reads_the_ca_bundle_at_most_once(monkeypatch, ca_bundle_loads):
+    sent = fake_network(monkeypatch, lambda request: httpx.Response(200, json={"models": []}))
+
+    for _ in range(2):
+        state = await run_judge.ollama_state("http://ollama.test")
+
+    assert len(sent) == 6  # version, ps, tags를 두 번
+    assert state["tags"] == {"models": []}
+    assert len(ca_bundle_loads) <= 1
+
+
+# 공유 컨텍스트는 프로세스에 하나이고, 인증서 검증을 끄지 않는다(verify=False가 아님). OLLAMA_BASE_URL을
+# https로 둔 배포에서도 서버 인증서와 호스트 이름을 검사해야 한다.
+def test_the_shared_ssl_context_is_one_object_that_still_verifies():
+    context = generation.ollama_ssl_context()
+
+    assert context is generation.ollama_ssl_context()
+    assert context.verify_mode == ssl.CERT_REQUIRED
+    assert context.check_hostname is True
+
+
+# 요청을 보내는 단계에서 httpx 예외를 내는 reply를 만든다(연결 거부, 읽기 시간 초과 흉내).
+def raising(exc_type: type[httpx.TransportError]):
+    def reply(request: httpx.Request) -> httpx.Response:
+        raise exc_type("simulated by the test", request=request)
+
+    return reply
+
+
+# Ollama 장애는 GenerationUnavailableError와 code로 올라온다: 연결 실패·5xx는 generator_unavailable, 시간
+# 초과는 generator_timeout, 모델 태그가 없을 때의 404는 generator_model_missing. /query/ask는 이것을 503으로
+# 바꾼다(app/main.py). 원래 httpx 예외는 __cause__로 남아 로그에서 볼 수 있고, Ollama가 보낸 오류 본문은
+# 응답이 아니라 로그에만 쓰도록 upstream에 담긴다.
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("reply", "code", "upstream_part"),
+    [
+        (raising(httpx.ConnectError), "generator_unavailable", "ConnectError"),  # Ollama가 꺼져 있음
+        (raising(httpx.ReadTimeout), "generator_timeout", "ReadTimeout"),  # 제한 시간 안에 답이 없음
+        (
+            lambda request: httpx.Response(404, json={"error": "model 'm' not found"}),
+            "generator_model_missing",
+            "model 'm' not found",
+        ),
+        (
+            lambda request: httpx.Response(500, json={"error": "llama runner process has terminated"}),
+            "generator_unavailable",
+            "llama runner process has terminated",
+        ),
+    ],
+)
+async def test_ollama_outages_become_unavailable_errors_with_a_code(monkeypatch, reply, code, upstream_part):
+    fake_network(monkeypatch, reply)
+
+    with pytest.raises(generation.GenerationUnavailableError) as caught:
+        await OllamaGenerationService("http://ollama.test", "m").answer("Q?", [make_chunk(1)], "en")
+
+    assert caught.value.code == code
+    assert caught.value.retry_after > 0
+    assert caught.value.message
+    assert upstream_part in caught.value.upstream
+    assert isinstance(caught.value.__cause__, httpx.HTTPError)
+
+
+# 404가 아닌 4xx(예: 요청 본문이나 think 설정을 Ollama가 거부)는 생성기 장애가 아니라 이쪽 요청의 문제라,
+# 503으로 바꾸지 않고 원래 예외를 그대로 올린다(500과 트레이스백으로 드러나게).
+@pytest.mark.asyncio
+async def test_a_request_ollama_rejects_is_not_reported_as_an_outage(monkeypatch):
+    fake_network(monkeypatch, lambda request: httpx.Response(400, json={"error": "invalid format"}))
+
+    with pytest.raises(httpx.HTTPStatusError):
+        await OllamaGenerationService("http://ollama.test", "m").answer("Q?", [make_chunk(1)], "en")
+
+
+# 기본 설정(think 없음)의 두 요청 본문을 필드 단위로 고정한다. 공유 SSL 컨텍스트와 장애 처리는 요청을 보내는
+# 방법만 바꾸므로, 기록된 정확도·인용 수치를 낸 요청과 같아야 한다.
+@pytest.mark.asyncio
+async def test_the_request_bodies_stay_as_they_were_measured(scripted_ollama):
+    payloads, script = scripted_ollama
+    script += [("Use `Path()`.", {}), CITE_2]
+
+    await OllamaGenerationService("http://ollama.test", "a.x-4.0-light:q4_k_m").answer(
+        "How do I declare a path parameter?", [make_chunk(1), make_chunk(2)], "en"
+    )
+
+    options = {"temperature": 0, "num_ctx": 8192, "num_predict": 1024}
+    context = "[1] (Page 1)\nPassage 1 text.\n\n[2] (Page 2)\nPassage 2 text."
+    answer_system = (
+        "You are a documentation assistant answering questions about FastAPI using ONLY the "
+        "numbered context passages provided below. Rules:\n"
+        "1. Answer only using information present in the context passages.\n"
+        "2. If the passages do not contain enough information to answer, say you don't know "
+        "instead of guessing.\n"
+        "3. Reply with the answer text only — no JSON, no preamble.\n"
+    )
+    citation_system = (
+        "Given a question, numbered context passages, and an answer that was written from them, "
+        "report which passages the answer actually relied on. Return their [N] numbers."
+    )
+    assert payloads == [
+        {
+            "model": "a.x-4.0-light:q4_k_m",
+            "messages": [
+                {"role": "system", "content": answer_system},
+                {
+                    "role": "user",
+                    "content": f"Context passages:\n\n{context}\n\n"
+                    "Question: How do I declare a path parameter?",
+                },
+            ],
+            "stream": False,
+            "options": options,
+        },
+        {
+            "model": "a.x-4.0-light:q4_k_m",
+            "messages": [
+                {"role": "system", "content": citation_system},
+                {
+                    "role": "user",
+                    "content": "Question: How do I declare a path parameter?\n\n"
+                    f"Context passages:\n\n{context}\n\n"
+                    "Answer that was written:\nUse `Path()`.",
+                },
+            ],
+            "stream": False,
+            "options": options,
+            "format": CITATIONS_SCHEMA,
+        },
+    ]
+
+
+# Claude 경로의 SDK 예외를 만드는 도우미. 상태 코드 예외는 그 코드의 응답 객체가 있어야 만들어진다.
+ANTHROPIC_REQUEST = httpx2.Request("POST", "https://api.anthropic.com/v1/messages")
+
+
+def anthropic_status_error(cls: type[anthropic.APIStatusError], status: int) -> anthropic.APIStatusError:
+    return cls(
+        f"Error code: {status}", response=httpx2.Response(status, request=ANTHROPIC_REQUEST), body=None
+    )
+
+
+# messages.create가 정해 둔 예외를 내는 가짜 Claude 클라이언트. 실제 API는 부르지 않는다.
+class RaisingMessages:
+    def __init__(self, exc: Exception) -> None:
+        self.exc = exc
+
+    async def create(self, **kwargs):
+        raise self.exc
+
+
+class RaisingAnthropicClient:
+    def __init__(self, exc: Exception) -> None:
+        self.messages = RaisingMessages(exc)
+
+
+def claude_service_raising(exc: Exception) -> generation.AnthropicGenerationService:
+    service = generation.AnthropicGenerationService("test-key", "claude-test")
+    service._client = RaisingAnthropicClient(exc)
+    return service
+
+
+# Claude 경로도 같은 코드로 바꾼다: 연결 실패·5xx·529(과부하)는 generator_unavailable, 시간 초과는
+# generator_timeout, 404(모델 이름 없음)는 generator_model_missing. SDK는 이런 오류를 스스로 몇 번 다시 시도한
+# 뒤에 예외를 낸다.
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("exc", "code"),
+    [
+        (anthropic.APIConnectionError(request=ANTHROPIC_REQUEST), "generator_unavailable"),
+        (anthropic.APITimeoutError(request=ANTHROPIC_REQUEST), "generator_timeout"),
+        (anthropic_status_error(anthropic.InternalServerError, 500), "generator_unavailable"),
+        (anthropic_status_error(anthropic.OverloadedError, 529), "generator_unavailable"),
+        (anthropic_status_error(anthropic.NotFoundError, 404), "generator_model_missing"),
+    ],
+)
+async def test_claude_outages_become_unavailable_errors_with_a_code(exc, code):
+    with pytest.raises(generation.GenerationUnavailableError) as caught:
+        await claude_service_raising(exc).answer("Q?", [make_chunk(1)], "en")
+
+    assert caught.value.code == code
+    assert caught.value.__cause__ is exc
+
+
+# 그 밖의 Claude 오류(400 잘못된 요청, 401 키 오류, 429 한도 초과 등)는 장애로 숨기지 않고 그대로 올린다.
+# 우리 요청이나 설정의 문제를 503 뒤에 감추지 않으려는 것이다.
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "exc",
+    [
+        anthropic_status_error(anthropic.BadRequestError, 400),
+        anthropic_status_error(anthropic.AuthenticationError, 401),
+        anthropic_status_error(anthropic.RateLimitError, 429),
+    ],
+)
+async def test_claude_request_errors_are_not_reported_as_outages(exc):
+    with pytest.raises(type(exc)):
+        await claude_service_raising(exc).answer("Q?", [make_chunk(1)], "en")

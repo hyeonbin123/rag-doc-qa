@@ -27,7 +27,8 @@ prompt_eval_count를 같은 프롬프트를 토크나이저로 센 수와 나란
 from __future__ import annotations
 
 # hashlib: 답 문자열의 SHA-1(같은 답인지 비교용). httpx: Ollama /api/chat 호출. AsyncAnthropic: Claude로
-# 판정할 때의 클라이언트.
+# 판정할 때의 클라이언트. ollama_ssl_context: 생성기와 함께 쓰는 SSL 컨텍스트(호출마다 클라이언트를 열어도 CA
+# 번들은 프로세스에서 한 번만 읽게 한다, app/services/generation.py).
 import hashlib
 import json
 import time
@@ -36,6 +37,8 @@ from dataclasses import asdict, dataclass
 
 import httpx
 from anthropic import AsyncAnthropic
+
+from app.services.generation import ollama_ssl_context
 
 # 판정 출력 스키마: faithfulness_score(문맥이 답을 뒷받침하는 정도), hallucinated(문맥에 없는 내용을
 # 말했는지), correctness_score(참고 답안과 얼마나 맞는지). Ollama에는 format으로, Claude에는 도구 입력
@@ -202,9 +205,10 @@ def ollama_flush_payload(config: JudgeConfig) -> dict:
     return payload
 
 
-# 캐시 되돌리기 요청을 한 번 보내고 Ollama가 알려 준 토큰 수를 돌려준다(기록용).
+# 캐시 되돌리기 요청을 한 번 보내고 Ollama가 알려 준 토큰 수를 돌려준다(기록용). 클라이언트는 호출마다 열고
+# SSL 컨텍스트는 공유한다(판정 호출과 같음). 요청 본문은 그대로다.
 async def flush_ollama(base_url: str, config: JudgeConfig, timeout: float = 180.0) -> dict:
-    async with httpx.AsyncClient(timeout=timeout) as client:
+    async with httpx.AsyncClient(timeout=timeout, verify=ollama_ssl_context()) as client:
         response = await client.post(
             f"{base_url.rstrip('/')}/api/chat", json=ollama_flush_payload(config)
         )
@@ -246,11 +250,14 @@ def _error_message(response: httpx.Response) -> str:
 # Ollama로 판정 한 번. 문맥 초과 오류는 점수 없는 결과로 돌려줘 실행이 멈추지 않고 개수를 셀 수 있게 하고,
 # 다른 HTTP 오류는 예외로 올린다. 응답 JSON을 파싱하고 점수 범위를 확인한 뒤, 잘림 확인에 쓸
 # prompt_eval_count를 함께 남긴다.
+# judge_ms는 클라이언트 생성부터 응답까지 잰다. 클라이언트마다 CA 번들을 읽던 때(2026-10-24 전)의 기록에는
+# Windows 호스트에서 호출당 약 0.3초가 더 들어 있다(docs/experiments.md '기타 관찰'). 지금은 SSL 컨텍스트를
+# 공유해 그 비용이 첫 호출 한 번뿐이다.
 async def judge_with_ollama(
     base_url: str, prompt: str, config: JudgeConfig, timeout: float = 180.0
 ) -> JudgeOutcome:
     start = time.perf_counter()
-    async with httpx.AsyncClient(timeout=timeout) as client:
+    async with httpx.AsyncClient(timeout=timeout, verify=ollama_ssl_context()) as client:
         response = await client.post(
             f"{base_url.rstrip('/')}/api/chat", json=ollama_judge_payload(prompt, config)
         )

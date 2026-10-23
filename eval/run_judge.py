@@ -35,9 +35,10 @@ from pathlib import Path
 # httpx: Ollama의 상태 API(/api/version, /api/ps, /api/tags)를 비동기로 읽어 실행 조건으로 기록한다.
 import httpx
 
-# 앱 설정(프로바이더, Ollama 주소, 기본 모델)과 평가 하네스 모듈(리포트, 기록 입출력, 판정 로직, 토크나이저)을
-# 가져온다.
+# 앱 설정(프로바이더, Ollama 주소, 기본 모델), 공유 SSL 컨텍스트와 평가 하네스 모듈(리포트, 기록 입출력, 판정
+# 로직, 토크나이저)을 가져온다.
 from app.config import get_settings
+from app.services.generation import ollama_ssl_context
 from eval.answer_report import display_path, render_report
 from eval.common import read_json, read_jsonl, write_json, write_jsonl, write_report
 from eval.judge import (
@@ -55,10 +56,12 @@ from eval.tokens import counter_for_model, tokenizer_source
 # None으로 두고 예외를 내지 않는다(기록용이라 평가를 막지 않으려고).
 # 이 값으로 '판정 뒤 모델이 GPU에 다 올라가 있었는가'(size_vram == size), 실제 문맥 크기(context_length), 모델
 # digest를 결과 옆에 남긴다.
+# 클라이언트는 생성·판정 호출과 같은 공유 SSL 컨텍스트로 연다(CA 번들을 프로세스에서 한 번만 읽음,
+# app/services/generation.py의 ollama_ssl_context).
 async def ollama_state(base_url: str) -> dict:
     """Ollama 버전, 올라간 모델, 로컬 태그 목록을 되는 대로 읽는다(결과와 함께 기록)."""
     state: dict = {}
-    async with httpx.AsyncClient(timeout=10.0) as client:
+    async with httpx.AsyncClient(timeout=10.0, verify=ollama_ssl_context()) as client:
         for key, path in (("version", "/api/version"), ("ps", "/api/ps"), ("tags", "/api/tags")):
             try:
                 response = await client.get(f"{base_url.rstrip('/')}{path}")
