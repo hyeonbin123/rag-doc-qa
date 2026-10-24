@@ -1,10 +1,12 @@
-# 검색·답변 품질 실험 기록 (v1 ~ v15)
+# 검색·답변 품질 실험 기록 (v1 ~ v16)
 
 README의 측정 결과 요약에 대한 자세한 기록. 각 리포트 원본은 `eval/reports/`에 있음.
 
 표기 정리 (2026-10-09): 측정 조건 기록(v11, v12, v13)에 적혀 있던 게임과 데스크톱 앱의 제품 이름을 '게임', '배경화면 앱', '게임 런처'로 바꿨음. 문장의 뜻과 수치·결과·결정은 바꾸지 않았음.
 
 수정 전 코드로 낸 값 (2026-10-13, 2026-10-14 v14 결과에 맞게 고침): v1~v13의 모든 검색·답변 수치는 청크 겹침(`OVERLAP_TOKENS`)이 실제로는 한 번도 적용되지 않던 청커(`CHUNKER_VERSION` 1~3)로 낸 값임. 겹침을 고친 청커(4)로 다시 잰 v14에서 한국어 답변 정확도가 미리 정한 허용 폭보다 떨어져 겹침을 껐고(`OVERLAP_TOKENS = 0`, `CHUNKER_VERSION` 5), 지금 청커는 고치기 전과 같은 청크를 만듦. 그래서 아래 수치와 결정은 그대로 지금 시스템의 값이며, 고치지 않았음.
+
+2026-10-24 추가 확인: 위 청커(1~5)에는 또 다른 버그가 있었음. 청크의 `heading_path`(임베딩 머리말·BM25·생성 프롬프트·인용 제목에 쓰는 절 경로)가 청크 1,535개 중 231개에서 앞 절을 가리켰음(헤딩으로 시작하는 청크의 약 45%). v1~v15의 모든 검색·답변 수치는 그 청크로 낸 값임. 청크 본문과 토큰 수는 맞으므로 코퍼스 크기·청크 길이 기록은 그대로임. v16-A에서 고쳤고(`CHUNKER_VERSION` 6), 본 DB `ragdb`는 v16-A 결정(아래 절) 전까지 v5 청크 그대로이므로 그때까지 아래 수치는 지금 시스템의 값임. 자세한 것은 v16-A 절.
 
 ## 평가 방식
 
@@ -1603,6 +1605,119 @@ dev = qa_dev_ko 32 + qa_dev2_ko 40, 72문항 한 번에. 복제 DB `ragdb_p1_<�
 - 리포트 `eval/reports/judge_panel_v15_i5_*.md`, 결과 `eval/runs/v15_i5.panel.json`, `v15_i5_recordedJ1.panel.json`, 판정 `eval/runs/*.{J1v15,J2v15,J3v15}{r1,r2,r3,}.judge.jsonl`
 
 **v15 정리**: 바뀐 기본값은 `EMPTY_CITATIONS_ON_REFUSAL` 하나(ZAP 5차 통과). I3 인용 호출 단축과 I4 바닥값은 채택되지 않음. 이후 결정 판정은 3회 중앙값이고, 판정기는 J2+J3 평균으로 바꾸자는 제안이 남음
+
+## v16-A: 청크 heading_path 바로잡기 (규칙만, 아직 측정 안 함)
+
+이 절의 규칙은 2026-10-24에 측정 전에 기록함. 새 설정을 고르는 단계가 아니라, 청커 버그를 고친 뒤 지금 기본 구성으로 다시 재서 고친 청커(`CHUNKER_VERSION` 6)를 본 DB에 쓸지 정하는 단계임. 버그 수정이라 '개선해야 채택'이 아니라 **미리 정한 허용 폭 안이면 채택(비열등)**을 봄. 이전 단계의 수치와 결정은 고치지 않음.
+
+**무엇이 잘못됐었나**
+- `app/services/chunking.py`의 `chunk_markdown`은 목표 크기(400토큰)에서 청크를 끊은 뒤 다음 청크의 `heading_path`를 끊은 직후 '다음 줄 하나'의 경로로 미리 정했음. 마크다운에서 새 절은 거의 늘 빈 줄 뒤에 헤딩이 오므로 그 줄은 아직 옛 절에 속한 빈 줄이고, 청크 본문은 앞뒤 빈 줄을 떼어 `## 새 절`로 시작하는데 경로는 옛 절이었음. 1,000토큰을 넘는 코드 블록(`HARD_CAP_TOKENS`)을 빈 줄 기준으로 조각낸 뒤에는 경로를 갱신하지 않아, 그 다음 청크도 코드 블록 앞 청크의 경로를 달았음
+- 첫 커밋(2026-09-11)부터 그랬음. 그래서 **v1~v15의 모든 검색·답변 수치는 청크 1,535개 중 231개(영어 914개 중 147개 16.1%, 한국어 621개 중 84개 13.5%)의 `heading_path`가 앞 절을 가리키는 청크로 낸 값임**. 이 값은 임베딩 머리말(`build_embedding_text`), BM25의 `content_tsv`, 생성 프롬프트의 `[N] (경로)`, 응답의 `Citation.heading_path`와 채팅 화면의 '참고한 문서' 제목에 그대로 쓰였음. 링크(페이지)와 본문은 맞으므로 검색·답변 수치가 어느 쪽으로 얼마나 움직일지는 모름. 그 수치와 결정은 측정한 그대로의 시스템에 대해서는 맞음
+- 예: `advanced/events.md`에서 `## Lifespan`으로 시작하는 청크의 경로가 'Lifespan Events > Use Case', `advanced/middleware.md`에서 '## `HTTPSRedirectMiddleware`'로 시작하는 청크의 경로가 'Advanced Middleware > Integrated middlewares'
+- 2026-09-29 리뷰의 보고 전용 항목(여러 절에 걸친 청크가 첫 줄의 절만 가리킴)과는 다른 문제임. 그쪽은 첫 줄 기준으로는 맞고, 이번 것은 첫 줄의 절조차 아님. 그 항목(절 단위 분할)은 이번 규칙에 묶지 않음. v14에서 청크 변경이 한국어 답변 −12였던 전례가 있어, 묶으면 어느 변경의 효과인지 가를 수 없기 때문
+
+**코드 변경** (이 규칙과 같은 날 넣음, `CHUNKER_VERSION` 5 → 6)
+- 끊은 자리에서 경로를 미리 정하지 않고, (겹쳐 온 줄 다음에) 버퍼로 들어오는 첫 비공백 줄 또는 코드 블록의 경로를 청크의 경로로 씀. 헤딩 줄은 자기 절의 경로를 갖고 있으므로 헤딩으로 시작하는 청크는 그 헤딩의 절이 됨. 긴 코드 블록을 조각낸 뒤에도 같은 규칙. 버퍼에 붙이면 500토큰을 넘는 코드 블록이 새 청크를 시작하는 경우(전에도 맞았음)와 끝의 작은 청크를 앞 청크에 합치는 경우(앞 청크의 경로)는 그대로
+- 회귀 테스트(`tests/test_chunking.py`): 긴 문단 뒤 `## B`로 시작하는 청크의 경로, 1,000토큰 넘는 코드 블록 뒤 청크의 경로, 합성 문서 7개에서 모든 청크의 경로가 그 청크 첫 비공백 줄의 경로와 같은지(속성 테스트). 처음 둘과 속성 테스트의 네 문서는 고치기 전 코드에서 실패하는 것을 확인함. 겹침을 켜는 기존 테스트도 그대로 통과
+- 적재 해시에 청커 버전이 들어 있으므로 다음 적재 때 모든 문서가 다시 청킹·임베딩됨. 본 DB `ragdb`는 아래 결정 전까지 다시 적재하지 않음(v5 청크 그대로)
+
+**CPU 확인** (2026-10-24, 임베딩 없음. 고치기 전 청커(커밋 8d99e9d)와 고친 청커로 문서 커밋 50113da의 문서를 나눠 비교. 문서는 적재와 같은 선택으로 영어 154, 한국어 123개)
+
+| | 청크 수 v5 → v6 | 본문·토큰 수가 다른 청크 | `heading_path`가 바뀐 청크 | 그중 헤딩으로 시작 | 경로가 바뀐 문서 | v6에서 '첫 비공백 줄의 절 ≠ heading_path' |
+|---|---|---|---|---|---|---|
+| 영어 | 914 → 914 | 0 | 147 (16.1%) | 146 (헤딩으로 시작하는 청크 301개 중) | 32 / 154 | 0 |
+| 한국어 | 621 → 621 | 0 | 84 (13.5%) | 83 (207개 중) | 48 / 123 | 0 |
+
+- 고치기 전 청커의 청크 수(914, 621)는 지금 본 DB와 같음. 청크 본문과 `token_count`는 모든 청크에서 같고 `heading_path`만 바뀜 → 코퍼스 크기·청크 길이·적재 시간 관련 기록은 그대로임
+- 바뀐 231개는 고치기 전에 '첫 비공백 줄의 절 ≠ heading_path'였던 231개와 정확히 같음. 헤딩으로 시작하는 229개는 모두 '바로 앞 줄이 빈 줄이고 그 빈 줄의 경로가 붙은' 꼴이고, 나머지 2개는 `deployment/server-workers.md`의 1,084토큰 코드 블록 뒤 청크(영어·한국어 각 1개. 'Multiple Workers' 절인데 문서 제목 경로만 가졌음)
+- 인용 제목 오류율(헤딩으로 시작하는 청크 중 경로가 앞 절인 비율): 영어 146/301, 한국어 83/207 → 고친 뒤 0 (보고만, 결정에 쓰지 않음)
+- 문서가 빈 줄로 시작해 첫 청크의 경로가 바뀌는 경우는 이 코퍼스에 없음(0개)
+
+**영향받는 기존 수치** (지우지 않고 그대로 둠)
+- 채택해 본 DB를 v6로 다시 적재하면 v1~v15의 모든 검색 지표(Hit@k, MRR)와 답변 지표(판정 정확도·충실도, 환각 판정, 섞인 답, 인용 적중)는 '앞 절을 가리키는 `heading_path`로 낸 값'이 됨. v14와 같은 처리로 수치는 고치지 않고 이 절과 맨 위의 날짜 붙은 메모로 밝힘
+- 영향 없음: 청크 수·청크 길이·적재 시간(본문이 같음), 질문셋과 정답 라벨(페이지 단위), 판정 설정, 이전 단계의 결정 규칙, 2026-10-24의 생성기 호출 경로 수정(요청 본문 같음)
+
+**구성**
+- C5: 본 DB `ragdb` 그대로 (v5 청크, 읽기만. 영어 `BAAI/bge-small-en-v1.5`, 한국어 granite-311m@384)
+- C6: `ragdb`를 복사한 `ragdb_v16a`에 v6 청커로 다시 적재 (같은 문서 커밋 50113da, 같은 임베딩 모델)
+- 나머지는 지금 기본값: dense, 바닥값 0.3, 답변 top-5, 생성 `a.x-4.0-light:q4_k_m`(digest `a874a70d…`, `think` 보내지 않음), `LANGUAGE_GUARD=true`, `EMPTY_CITATIONS_ON_REFUSAL=true`, Ollama 0.35.1(CUDA), 2026-10-24의 생성기 호출 경로 수정(SSL 컨텍스트 공유, 장애 503) 뒤 코드(생성 요청 본문은 그 전과 같음)
+- **결정 판정기 (2026-10-24 결정, v15 I5 제안의 보충)**: J2 `gemma4:12b-it-qat`(digest `38044be4…`, `think: false`) **단독**. 이유: 두 생성기 계열(A.X-4.0-Light, Qwen2.5)과 다른 계열이고, Claude 라벨 80개와의 이차 가중 kappa 0.772가 J1(0.476)보다 높음. I5가 제안한 J2+J3 평균(0.785)은 J2보다 0.013 높지만 그 차이의 bootstrap 90% 구간 [−0.03, +0.06]이 0을 포함하고(2026-10 검증 재계산), J3(`qwen3.5:9b`)는 A.X·Qwen2.5와 같은 Qwen 계열이라 쓰지 않음. J1 `qwen2.5:7b-instruct`(digest `845dbda0…`, `think` 보내지 않음)는 이전 기록과 잇기 위해 같은 답을 함께 판정해 보고만 함(결정에 쓰지 않음)
+- 판정 횟수·절차: 이 문서의 '규칙 변경 (v16부터): 판정 절차' 절(측정 전에 커밋)을 따름. 그 절이 1회 판정(+경계 규칙)을 정하면 그대로, 아직 없으면 v15 I2 결과대로 같은 순서 3회의 문항별 중앙값. 어느 쪽이든 판정 전 모든 모델을 내리고 판정 모델을 올려 준비 요청 하나를 보낸 뒤 여섯 lg 파일을 한 번의 `run_judge`로 아래 순서대로 판정함(J1도 같은 절차로 따로)
+
+**절차와 명령** (저장소 루트, DB 호스트 포트 55432, `PG=postgresql+asyncpg://raguser:ragpass@localhost:55432`; v14 절차와 같은 꼴)
+
+0. 확인: 작업 트리가 이 규칙의 커밋(과 판정 절차 규칙의 커밋) 뒤 상태와 같음, 다른 GPU 작업 없음, Ollama `/api/ps` 비어 있음, `/api/version` 0.35.1, 생성기·판정기의 digest가 v15 공통 조건 표와 같음
+1. C6 만들기 (CPU, GitHub에서 문서 277개를 다시 받음)
+   ```bash
+   docker compose exec -T db createdb -U raguser -T ragdb ragdb_v16a
+   DATABASE_URL=$PG/ragdb_v16a uv run --no-sync python -m scripts.ingest_fastapi_docs --commit 50113da16fec53b66b80d75e80a89296de4fa5a5
+   docker compose exec -T db psql -U raguser -d ragdb_v16a -Atc "SELECT language, count(*) FROM chunks GROUP BY 1 ORDER BY 1"
+   ```
+   처리한 문서 277, 지운 문서 0, 청크 영어 914·한국어 621(위 CPU 확인과 같음)이어야 하고, 헤딩으로 시작하는 청크 중 제목이 `heading_path`의 마지막 항목과 다른 청크가 0개여야 함(C5에서는 229개)
+2. 검색 (CPU, 결정에 씀): 튜닝용 셋, 조건마다 한 번, dense, top_k 10. 영어 72문항 = `qa_dev` 32 + `qa_pool4_dev_en` 40, 한국어 112문항 = `qa_dev_ko` 32 + `qa_dev2_ko` 40 + `qa_pool4_dev_ko` 40 (질문 풀 4의 튜닝용 셋은 v15 I4에서 바닥값 계산에만 썼고 검색 결정에는 처음 씀)
+   ```bash
+   for c in c5:ragdb c6:ragdb_v16a; do tag=${c%%:*}; db=${c#*:}
+     DATABASE_URL=$PG/$db uv run --no-sync python -m eval.run_retrieval_eval --mode dense \
+       --dataset eval/qa_dev.jsonl eval/qa_pool4_dev_en.jsonl --tag v16a_dev_en_$tag
+     DATABASE_URL=$PG/$db uv run --no-sync python -m eval.run_retrieval_eval --mode dense \
+       --dataset eval/qa_dev_ko.jsonl eval/qa_dev2_ko.jsonl eval/qa_pool4_dev_ko.jsonl --tag v16a_dev_ko_$tag
+   done
+   for l in en ko; do uv run --no-sync python -m eval.retrieval_runs compare \
+     eval/runs/v16a_dev_${l}_c5.retrieval.jsonl eval/runs/v16a_dev_${l}_c6.retrieval.jsonl; done
+   ```
+   C5는 `qa_dev` MRR 0.858, `qa_dev_ko` + `qa_dev2_ko` 72문항 0.877이 나와야 함 (v13 단계 B 채택 반영의 확인 값, v14 C3와 같음)
+3. 답변 (GPU): 튜닝용 셋 104문항(`qa_dev` 32, `qa_dev_ko` 32, `qa_dev2_ko` 40). 셋마다 C5 → C6 순서로 한 번씩, 데이터셋 순서로 생성하고 split함. 결정 팔은 lg(가드 켬, 지금 기본값). 여섯 lg 파일을 한 번의 `run_judge`로 아래 순서대로 판정함(J2 결정, J1 보고). 판정 횟수는 위 '판정 횟수·절차'대로
+   ```bash
+   for set in qa_dev qa_dev_ko qa_dev2_ko; do for c in c5:ragdb c6:ragdb_v16a; do tag=${c%%:*}; db=${c#*:}
+     env -u OLLAMA_THINK DATABASE_URL=$PG/$db OLLAMA_MODEL_NAME=a.x-4.0-light:q4_k_m LANGUAGE_GUARD=true \
+       uv run --no-sync python -m eval.run_answer_eval --dataset eval/$set.jsonl --mode dense \
+       --score-floor 0.3 --skip-judge --order dataset --tag v16a_${tag}_$set
+     uv run --no-sync python -m eval.generator_arms split eval/runs/v16a_${tag}_$set.gen.jsonl
+   done; done
+   # 판정(J2 결정): 모든 모델 내림 → gemma4 적재·준비 요청 → 한 번의 run_judge (3회 중앙값 규칙이면 라벨 J2v16ar1~r3 뒤 judge_stability median)
+   uv run --no-sync python -m eval.run_judge --label J2v16a --model gemma4:12b-it-qat --think false \
+     eval/runs/v16a_c5_qa_dev.lg.gen.jsonl eval/runs/v16a_c6_qa_dev.lg.gen.jsonl \
+     eval/runs/v16a_c5_qa_dev_ko.lg.gen.jsonl eval/runs/v16a_c6_qa_dev_ko.lg.gen.jsonl \
+     eval/runs/v16a_c5_qa_dev2_ko.lg.gen.jsonl eval/runs/v16a_c6_qa_dev2_ko.lg.gen.jsonl
+   # 판정(J1 보고): 같은 절차, --label J1v16a --model qwen2.5:7b-instruct (think 없음)
+   uv run --no-sync python -m eval.generator_arms summary --tag v16a --label J2v16a --baseline C5 \
+     --arm C5=eval/runs/v16a_c5_qa_dev.lg.gen.jsonl,eval/runs/v16a_c5_qa_dev_ko.lg.gen.jsonl,eval/runs/v16a_c5_qa_dev2_ko.lg.gen.jsonl \
+     --arm C6=eval/runs/v16a_c6_qa_dev.lg.gen.jsonl,eval/runs/v16a_c6_qa_dev_ko.lg.gen.jsonl,eval/runs/v16a_c6_qa_dev2_ko.lg.gen.jsonl
+   uv run --no-sync python -m eval.compare_judgments truncation --tag v16a_J2 eval/runs/v16a_*.lg.J2v16a.judge.jsonl
+   ```
+4. 결정 뒤 (CPU, 보고만, 결정에 쓰지 않음): 테스트셋 검색을 C5와 C6에서 한 번씩. `qa_dataset`, `qa_test2`, `qa_test3b_en`(영어), `qa_test2_ko`, `qa_test3a_ko`, `qa_test3b_ko`(한국어). 위 2번과 같은 명령에서 `--dataset`과 태그(`v16a_test_<셋>_<c5|c6>`)만 바꿈. 아껴 둔 질문 풀 4의 답 있는 test 셋은 열지 않음. 시스템을 고르는 데 쓰지 않으므로 테스트셋 사용 횟수로 세지 않음 (v14와 같은 이유)
+
+**판정 규칙**
+- 멈춤 (결정하지 않음): 판정 오류나 잘린 판정 프롬프트가 하나라도 있을 때(v11 이후 모두 0이었음), C5 검색이 2번의 값과 다를 때(DB가 바뀐 것), C6 청크 수가 CPU 확인과 다를 때, 100% GPU 조건(`size_vram == size`, `context_length` 8192) 위반
+- **C6 채택(본 DB를 v6로 다시 적재)**: 아래를 모두 만족할 때
+  1. 검색, 언어별(영어 72, 한국어 112): MRR(C6) ≥ MRR(C5) − 0.02 이고, Hit@5로 맞힌 문항 수 C6 ≥ C5 − 1 (v14 조건 1과 같은 폭. 0.02는 32문항에서 한 문항이 1위에서 2위로 내려갈 때의 변화를 덮는 폭이고, 72·112문항에서는 그보다 넉넉함)
+  2. 답변, 언어별 결정 판정기(J2) 정확도 합(영어 32, 한국어 72): C6 ≥ C5 − 2 (v11 D3, v12, v13 단계 B, v14와 같은 허용 폭)
+  3. 한국어 72문항 결정 팔의 섞인 답(`kana_han`): C6 ≤ C5 (v13 단계 B B2 조건 2, v14 조건 3과 같음)
+- **하나라도 떨어지면**: 결과를 기록하고 코드(v6)는 둔 채 사용자가 정함 — 버그 수정 유지(인용 제목이 맞고, 새로 적재하는 환경은 v6 청크) / v5 동작으로 되돌림. 어느 쪽도 이 규칙 안에서 자동으로 하지 않음
+- 이 단계는 v6를 본 DB에 쓸지만 정함. 청크 크기·절 단위 분할 같은 다른 청커 변경은 고르지 않음. 고르려면 새 단계로 규칙을 먼저 적음
+- 보고만: 인용 제목 오류율(CPU 확인 값), Hit@3/10, 문항별 순위가 오르고 내린 문항, 정확도 차이의 대응표본 bootstrap 90% 구간(10,000회, seed 20261003), 환각 판정 수, 충실도 합, 생성 컨텍스트에 정답 페이지가 들어간 문항 수, raw 팔의 섞인 답, J1 판정의 같은 지표(결정에 쓰지 않음), 생성 시간(아래 측정 조건), 4번 테스트셋 검색
+
+**결정 뒤 할 일** (별도 커밋)
+- 채택: 본 DB `ragdb`를 v6로 다시 적재(`DATABASE_URL=$PG/ragdb uv run --no-sync python -m scripts.ingest_fastapi_docs --commit 50113da16fec53b66b80d75e80a89296de4fa5a5`)하고, 청크 수와 2번 검색 결과가 C6와 같은지 확인. README 핵심 결과 표에 v16-A 줄(기존 수치는 그대로)과 '지금 청커(`CHUNKER_VERSION` 5)…' 문장에 날짜 붙인 보충. HTTP 동작은 같아 ZAP 대상 아님(v14 선례)
+- 떨어짐: 위 사용자 결정까지 본 DB는 v5 청크 그대로이고 코드의 청커는 6이므로, 새로 적재하는 환경은 v6 청크가 됨. 그 상태를 README에 날짜 붙여 적음
+- 어느 쪽이든 v1~v15의 수치는 고치지 않음. `ragdb_v16a`는 결과를 기록한 뒤 지워도 됨
+
+**측정 조건** (v13 규칙 변경 1~4, v15 공통 조건을 따름)
+- 생성·판정 모두 정확도 실행이라 유휴를 기다리지 않음. 다만 첫 GPU 실행(C5 생성)만 시작 전에 최대 10분 유휴를 기다려, 쉬는 상태로 돌면 그 생성 시간을 README 응답 시간의 새 줄 후보로 삼음(2026-10-24 생성기 호출 경로 수정 뒤 첫 측정. 이전 기록과 직접 비교하지 않음, 기타 관찰의 날짜 메모). 쉬지 않으면 부하 조건으로 표시만 함
+- 다른 GPU 작업과 겹치지 않을 때 시작함. 적재와 검색(CPU)은 GPU 작업과 겹쳐도 되지만, 그때는 적재 시간을 보고하지 않음
+- 생성기와 판정 모델은 올린 뒤와 실행 뒤 `size_vram == size`, `context_length` 8192여야 함. 시작 상태와 실행 중 10초 간격 감시를 기록함
+- 실행 스크립트는 로컬 파일로 두고 공개 저장소에 넣지 않음(v15와 같음)
+
+**비용 예상**
+- 내려받기: 모델 0. 적재가 GitHub에서 문서 원문 277개를 다시 받음
+- CPU: C6 적재 약 8분(문서 277개를 모두 다시 임베딩), 검색 평가 4번 각 1분 안팎, 결정 뒤 테스트셋 검색 12번
+- GPU: 생성 208회 약 0.4시간(v14 실측과 같은 규모) + 판정 J2 208회(1회 약 0.2시간, v15 I5 판정 시간 중앙값 3.4초 기준) + J1 208회(보고용, 1회 약 0.12시간) → 1회 규칙이면 **약 0.7시간**, 3회 중앙값이면 판정이 3배라 약 1.4시간
+- 채택 때 본 DB 재적재 약 8분(CPU)
+
+**위험** (결정을 바꾸지 않음)
+- 튜닝용 셋은 v5~v15에서 여러 번 썼음. 이번에는 값을 고르지 않고 두 상태만 비교하므로 과적합 여지는 작음
+- v14처럼 청크 입력 변화가 한국어 판정을 흔들 수 있음(허용 폭 −2). 판정기가 J1에서 J2로 바뀌므로 이전 단계의 합계와 직접 비교하지 않고 C5·C6를 모두 이번에 새로 판정함
+- 판정 1회 규칙이면 세션 이력에 따른 흔들림(104문항 합 ±1 수준)이 남음 → 판정 절차 규칙의 경계 규칙으로 다룸
 
 ## 기타 관찰
 
