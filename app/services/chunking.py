@@ -1,8 +1,8 @@
 """마크다운 구조를 아는 청커. FastAPI 앱과 적재 스크립트가 함께 쓴다.
 
 마크다운 문서 한 편을 서로 겹치지 않는 약 TARGET_TOKENS 크기의 청크로 나눈다. 펜스 코드 블록 안에서는
-절대 자르지 않고, 청크마다 헤딩 경로(heading_path)를 추적해 둔다. 청크 겹침은 꺼져 있다(OVERLAP_TOKENS = 0,
-docs/experiments.md v14).
+절대 자르지 않고, 청크마다 그 청크에 실제로 들어간 첫 비공백 줄의 헤딩 경로(heading_path)를 붙인다.
+청크 겹침은 꺼져 있다(OVERLAP_TOKENS = 0, docs/experiments.md v14).
 """
 
 # [파일 역할] FastAPI 문서 마크다운 한 편을 검색 단위인 청크 목록으로 나눈다. 나누기 전에 의미 없는 MkDocs
@@ -116,7 +116,13 @@ class ChunkResult:
 # 청크로 했다(docs/experiments.md v14).
 # 5: v14 재측정 결과로 겹침을 끔(OVERLAP_TOKENS = 0). 청크는 3과 같다. 버전을 올린 것은 4로 적재한 DB가 다음
 # 적재 때 겹치지 않는 청크로 다시 처리되게 하려는 것이다.
-CHUNKER_VERSION = 5
+# 6: 청크의 heading_path를 그 청크에 실제로 들어간 첫 비공백 줄(또는 코드 블록)의 절 경로로 바로잡음.
+# 5까지는 목표 크기에서 끊은 다음 청크의 경로를 끊은 직후 '다음 줄 하나'의 경로로 미리 정했는데,
+# 새 절은 보통 빈 줄 뒤에 헤딩이 오므로 그 빈 줄(아직 옛 절)의 경로가 붙어 헤딩으로 시작하는 청크가 앞 절
+# 경로를 달았고, HARD_CAP_TOKENS를 넘는 코드 블록을 조각낸 뒤에는 경로를 갱신하지 않았다. 청크 수·본문·
+# token_count는 5와 같고 heading_path만 바뀐다(문서 커밋 50113da 기준 영어 914개 중 147개, 한국어 621개 중
+# 84개. docs/experiments.md v16-A의 CPU 확인).
+CHUNKER_VERSION = 6
 
 # 정제용 정규식들(MkDocs 문법).
 # - _HEADING_ANCHOR_RE: 헤딩 끝의 앵커 ID 표기(중괄호 안에 # 아이디). 그대로 두면 제목이 임베딩에 두 번
@@ -192,8 +198,11 @@ def clean_markdown(raw_text: str) -> str:
 # - 코드 블록: 여는 펜스부터 닫는 펜스까지를 한 덩어리로 다룬다. 버퍼에 붙여 MAX_TOKENS를 넘으면 먼저 끊는다.
 #   HARD_CAP_TOKENS보다 길면 따로 빈 줄 기준으로 쪼갠다.
 # - 마지막 청크가 너무 작으면 앞 청크에 합친다.
-# 청크의 heading_path는 그 청크 첫 줄의 절이다(겹쳐 넣은 줄이 있으면 그 뒤 새 줄의 절). 여러 절에 걸친 청크도
-# 그 경로 하나만 갖는다.
+# 청크의 heading_path는 그 청크에 실제로 들어간 첫 비공백 줄(또는 코드 블록)의 절 경로다(겹쳐 넣은 줄이 있으면
+# 그 뒤 새 줄 기준). 끊은 자리에서 경로를 미리 정하지 않고 다음 내용이 들어올 때 정하는 이유: CHUNKER_VERSION
+# 5까지는 끊은 직후 '다음 줄 하나'의 경로를 썼는데, 새 절은 보통 빈 줄 뒤에 헤딩이 오므로 그 빈 줄
+# (아직 옛 절)의 경로가 붙어 헤딩으로 시작하는 청크의 경로가 한 절 뒤처졌다(본 DB 청크 1,535개 중 231개,
+# docs/experiments.md v16-A). 여러 절에 걸친 청크도 그 경로 하나만 갖는다.
 def chunk_markdown(raw_text: str) -> list[ChunkResult]:
     """마크다운 문서 한 편을 ChunkResult 목록으로 나눈다."""
     annotated = _annotate_heading_paths(clean_markdown(raw_text))
@@ -208,29 +217,37 @@ def chunk_markdown(raw_text: str) -> list[ChunkResult]:
     buffer_tokens = 0
     # 버퍼 맨 앞의 몇 줄이 앞 청크에서 겹쳐 온 줄인지.
     overlap_lines = 0
-    buffer_heading_path = annotated[0].heading_path
+    # 버퍼가 될 청크의 헤딩 경로. None은 아직 새 내용이 들어오지 않았다는 뜻이고, (겹쳐 온 줄 다음에) 버퍼로
+    # 들어오는 첫 비공백 줄 또는 코드 블록의 경로가 된다. 빈 줄은 경로를 정하지 않는다.
+    buffer_heading_path: str | None = None
+    # 가장 최근에 확정한 청크의 경로. 경로가 정해지기 전에 버퍼를 확정해야 할 때의 대비값이다.
+    # 새 내용이 공백뿐이면 청크를 만들지 않으므로 실제로는 쓰이지 않는다. 첫 청크 전에는 문서 첫 줄의 경로다.
+    last_heading_path = annotated[0].heading_path
     in_code_block = False
     code_block_lines: list[str] = []
 
     # 버퍼의 줄을 하나의 청크로 확정하고 버퍼를 비운다. 앞뒤 빈 줄은 떼고, 토큰 수는 합친 본문으로 다시 센다.
     # 겹쳐 온 줄 말고 새 내용이 없으면(공백뿐이거나 겹친 줄만 남았으면) 청크를 만들지 않는다. 그렇지 않으면
-    # 앞 청크 끝을 되풀이하기만 하는 청크가 생긴다.
+    # 앞 청크 끝을 되풀이하기만 하는 청크가 생긴다. 비운 뒤의 경로는 None으로 두어 다음 내용이 정하게 한다.
     def flush_buffer() -> None:
-        nonlocal buffer_lines, buffer_tokens, overlap_lines
+        nonlocal buffer_lines, buffer_tokens, overlap_lines, buffer_heading_path, last_heading_path
         fresh = "\n".join(buffer_lines[overlap_lines:]).strip("\n")
         if fresh.strip():
             content = "\n".join(buffer_lines).strip("\n")
+            heading_path = last_heading_path if buffer_heading_path is None else buffer_heading_path
             chunks.append(
                 ChunkResult(
                     content=content,
-                    heading_path=buffer_heading_path,
+                    heading_path=heading_path,
                     token_count=count_tokens(content),
                 )
             )
             fresh_contents.append(fresh)
+            last_heading_path = heading_path
         buffer_lines = []
         buffer_tokens = 0
         overlap_lines = 0
+        buffer_heading_path = None
 
     # 줄 목록의 끝에서부터 OVERLAP_TOKENS를 넘지 않을 만큼의 줄을 돌려준다(다음 청크 앞머리로 겹쳐 넣을 부분).
     # 겹침이 꺼져 있으면(0) 아무 줄도 넘기지 않는다. 그러지 않으면 토큰이 0개인 빈 줄이 다음 청크로 넘어간다.
@@ -269,7 +286,9 @@ def chunk_markdown(raw_text: str) -> list[ChunkResult]:
             code_tokens = count_tokens(code_block_text)
 
             # 아주 긴 코드 블록: 지금까지의 버퍼를 먼저 확정하고, 블록을 빈 줄 기준으로 나눠 조각마다 청크로
-            # 만든다. 조각 크기를 다시 제한하지는 않는다.
+            # 만든다. 조각 크기를 다시 제한하지는 않는다. 조각의 경로는 코드 블록이 속한 절(여는 펜스 줄의
+            # 경로)이고, 그 다음에 오는 내용의 경로는 비운 버퍼에 들어올 때 새로 정해진다
+            # (5까지는 여기서 경로를 갱신하지 않아 코드 블록 앞 청크의 경로가 남았다).
             if code_tokens > HARD_CAP_TOKENS:
                 flush_buffer()
                 for piece in code_block_text.split("\n\n"):
@@ -282,12 +301,15 @@ def chunk_markdown(raw_text: str) -> list[ChunkResult]:
                             )
                         )
                         fresh_contents.append(piece)
+                last_heading_path = line.heading_path
                 continue
 
-            # 코드 블록을 붙이면 너무 커질 때: 지금까지를 끊고, 코드 블록이 새 청크의 시작이 되며 그 헤딩
-            # 경로를 따른다. 그렇지 않으면 코드 블록 전체를 버퍼에 그대로 붙인다.
+            # 코드 블록을 붙이면 너무 커질 때: 지금까지를 끊고, 코드 블록이 새 청크의 시작이 된다.
+            # 그렇지 않으면 코드 블록 전체를 버퍼에 그대로 붙인다. 어느 쪽이든 버퍼에 아직 경로가 없으면
+            # (끊은 직후이거나 빈 줄·겹쳐 온 줄만 있으면) 코드 블록이 속한 절의 경로가 청크의 경로가 된다.
             if buffer_tokens + code_tokens > MAX_TOKENS and buffer_lines:
                 flush_buffer()
+            if buffer_heading_path is None:
                 buffer_heading_path = line.heading_path
 
             buffer_lines.append(code_block_text)
@@ -296,9 +318,14 @@ def chunk_markdown(raw_text: str) -> list[ChunkResult]:
 
         buffer_lines.append(line.text)
         buffer_tokens += count_tokens(line.text)
+        # 버퍼에 들어온 첫 비공백 줄이 청크의 경로를 정한다. 헤딩 줄은 자기 절의 경로를 갖고 있으므로
+        # (헤딩을 스택에 넣은 뒤 경로를 붙임) 헤딩으로 시작하는 청크는 그 헤딩의 절이 된다.
+        if buffer_heading_path is None and line.text.strip():
+            buffer_heading_path = line.heading_path
 
-        # 목표 크기에 닿으면 끊고, (겹침이 켜져 있으면) 끊은 청크 끝의 줄을 다음 청크 앞머리로 남긴 뒤, 다음
-        # 청크의 헤딩 경로를 다음 줄의 경로로 바꾼다.
+        # 목표 크기에 닿으면 끊고, (겹침이 켜져 있으면) 끊은 청크 끝의 줄을 다음 청크 앞머리로 남긴다.
+        # 다음 청크의 헤딩 경로는 여기서 정하지 않고 겹쳐 온 줄 다음에 들어오는 첫 비공백 줄이 정한다
+        # (5까지는 바로 다음 줄의 경로를 미리 썼고, 그 줄이 새 절 앞의 빈 줄이면 옛 절 경로가 붙었다).
         # 겹칠 줄은 flush_buffer()가 버퍼를 비우기 전에 골라야 한다. CHUNKER_VERSION 3까지는 비운 뒤에 골라
         # 겹치는 줄이 늘 없었다.
         if buffer_tokens >= TARGET_TOKENS:
@@ -307,7 +334,6 @@ def chunk_markdown(raw_text: str) -> list[ChunkResult]:
             buffer_lines = tail
             buffer_tokens = sum(count_tokens(tail_line) for tail_line in tail)
             overlap_lines = len(tail)
-            buffer_heading_path = annotated[min(i + 1, len(annotated) - 1)].heading_path
 
         i += 1
 
