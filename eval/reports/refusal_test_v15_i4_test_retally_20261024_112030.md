@@ -1,0 +1,85 @@
+# 거절 test v15_i4_test_retally
+
+```json
+{
+  "floors": {
+    "en": 0.68,
+    "ko": 0.859
+  },
+  "unanswerable_n": 40,
+  "refusals": {
+    "base": 27,
+    "cand": 31
+  },
+  "refusals_by_language": {
+    "en": {
+      "base": 20,
+      "cand": 20,
+      "n": 20
+    },
+    "ko": {
+      "base": 7,
+      "cand": 11,
+      "n": 20
+    }
+  },
+  "regenerated_unanswerable": [
+    "e4a03",
+    "e4a06",
+    "e4a09",
+    "e4a10",
+    "e4a11",
+    "e4a12",
+    "e4a14",
+    "e4a15",
+    "e4a16",
+    "e4a19",
+    "e4a20",
+    "e4a22",
+    "e4a23",
+    "e4a26",
+    "e4a27",
+    "e4a28",
+    "e4a29",
+    "k4a03",
+    "k4a04",
+    "k4a05",
+    "k4a06",
+    "k4a07",
+    "k4a12",
+    "k4a13",
+    "k4a16",
+    "k4a20",
+    "k4a21",
+    "k4a22",
+    "k4a25",
+    "k4a29",
+    "k4a30"
+  ],
+  "gold_lost_used_sets": {
+    "en": 4,
+    "ko": 8
+  },
+  "answerable_changed": 62,
+  "answerable_correctness": {
+    "base": 290,
+    "cand": 232
+  },
+  "refusals_with_citations": {
+    "base": 27,
+    "cand": 0
+  },
+  "hallucinated_unanswerable": {
+    "base": 18,
+    "cand": 11
+  },
+  "conditions": {
+    "F1_refusal_gain": true,
+    "F2_gold_lost": false,
+    "F3_answer_quality": false,
+    "F4_mixed": true
+  },
+  "adopt_floor_and_refusal": false,
+  "adopt_empty_citations": true
+}
+```
