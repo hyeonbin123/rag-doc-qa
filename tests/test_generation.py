@@ -505,6 +505,10 @@ async def test_a_normal_answer_is_still_cited_when_refusal_emptying_is_on(script
         ("죄송하지만, 그 방법에 대한 정보는 제공되지 않았습니다.", "ko", True),
         ("죄송하지만, 주어진 문맥에서는 그 방법에 대한 정보를 제공하지 않습니다.", "ko", True),
         ("Poetry의 설정을 바꾸는 방법은 문서에서 제공되지 않습니다.", "ko", True),
+        # 2026-10-24 좁힘: "FastAPI docs"·'FastAPI 문서'는 코퍼스 자체라 출처로 본다("API docs"·'OpenAPI
+        # 문서'는 문서 UI를 뜻하는 본문 용어라 아님. test_limitation_statements_are_not_refusals)
+        ("The FastAPI docs do not mention Celery or RabbitMQ.", "en", True),
+        ("FastAPI 문서에서는 Celery 설정을 다루지 않습니다.", "ko", True),
         ("Use `Query(alias=...)`. The docs do not mention other options.", "en", False),
         ("You cannot send JSON and files together; use Form fields.", "en", False),
         ("모르겠습니다. 찾은 문서 구절에는 이 질문에 대한 내용이 없습니다.", "ko", True),
@@ -522,6 +526,202 @@ async def test_a_normal_answer_is_still_cited_when_refusal_emptying_is_on(script
 )
 def test_is_refusal_answer_reads_the_first_sentence(answer, language, expected):
     assert generation.is_refusal_answer(answer, language) is expected
+
+
+# 2026-10-24 좁힘(docs/experiments.md v15 규칙 변경) 뒤에도 저장된 답 없는 질문(질문 풀 4의 답 없는
+# dev·test, 기준·후보 팔)의 거절 첫 문장은 모두 거절이다. 목록은 그 기록에서 분류기가 거절로 센 답의 고유 첫
+# 문장 전부라, 분류기를 좁힐 때 실제 거절을 하나라도 놓치면 여기서 드러난다. 출처 없이 "I don't know …"로만
+# 거절한 답, 시스템 프롬프트를 베낀 2인칭 "You don't know …", 출처 없이 '…에 대한 정보는 제공되지
+# 않았습니다'로 거절한 답이 섞여 있다(코드 조각은 저장된 답 그대로).
+@pytest.mark.parametrize(
+    "answer, language",
+    [
+        (
+            "I don't know how to configure a Cloudflare Tunnel for a local dev server using the provided "
+            "context passages.",
+            "en",
+        ),
+        (
+            "I don't know how to set TanStack Query's `staleTime` as the context passages do not contain "
+            "information about TanStack Query or how to configure its `staleTime` property.",
+            "en",
+        ),
+        (
+            "I don't know how to set up OpenTelemetry auto-instrumentation for a Python service and ship "
+            "traces to Jaeger based on the provided context passages.",
+            "en",
+        ),
+        (
+            "I don't know how to use Locust to simulate 1,000 concurrent users against an API and interpret "
+            "its percentile charts.",
+            "en",
+        ),
+        (
+            "I don't know how to write Helm chart values for liveness and readiness probes on a Python web "
+            "service using the provided context passages.",
+            "en",
+        ),
+        (
+            "I don't know the AWS console sequence for setting up an Application Load Balancer in front of "
+            "an ECS Fargate service running a FastAPI container.",
+            "en",
+        ),
+        (
+            "I don't know the specific Nginx proxy_read_timeout and proxy_buffering settings you should use "
+            "for long-lived streaming responses.",
+            "en",
+        ),
+        (
+            "I don't know the specific round-trip latency for calling an API hosted in AWS us-east-1 from a "
+            "client in Seoul, as it depends on various factors such as network conditions, AWS's network "
+            "infrastructure, and the specific routing paths taken.",
+            "en",
+        ),
+        ("I don't know.", "en"),
+        ("I don't know: the documentation passages I found do not cover this question.", "en"),
+        (
+            "I'm sorry, but the provided context passages do not contain information about configuring "
+            "Celery with RabbitMQ or setting up retry with exponential backoff.",
+            "en",
+        ),
+        (
+            "You don't know how to tune Gunicorn's `max_requests` and `max_requests_jitter` for memory leak "
+            "recycling based on the provided context passages.",
+            "en",
+        ),
+        (
+            "You don't know how to write a Caddyfile for load-balancing two upstream app servers with active "
+            "health checks based on the provided context passages.",
+            "en",
+        ),
+        ("You don't know.", "en"),
+        ("Poetry의 `poetry.lock`을 `uv.lock`으로 직접 변환하는 방법은 문서에서 제공되지 않습니다.", "ko"),
+        ("모르겠습니다.", "ko"),
+        ("원인 파악에 필요한 정보가 부족합니다.", "ko"),
+        (
+            "죄송하지만, SQLAlchemy 2.0의 정식 릴리스 날짜에 대한 정보는 제공된 문맥에 포함되어 있지 "
+            "않습니다.",
+            "ko",
+        ),
+        (
+            "죄송하지만, Sentry Python SDK의 traces_sample_rate 설정에 대한 구체적인 비용 관련 정보는 제공된 "
+            "문맥에서 찾을 수 없습니다.",
+            "ko",
+        ),
+        ("죄송하지만, 요청하신 내용은 제공된 문서에서 찾을 수 없습니다.", "ko"),
+        (
+            "죄송하지만, 윈도우 방화벽에서 8000번 포트 인바운드 규칙을 여는 방법에 대한 정보는 제공되지 "
+            "않았습니다.",
+            "ko",
+        ),
+        (
+            "죄송하지만, 제공된 문맥에서는 `prometheus-fastapi-instrumentator`와 Grafana 대시보드 ID에 대한 "
+            "정보가 없습니다.",
+            "ko",
+        ),
+        (
+            "죄송하지만, 제공된 문맥에서는 Keycloak 관리 콘솔에서 realm을 만들고 client secret을 확인하는 "
+            "메뉴에 대한 구체적인 정보를 찾을 수 없습니다.",
+            "ko",
+        ),
+        (
+            '죄송하지만, 주어진 문맥에서 SQLAlchemy 2.0의 `lazy="selectin"`과 `joinedload`의 성능 차이에 '
+            "대한 구체적인 정보는 제공되지 않았습니다.",
+            "ko",
+        ),
+        ("죄송하지만, 주어진 문맥에서 이 질문에 대한 정보를 찾을 수 없습니다.", "ko"),
+        ("죄송하지만, 주어진 문맥에서 해당 질문에 대한 정보를 찾을 수 없습니다.", "ko"),
+        (
+            "죄송하지만, 주어진 문맥에서는 GitHub Actions를 사용하여 Docker 이미지를 빌드하고 ECR(Amazon "
+            "Elastic Container Registry)에 푸시하는 방법에 대한 정보를 제공하지 않습니다.",
+            "ko",
+        ),
+        (
+            "죄송하지만, 주어진 문맥에서는 Google Cloud Console에서 OAuth 클라이언트 ID를 만들 때 승인된 "
+            "리디렉션 URI를 입력하는 화면에 대한 정보를 제공하지 않습니다.",
+            "ko",
+        ),
+        (
+            "죄송하지만, 주어진 문맥에서는 slowapi의 데코레이터 사용법이나 Redis 백엔드 연결 방법에 대한 "
+            "구체적인 정보를 제공하지 않습니다.",
+            "ko",
+        ),
+        (
+            "죄송하지만, 주어진 문서에서는 RTX 4090과 Llama 3 8B의 조합에 대한 성능 정보를 제공하지 "
+            "않습니다.",
+            "ko",
+        ),
+        (
+            "죄송하지만, 쿠버네티스 HPA(Horizontal Pod Autoscaler)의 YAML 예시는 주어진 문맥에 포함되어 있지 "
+            "않습니다.",
+            "ko",
+        ),
+    ],
+)
+def test_stored_unanswerable_refusals_stay_refusals(answer, language):
+    assert generation.is_refusal_answer(answer, language) is True
+
+
+# 2026-10-24 좁힘: "…does not include/provide …", "…포함되지/제공하지 않습니다"처럼 부정형이지만 '그
+# 기능·필드는 없다'는 한계형 정답은 거절이 아니다. 같은 첫 문장에 출처 표현(문맥·구절·문서)이 없기 때문이다.
+# 좁히기 전에는 모두 거절로 분류돼 기본 설정에서 정답의 인용이 비워졌다(저장된 답 kd013 "…OpenAPI 스키마에
+# 포함되지 않게 됩니다" 포함). 'OpenAPI 문서'·'API 문서'·'Swagger UI 문서'·"interactive API docs"·"automatic
+# documentation"은 FastAPI 문서 UI를 뜻하는 본문 용어라 출처로 세지 않고, "not found in the request"처럼
+# 출처가 아닌 곳의 "not … in"도 거절이 아니다.
+@pytest.mark.parametrize(
+    "answer, language",
+    [
+        ("The response model does not include the password field.", "en"),
+        ("FastAPI does not provide a built-in rate limiter; use a dependency instead.", "en"),
+        ("No information is lost when you use response_model_exclude_unset.", "en"),
+        (
+            "No, FastAPI does not include a built-in rate limiter, but you can add one with a dependency or "
+            "middleware such as slowapi.",
+            "en",
+        ),
+        (
+            "FastAPI doesn't provide automatic database migrations; the docs suggest using Alembic with "
+            "SQLAlchemy.",
+            "en",
+        ),
+        (
+            "Background tasks do not provide retries or persistence; for that, use a task queue like Celery.",
+            "en",
+        ),
+        ("The `regex` parameter is not available in Pydantic v2; use `pattern` instead.", "en"),
+        ("If the cookie is not found in the request, the parameter value is None.", "en"),
+        (
+            "The interactive API docs do not include path operations declared with include_in_schema=False.",
+            "en",
+        ),
+        (
+            "The automatic API documentation does not include path operations declared with "
+            "include_in_schema=False.",
+            "en",
+        ),
+        ("`exclude_unset=True`를 쓰면 기본값만 가진 필드는 응답에 포함되지 않습니다.", "ko"),
+        ("Swagger UI 문서에는 `include_in_schema=False`로 선언한 경로가 포함되지 않습니다.", "ko"),
+        ("쿠키 매개변수는 OpenAPI 문서에 자동으로 포함되지 않으므로 `Cookie()`로 선언해야 합니다.", "ko"),
+        (
+            "매개변수를 `include_in_schema=False`로 전달하면, 해당 쿼리 매개변수가 생성된 OpenAPI 스키마에 "
+            "포함되지 않게 됩니다.",
+            "ko",
+        ),
+        (
+            "아니요, FastAPI는 기본으로 속도 제한 기능을 제공하지 않습니다. 의존성이나 미들웨어로 직접 "
+            "추가해야 합니다.",
+            "ko",
+        ),
+        (
+            "BackgroundTasks는 재시도나 영속성을 제공하지 않으므로, 그런 기능이 필요하면 Celery 같은 작업 "
+            "큐를 쓰세요.",
+            "ko",
+        ),
+        ("API 문서에는 `include_in_schema=False`로 선언한 경로가 포함되지 않습니다.", "ko"),
+    ],
+)
+def test_limitation_statements_are_not_refusals(answer, language):
+    assert generation.is_refusal_answer(answer, language) is False
 
 
 # 세 설정이 환경 변수 → 설정 → 생성기로 넘어간다. 기본값은 v15 결정대로: 인용 호출은 separate(I3 채택 안 함),

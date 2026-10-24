@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from eval import citation_arms, judge_panel, judge_stability, refusal
+from eval.common import read_json, read_jsonl
 from eval.judge import (
     FLUSH_MESSAGES,
     JudgeConfig,
@@ -351,6 +352,66 @@ def test_test_command_conditions():
         refusal.test_command({"ko": 0.9}, base_na, cand_na, {}, {}, used, True)["conditions"]["F2_gold_lost"]
         is False
     )
+
+
+# --- 저장된 v15 I4 기록 재집계: 거절 분류기를 바꿔도 공개 수치가 조용히 바뀌지 않게 ---
+# eval/refusal.py는 생성 기록의 refusal 필드 대신 늘 지금 분류기로 거절을 다시 센다(docs/experiments.md v15
+# 규칙 변경 2026-10-18). 그래서 분류기가 바뀌면 커밋된 결정 파일(eval/runs/v15_i4_dev.json,
+# v15_i4_test.json)과 README의 거절률(영어 20/20, 한국어 7/20)이 소리 없이 어긋날 수 있다. 저장된 생성·판정·
+# 검색 기록을 v15 I4 실행과 같은 인자로 다시 넣어 결정 파일과 모든 항목이 같은지 고정한다. 달라지면 분류기
+# 변경이 기록 수치에 닿은 것이니, 수치를 고치지 말고 docs/experiments.md에 날짜 붙인 정정 행을 더한 뒤 이
+# 기대값을 그 기록과 함께 바꾼다. 커밋된 파일만 읽으므로 DB·Ollama 없이 돈다.
+I4_RUNS = Path(refusal.__file__).parent / "runs"
+I4_LABEL = "J1v15"  # I4의 결정 판정 라벨(같은 순서 3회 중앙값)
+# I4 test의 F2·F3에 쓴 '이미 쓴 답 있는 test 셋' 여섯 개(236문항). 검색 기록 v15_i4_ret_*, 두 팔의 생성 기록
+# v15_i4_ubase_*(기준)·v15_i4_ucand_*(후보)가 같은 이름을 쓴다.
+I4_USED_TEST_SETS = ["qa_dataset", "qa_test2", "qa_test2_ko", "qa_test3a_ko", "qa_test3b_en", "qa_test3b_ko"]
+
+
+# 커밋된 생성 기록(.gen.jsonl)과 J1v15 판정을 eval/refusal.py의 로더로 읽는다.
+def _i4_answers(names: list[str]) -> dict:
+    return refusal.load_answers([I4_RUNS / f"{name}.gen.jsonl" for name in names], I4_LABEL)
+
+
+# dev: 답 있는 pool4 dev 80문항과 답 없는 dev 20문항을 다시 세면 커밋된 (c) 판단과 같다 — '판정 4 이상인데
+# 거절'은 영어 e4055 하나·한국어 0이라 (c)는 test 후보이고, 답 없는 dev의 거절은 영어 10/10·한국어 6/10.
+def test_i4_dev_retally_matches_the_committed_decision():
+    result = refusal.dev_command(
+        _i4_answers(["v15_i4_base_qa_pool4_dev_en", "v15_i4_base_qa_pool4_dev_ko"]),
+        _i4_answers(["v15_i4_base_qa_pool4_na_dev_en", "v15_i4_base_qa_pool4_na_dev_ko"]),
+    )
+    assert result == read_json(I4_RUNS / "v15_i4_dev.json")
+    assert result["languages"]["en"]["false_refusals"] == ["e4055"]
+    assert result["languages"]["ko"]["false_refusals"] == []
+    assert result["c_adopted_for_test"] is True
+    assert [result["languages"][lang]["unanswerable_refusals"] for lang in ("en", "ko")] == [10, 6]
+
+
+# test: 기준 팔(지금 시스템)과 후보 팔(바닥값 + 청크 0개 거절)을 다시 세면 커밋된 결정과 같다 — 답 없는 test
+# 40문항의 거절은 기준 27(영어 20/20, 한국어 7/20) 대 후보 31, F2·F3 탈락, (c) 채택. README의 거절률은 이
+# 기준 팔 값이다.
+def test_i4_test_retally_matches_the_committed_decision():
+    floors = read_json(I4_RUNS / "v15_i4_floors.json")["candidate_floors"]
+    used = [
+        r for name in I4_USED_TEST_SETS for r in read_jsonl(I4_RUNS / f"v15_i4_ret_{name}.retrieval.jsonl")
+    ]
+    result = refusal.test_command(
+        floors,
+        _i4_answers(["v15_i4_base_qa_pool4_na_test_en", "v15_i4_base_qa_pool4_na_test_ko"]),
+        _i4_answers(["v15_i4_cand_qa_pool4_na_test_en", "v15_i4_cand_qa_pool4_na_test_ko"]),
+        _i4_answers([f"v15_i4_ubase_{name}" for name in I4_USED_TEST_SETS]),
+        _i4_answers([f"v15_i4_ucand_{name}" for name in I4_USED_TEST_SETS]),
+        used,
+        c_adopted=True,
+    )
+    assert result == read_json(I4_RUNS / "v15_i4_test.json")
+    assert result["refusals_by_language"] == {
+        "en": {"base": 20, "cand": 20, "n": 20},
+        "ko": {"base": 7, "cand": 11, "n": 20},
+    }
+    assert result["refusals"] == {"base": 27, "cand": 31}
+    assert result["adopt_floor_and_refusal"] is False
+    assert result["adopt_empty_citations"] is True
 
 
 # --- eval/judge_panel.py ---

@@ -112,8 +112,8 @@ def needs_language_retry(answer: str, language: Language) -> bool:
 # --- 거절(답할 근거가 없다는 답) 분류 (docs/experiments.md v15) ---
 # 답이 '주어진 문서 구절에 그 내용이 없다/모른다'는 거절인지 정규식으로 가른다. 쓰임은 두 가지다.
 # 1) 평가 지표: 문서에 답이 없는 질문에서 시스템이 모른다고 하는 비율(거절률)을 센다(eval/refusal.py).
-# 2) 설정 EMPTY_CITATIONS_ON_REFUSAL: 거절 답에는 인용을 붙이지 않는다. 지금 인용 스키마(minItems 1)는 거절한
-#    답에도 인용을 하나 이상 강제해, 화면에 '근거'가 붙은 거절이 나온다.
+# 2) 설정 EMPTY_CITATIONS_ON_REFUSAL(v15 I4에서 채택, 기본 켬): 거절 답에는 인용을 붙이지 않는다. 지금 인용
+#    스키마(minItems 1)는 거절한 답에도 인용을 하나 이상 강제해, 화면에 '근거'가 붙은 거절이 나온다.
 # 왜 첫 문장만 보나: 저장된 답을 보면 거절은 거의 늘 첫 문장에서 한다("I don't know.", "제공된 문맥에는 …에
 # 대한 정보가 포함되어 있지 않습니다."). 첫 문장에서 답한 뒤 뒤쪽에서 일부만 모른다고 하는 답(부분 답)이나,
 # '함께 받을 수 없습니다'처럼 '없다'가 답의 내용인 문장을 거절로 잘못 세지 않으려고 첫 문장과 '정보·내용이
@@ -121,25 +121,70 @@ def needs_language_retry(answer: str, language: Language) -> bool:
 # 2026-10-18 보강(docs/experiments.md v15 규칙 변경, I4 test 전): dev 답에서 놓친 거절 꼴 두 가지를 더했다.
 # A.X가 영어로 쓰는 "You don't know."와, 한국어 "…정보는 제공되지 않았습니다", "…정보를 제공하지 않습니다"처럼
 # '제공·설명·언급되지(하지) 않'는다는 꼴이다. 저장된 답 약 500개에 대 보면 새로 걸리는 답은 모두 거절이었다.
+# 2026-10-24 좁힘(docs/experiments.md v15 규칙 변경): 부정형 꼴("…does not include/provide",
+# "…포함되지/제공하지 않")은 주어·출처를 보지 않아 "FastAPI does not provide a built-in rate limiter"나
+# "…필드는 응답에 포함되지 않습니다"처럼 '그 기능은 없다'는 한계형 정답까지 거절로 셌다(저장된 답에서 실제로
+# 걸린 정답은 1개지만 기본 설정에서는 그런 정답의 인용이 비워진다). 이제 부정형 꼴은 같은 첫 문장에 출처
+# 표현(아래 _SOURCE_EN·_SOURCE_KO)이 있을 때만 거절이고, "I don't know"·"모르겠습니다"·"정보가 없습니다"처럼
+# 그 자체로 거절인 꼴은 그대로다. 좁히기만 했으므로 새 분류기의 거절은 옛 분류기의 거절에 포함되고, 저장된 답
+# 없는 질문의 거절 첫 문장은 모두 그대로 거절이다(tests/test_generation.py가 전부 고정).
+
+# 영어 출처 표현. 부정 동사 앞(같은 첫 문장)에 있어야 한다: "FastAPI doesn't provide X; the docs suggest Y"
+# 처럼 뒤에 오는 출처는 세지 않는다. "/docs"·"API docs"·"interactive/automatic docs(documentation)"는
+# FastAPI의 문서 UI를 뜻하는 본문 용어라 빼고, "FastAPI docs/documentation"은 코퍼스 자체라 출처로 본다
+# (안쪽 lookbehind가 "API " 앞의 "Fast"를 본다). 끝의 \b는 "docstring" 같은 다른 단어의 앞부분에 걸리지
+# 않게 한다.
+_SOURCE_EN = (
+    r"(?:context|passages?|provided (?:context|passages?|documents?)"
+    r"|(?<!/)(?<!(?<!Fast)API )(?<!interactive )(?<!automatic )(?:documentation|docs))\b"
+)
+# 출처가 있어야 거절로 보는 영어 꼴: 부정 동사, '정보가 없다', '…에 없다/나오지 않는다'.
+_NEG_VERBS_EN = r"(?:contain|include|mention|cover|provide|specify|say|describe|explain|address)"
+_NO_INFO_EN = r"no (?:information|details|mention|explanation)"
+_NOT_IN_EN = r"not (?:mentioned|covered|provided|specified|described|explained|addressed|found|available) in"
+_REFUSAL_PARTS_EN = [
+    # 그 자체로 거절인 꼴
+    r"(?:i|you) (?:do not|don't) know",
+    r"(?:cannot|can't|unable to) (?:answer|find|determine|tell)",
+    r"(?:not enough|insufficient) (?:information|context|detail)",
+    _NO_INFO_EN + r" (?:about|on|regarding|of)\b",  # "no information about X": 주제를 가리키면 거절
+    # 출처가 같은 첫 문장에 있을 때만 거절인 부정형
+    _SOURCE_EN + r".*?\b(?:do|does|did) not " + _NEG_VERBS_EN,
+    _SOURCE_EN + r".*?\b(?:don't|doesn't|didn't) " + _NEG_VERBS_EN,
+    _SOURCE_EN + r".*?\b" + _NO_INFO_EN,
+    _NO_INFO_EN + r"\b.*?\b" + _SOURCE_EN,
+    _NOT_IN_EN + r"\b.*?\b" + _SOURCE_EN,  # "not covered in the passages"; "not found in the request"는 아님
+]
+# 한국어 출처 표현. 동사가 문장 끝에 오므로 부정형 앞에 있어야 한다.
+# - '문서'는 OpenAPI 문서·API 문서·자동/대화형 문서(FastAPI의 문서 UI)·문서화(동작)를 뜻하는 본문 용어와
+#   겹치므로, 앞에 영문 단어·'자동'·'대화형'이 붙거나 뒤에 '화'가 붙는 꼴은 뺀다. 단 'FastAPI 문서'는 코퍼스
+#   자체라 출처로 본다(안쪽 lookbehind가 영문 단어의 끝 "FastAP(I)"를 본다).
+# - '…에 대한 (정보|내용|설명|언급)'은 "그 주제에 대한 정보가 제공되지 않았다"는 거절 틀이라 출처처럼 본다.
+#   저장된 거절 "…방법에 대한 정보는 제공되지 않았습니다"가 출처 없이 이 틀만 쓴다.
+_SOURCE_KO = (
+    r"(?:(?<!(?<!FastAP)[A-Za-z/]\s)(?<!(?<!FastAP)[A-Za-z/])"
+    r"(?<!자동\s)(?<!자동)(?<!대화형\s)(?<!대화형)문서(?!화)"
+    r"|문맥|컨텍스트|구절|자료|제공된|주어진"
+    r"|(?:에 대한|에 관한|관련된?|해당)\s?"
+    r"(?:구체적인\s?|자세한\s?|직접적인\s?|명시적인\s?)?(?:정보|내용|설명|언급))"
+)
+# 출처가 있어야 거절로 보는 한국어 부정형: '…되어 있지 않', '…되지/하지 않', '다루지 않'.
+_NEG_KO = (
+    r"(?:(?:나와|언급되어|포함되어|제공되어|설명되어|나타나|기술되어|다뤄지|다루어지|명시되어|소개되어)\s?있지\s?않"
+    r"|(?:제공|설명|언급|포함|기술|명시|소개|안내)(?:되|하)지\s?않"
+    r"|다루지\s?않)"
+)
+_REFUSAL_PARTS_KO = [
+    # 그 자체로 거절인 꼴
+    r"모르겠|모릅니다|알 수 없|찾을 수 없",
+    r"(?:정보|내용|언급|설명|방법|자료|답)(?:이|가|은|는|도)?\s?(?:없|부족)",
+    r"(?:답|답변|확인)(?:하기|할 수)\s?(?:없|어렵)",
+    # 출처(또는 '…에 대한 정보' 틀)가 앞에 있을 때만 거절인 부정형
+    _SOURCE_KO + r".*?" + _NEG_KO,
+]
 _REFUSAL_PATTERNS: dict[str, re.Pattern] = {
-    "en": re.compile(
-        r"\b(?:(?:i|you) (?:do not|don't) know"
-        r"|(?:do|does|did) not (?:contain|include|mention|cover|provide|specify|say|describe|explain|address)"
-        r"|(?:don't|doesn't|didn't) "
-        r"(?:contain|include|mention|cover|provide|specify|say|describe|explain|address)"
-        r"|no (?:information|details|mention|explanation)"
-        r"|not (?:mentioned|covered|provided|specified|described|explained|addressed|found|available) in"
-        r"|(?:cannot|can't|unable to) (?:answer|find|determine|tell)"
-        r"|(?:not enough|insufficient) (?:information|context|detail))",
-        re.IGNORECASE,
-    ),
-    "ko": re.compile(
-        r"(?:모르겠|모릅니다|알 수 없"
-        r"|(?:정보|내용|언급|설명|방법|자료|답)(?:이|가|은|는|도)?\s?(?:없|부족)"
-        r"|(?:나와|언급되어|포함되어|제공되어|설명되어|나타나|기술되어|다뤄지|다루어지|명시되어|소개되어)\s?있지\s?않"
-        r"|다루지\s?않|찾을 수 없|(?:답|답변|확인)(?:하기|할 수)\s?(?:없|어렵)"
-        r"|(?:제공|설명|언급|포함|기술|명시|소개|안내)(?:되|하)지\s?않)"
-    ),
+    "en": re.compile(r"\b(?:" + "|".join(_REFUSAL_PARTS_EN) + r")", re.IGNORECASE),
+    "ko": re.compile("|".join(_REFUSAL_PARTS_KO)),
 }
 # 첫 문장의 끝: 마침표·물음표·느낌표 뒤 공백, 또는 줄바꿈. 300자를 넘으면 거기서 자른다(한 문장이 아주 길게
 # 이어지는 답에서 뒤쪽의 부분 거절을 잡지 않으려고).
