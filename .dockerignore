@@ -1,10 +1,23 @@
+# docker build의 컨텍스트에서 뺄 것. Dockerfile의 COPY . .가 이 목록 밖의 파일을 모두 이미지에 넣는다.
+# 패턴은 컨텍스트 루트 기준이라, 하위 폴더까지 빼려면 **/를 붙인다(그냥 __pycache__/는 루트의 것만 뺀다).
 .git
 .venv
 .env
 work/
-__pycache__/
-*.pyc
+**/__pycache__
+**/*.pyc
 .pytest_cache/
 .ruff_cache/
 eval/reports/
 zap/
+# 서버 실행에 쓰지 않는 개발용 트리: 테스트, 문서(화면 그림 포함), 평가 실행 기록(파일 수백 개), CI 설정.
+# alembic(시작할 때 마이그레이션)과 scripts(컨테이너 안 적재·데모 사용자, README 3·4단계)는 남긴다. eval의
+# 스크립트와 질문셋도 작아서 남기지만, 평가는 README대로 호스트에서 돌린다.
+tests/
+docs/
+eval/runs/
+.github/
+# 저장소에 커밋하지 않는 로컬 작업 메모(.gitignore에도 있음). 이미지에 들어가지 않게 한다.
+AGENTS.md
+CLAUDE.md
+HANDOFF.md

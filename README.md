@@ -157,6 +157,15 @@ DB 헬스체크 통과 후 API가 마이그레이션(`alembic upgrade head`)을 
 
 `.env`는 호스트에서 실행하는 기준(`localhost`)으로 그대로 두면 된다. compose가 API 컨테이너의 `DATABASE_URL`은 `db` 서비스로, `OLLAMA_BASE_URL`은 `host.docker.internal:11434`(호스트에서 실행 중인 Ollama)로 덮어쓴다. 임베딩 모델(영어 1개, 한국어 2개)과 재정렬 모델(`rerank` 모드용, 언어별 2개)은 빌드할 때 이미지에 넣어 두므로 실행 중에는 HuggingFace에 접속하지 않는다. 한국어 임베딩은 기본값 Granite R2 311M(측정한 리비전으로 고정) 말고 v13 단계 B 전의 e5-small도 들어 있어서, `EMBEDDING_MODEL_NAME_KO`만 바꾸고 한국어를 다시 적재하면 이미지를 다시 빌드하지 않고 되돌릴 수 있다. torch는 CPU 빌드를 쓰고, 모델 다섯 개가 들어 있어 이미지 크기는 `docker image ls` 기준 약 5.2GB다 (v13 단계 B 전 4.0GB. Granite 층은 658MB인데, 이 표시는 압축한 크기와 풀어 놓은 크기를 함께 세어 더 많이 늘어남).
 
+2026-10-30부터 이미지는 이렇게 만든다.
+- 모델 다섯 개는 빌드와 실행에서 같은 허브 커밋(리비전)으로 고정한다. 빌드는 그 커밋에서 sentence-transformers가 읽는 파일만 받고, 앱도 같은 커밋으로 모델을 부르며(`app/services/embedding.py`·`app/services/reranking.py`), 두 곳의 값이 같은지 테스트가 확인한다. 그래서 다시 빌드하는 날 허브의 main이 바뀌어 있어도 지금과 같은 가중치가 들어간다. 그 전까지 리비전 없이 받던 네 모델(bge, e5-small, cross-encoder 두 개)은 그때까지 쓰던 스냅숏의 커밋으로 고정했다. 받은 파일 43개가 그 전 이미지와 sha256까지 같고 적재 해시도 그대로라 다시 적재할 필요가 없다.
+- 모델 층이 의존성(`pyproject.toml`·`uv.lock`) 층보다 앞에 있어서, 의존성만 바꾼 재빌드는 모델 약 1.8GB를 다시 받지 않는다.
+- 서버는 root가 아닌 `app` 사용자(uid 10001)로 돈다. `docker compose exec`로 실행하는 아래 3·4단계 명령도 같다. 코드와 가상환경은 이 사용자가 고쳐 쓸 수 없고, 모델 캐시(`/opt/hf`)만 이 사용자 소유다. 가상환경은 빌드할 때 미리 컴파일한다(이 사용자는 실행 중에 `.pyc`를 쓸 수 없으므로).
+- compose의 헬스체크가 `/health`의 `status`가 `ok`인지 본다. 그래서 `docker compose up -d --wait`는 API가 모델을 다 올려 질문을 받을 준비가 될 때까지 기다린다.
+- 테스트·문서·평가 실행 기록처럼 서버 실행에 쓰지 않는 파일은 이미지에 넣지 않는다(`.dockerignore`).
+
+이렇게 다시 빌드한 이미지는 `docker image ls` 기준 약 5.4GB다(2026-10-30. 미리 컴파일한 `.pyc`만큼 가상환경 층이 1.21GB에서 1.54GB로 커지고, 저장소 복사 층은 54MB에서 2MB로 줄었다).
+
 ### 3. 문서 수집 (최초 1회)
 ```bash
 docker compose exec api python -m scripts.ingest_fastapi_docs
