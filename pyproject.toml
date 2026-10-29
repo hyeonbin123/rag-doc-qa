@@ -41,6 +41,11 @@ explicit = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+# 저장소 루트에서 인자 없이 `pytest`를 돌리면 tests/만 모은다(CI와 README '테스트'의 `uv run pytest`). 지정하지 않으면
+# 저장소 루트 아래를 모두 훑어서, gitignore돼 저장소에는 없는 로컬 작업 디렉터리의 테스트 파일까지 모은다. 그러면
+# 깨끗한 checkout인 CI와 같은 명령이 다른 테스트 집합을 돌고, 그 안에 tests/ 사본이 있으면 conftest 모듈 이름이
+# 겹쳐 수집 오류로 멈춘다. 경로를 직접 주면(`pytest tests/test_web.py`) 이 설정과 상관없이 그 경로를 돈다.
+testpaths = ["tests"]
 
 [tool.ruff]
 line-length = 110
