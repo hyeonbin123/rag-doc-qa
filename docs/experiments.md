@@ -1792,6 +1792,49 @@ dev = qa_dev_ko 32 + qa_dev2_ko 40, 72문항 한 번에. 복제 DB `ragdb_p1_<�
 - v14처럼 청크 입력 변화가 한국어 판정을 흔들 수 있음(허용 폭 −2). 판정기가 J1에서 J2로 바뀌므로 이전 단계의 합계와 직접 비교하지 않고 C5·C6를 모두 이번에 새로 판정함
 - 판정 1회 규칙이면 세션 이력에 따른 흔들림(104문항 합 ±1 수준)이 남음 → 판정 절차 규칙의 경계 규칙으로 다룸
 
+## v16-L: Claude 라벨 확장 — v13 채택 G0·G3 짝 전부 + 판정 점수로 층화하지 않은 무작위 표본 (규칙만, 아직 라벨 안 붙임)
+
+이 절의 규칙·표본·열쇠는 2026-10-30에 라벨을 붙이기 전에 커밋함. 새 설정을 고르는 단계가 아니라 보고만 하는 단계라, v13 결정(A.X 채택)과 v15 I5의 기록·제안, 2026-10-24의 판정기 결정(v16 결정 판정기 J2 단독)은 이 결과로 다시 열지 않음. 생성·판정은 하지 않고 저장된 답에 Claude 라벨만 더함(GPU 0)
+
+**왜**
+- I5의 Claude 라벨 80개는 J1 점수 구간으로 층화한 표본이라(옛 지문 모집단 447개의 J1 5점 312·4점 123·3점 이하 12개에서 28·40·12개) kappa는 'J1이 낮게 준 문항이 많은 표본 위'의 판정기 비교로만 읽힘(I5 위험 항목). 구성 − J1v15 kappa 차이 구간의 폭도 단독 판정기와 J2+J3 평균에서 0.29~0.38이었음
+- 같은 질문의 G0·G3 답이 둘 다 라벨된 짝은 9개(v13b B2의 B0 라벨을 같은 답인 G3 한국어 라벨로 치면 11개)뿐이라, 판정기와 독립인 라벨로 A.X 우위(v13 채택 G3 − G0: J1 +20, J1v15 +25, J2 −13, J3 −1)를 잴 수 없었음
+
+**표본** (`python -m eval.judge_panel sample-pairs --blind eval/runs/v16_panel_sample.jsonl --key eval/runs/v16_panel_key.jsonl`, seed 20261030)
+- 모집단: I5와 같은 저장된 결정 팔 답 448개를 2026-10-29 지문(데이터셋, id, 답, 청크 본문)으로 중복을 뺀 402개. 표본 추출은 판정 점수를 읽지 않음
+- (a) 짝 전수: v13 채택 `qa_test3b_ko`·`qa_test3b_en`의 G0(Qwen2.5)·G3(A.X) 답 160개 = 중복을 뺀 159개 전부(한국어 n048은 두 팔의 답과 문맥이 같아 한 번 라벨하고 두 팔에 같은 라벨을 씀). I5 라벨이 있던 49개도 다시 라벨함(아래 '다시 라벨하는 이유')
+- (b) 나머지 243개(v13b B2의 P 40, v14 C3 104·C4 99. B0 40개는 G3 한국어와 같은 답이라 (a)에 들어 있음)에서 단순 무작위 40개: 모집단 순서(`COMPARISONS` 파일 순서) 그대로에서 `random.Random(20261030).sample`. 뽑힌 것은 C3 19, C4 13, P 8개이고 그중 9개는 I5 라벨이 있음(다시 라벨함)
+- 합 199개(짝 159 + 나머지 40). 라벨러 묶음 8개: 같은 난수열로 단위(짝 하나, 나머지 답 하나)를 섞은 뒤 차례로 답 수가 가장 적은 묶음(같으면 앞 번호)에 넣고 묶음마다 답 순서를 섞음 → 26·25·25·25·26·24·24·24개. 같은 짝의 두 답은 늘 같은 묶음(같은 라벨러)에 들어가고 어느 쪽이 먼저인지는 섞임. 묶음을 40개가 아니라 약 25개로 한 것은 라벨러가 묶음 전체를 한 요청으로 받기 때문(25개 묶음 하나가 문단 포함 13만~20만 자)
+- 라벨러 파일(`eval/runs/v16_panel_sample.jsonl`)에는 I5와 같은 여섯 항목(짧은 id, 언어, 질문, 판정기가 보는 문단, 답, 참고 답안)만 있음. 짧은 id는 키에 `v16-L#`을 붙인 sha1 앞 10자리(앞에 p)라 I5 표본의 id와 이어지지 않음. 줄은 묶음 순서이고, 묶음·층(짝/나머지)·생성기·키는 열쇠 파일(`eval/runs/v16_panel_key.jsonl`)에만 있음
+- `tests/test_v16_eval.py`가 커밋한 표본·열쇠가 표본 추출을 다시 돌린 결과와 순서·묶음까지 같고, 짝 80개가 모두 완결(모든 G0에 같은 질문의 G3가 같은 묶음에)이며, 라벨러 파일에 팔·출처·층·점수가 없음을 고정함
+
+**라벨** (위 표본·열쇠를 커밋한 뒤에 붙임)
+- Claude Code 하위 에이전트 8개(비대화 모드, `claude-opus-5-5`, effort high)가 묶음 하나씩. 지침은 `eval/runs/v15_i5_grading_guide.md` 그대로(공개 저장소용 한국어 주석 한 줄만 뺌)이고 전달 방식만 I5와 다름: 에이전트에게 도구를 주지 않고(파일 읽기·쓰기·실행·웹 모두 없음, 사용자 설정·플러그인·MCP 끔, 저장소 밖 빈 작업 폴더, 세션 저장 안 함), 사용자 메시지에 지침 전문 + 아래 전달 문단 + `BEGIN INPUT`과 `END INPUT` 사이에 그 묶음의 라벨러 파일 줄을 그대로 넣어, 구조화 출력(묶음 문항 수 고정, id는 그 묶음의 것만, 점수는 1~5 정수)으로 받음. I5는 지침으로 다른 파일을 못 열게 했고, 이번에는 도구가 없어 열 수 없음
+- 시스템 프롬프트(원문): "You grade answers for a documentation QA evaluation. You have no tools for reading files, running code or using the web; grade only the text you are given."
+- 전달 문단(원문, 지침 끝에 `## Delivery in this run` 제목으로 붙임): "This replaces only the file handling described above. You have no tools, so you cannot open, list or search any file. The lines of your input file are reproduced below between the lines BEGIN INPUT and END INPUT, one JSON object per line. Grade every line by this guide and return the grades as your structured output: an object whose `items` array has exactly one entry per input line, in the same order, each with `sample_id`, `correctness_score`, `faithfulness_score`, `hallucinated` and `note` as defined above. Do not write any file."
+- 결과는 `eval/runs/v16_claude_labels.jsonl`(라벨러 파일 순서, I5와 같은 항목)로 모아 보고를 돌리기 전에 커밋함. 출력이 순서·id 검사를 통과하지 못하거나 실행이 실패한 묶음만 같은 입력으로 다시 돌리고 그 사실을 기록함. 라벨을 보고 고치거나 묶음을 골라 다시 붙이지 않음
+
+**보고** (보고만. 결과 `eval/runs/v16_panel.pairs.json`, 리포트 `eval/reports/judge_pairs_v16_panel_*.md`)
+- 명령: `python -m eval.judge_panel report-pairs --tag v16_panel --labels J1v15 J2v15 J3v15 --claude eval/runs/v16_claude_labels.jsonl --key eval/runs/v16_panel_key.jsonl --v15-claude eval/runs/v15_i5_claude_labels.jsonl --v15-key eval/runs/v15_i5_panel_key.jsonl --focus J2v15 J2v15+J3v15`
+1. Claude 라벨 기준 A.X 우위: v13 채택 80쌍(영어 40, 한국어 40)의 G0·G3 정확도 합과 차이(G3 − G0), 문항별 차이 평균의 대응표본 bootstrap 90% 구간(10,000회, seed 20261003. I5 결정 방향 표와 같은 계산), 언어별
+2. 같은 80쌍의 판정 구성별 G3 − G0: J1v15, J2v15, J3v15와 그 평균 구성(J2v15+J3v15 포함, 0.5점 단위). 단독 판정기 값은 I5 표와 같음(테스트로 고정)
+3. 표본 199개에서 판정 구성별 이차 가중 kappa(Claude 라벨 기준), 구성 − J1v15 차이와 J2v15+J3v15 − J2v15 차이의 bootstrap 90% 구간(2,000회, seed 20261003으로 I5 kappa 구간과 같은 횟수. 다만 문항이 아니라 질문 단위로 다시 뽑아 같은 질문의 답들이 함께 움직이게 함). 목표 폭은 0.2 미만이고 못 미치면 그대로 보고함. 층별(짝 159, 나머지 40) kappa도 남김(구간 없음)
+4. 재라벨 일치: I5 라벨과 이번 라벨이 모두 있는 같은 답 58개(짝 49, 나머지 9. 지문으로 맞추고, I5 표본에 두 번 든 n086은 한 번)에서 이차 가중 kappa, 완전 일치율, 1점 안 일치율, 평균 차이(이번 − I5)
+5. Claude 라벨과 답 길이의 Spearman(전체·생성기별), 판정기마다 (판정 − 라벨) 잔차와 답 길이의 Spearman
+- 라벨 분포(전체·묶음별·층별). 묶음별 평균은 라벨러 사이 기준 차이를 봄
+
+**다시 라벨하는 이유** (I5 라벨을 재사용하지 않음)
+- I5 라벨이 있는 v13 답 49개를 재사용하면 (1) 한쪽 답만 I5 라벨인 짝 28개는 두 답이 다른 라벨러·다른 세션의 라벨이 되어 짝 차이에 라벨러 사이 기준 차이가 섞이고 (2) 새로 붙인 라벨만의 집합은 'J1 층화 표본을 뺀 나머지'라 다시 J1 점수에 기대어 고른 표본이 됨. 49개를 다시 라벨하면 라벨이 약 4분의 1 늘지만 두 문제가 없어지고, 재라벨 일치를 58개로 잴 수 있음
+
+**읽는 법·위험**
+- 표본은 v13 채택의 답을 모두 넣고 나머지는 40개만 넣어, kappa는 모집단 값이 아니라 '판정 점수로 고르지 않은 이 199개 위'의 비교임(Qwen 답이 표본의 40%, 모집단의 20%). 층별 값을 함께 봄
+- Claude 라벨도 LLM 판단이라 사람 라벨이 아님. 라벨러(Claude Opus)는 판정기 셋(Qwen2.5·Gemma·Qwen3.5)과 다른 계열이지만 사람 기준을 대신하지는 않음
+- 같은 질문이 두 번 보여 짝임은 알 수 있음(어느 팔인지는 모름). A.X 답이 3~5배 길어 길이로 생성기를 짐작할 수는 있음. 지침은 길이 자체로 점수를 주지 말라고 함
+- 라벨러 사이·세션 사이 기준 차이는 묶음별 분포와 재라벨 일치로 잼. 짝 차이는 같은 라벨러 안의 비교라 그 차이가 들어가지 않음
+- 결과가 어느 쪽이어도 v13 결정·I5 제안·판정기 결정은 바꾸지 않음. 공개 문구(README v13 행·한계)를 고칠지는 사용자가 정함
+
+**비용**: GPU 0. 하위 에이전트 8개, 입력 합 약 140만 자(지침·문단 포함)
+
 ## 기타 관찰
 
 - **LLM 판정의 오탐**: v3 dense에서 q017은 검색 실패 후 "컨텍스트에 정보가 없다"고 올바르게 답했지만, 판정 모델은 이를 환각으로 표시함.
