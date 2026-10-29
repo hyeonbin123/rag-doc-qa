@@ -12,18 +12,23 @@ python-jose로 만든 토큰을 그대로 적어 두고, 바꾼 뒤에도 같은
 # - 알고리즘을 HS256 하나로 고정해야 'alg: none'이나 다른 알고리즘을 주장하는 토큰을 받지 않는다.
 # - 서명이 맞아도 sub가 UUID가 아닌 토큰은 500이 아니라 401(InvalidTokenError)이어야 한다.
 # - 공개 예시 비밀키(.env.example 값)로 서명하면 누구나 토큰을 만들 수 있다. 기본은 경고,
-#   APP_ENV=production이면 시작 거부다.
+#   APP_ENV=production이면 시작 거부다. CI 워크플로의 비밀키도 저장소에 공개된 값이라 같은 취급을 한다.
+# - 비밀키 최소 길이는 서명 알고리즘의 해시 출력 길이다(HS256 32, HS384 48, HS512 64바이트).
 # - 감사 로그에는 이메일 원문·토큰 값이 들어가면 안 된다(이메일은 지문, 토큰은 아예 적지 않음).
 
 import hashlib
 import logging
+import re
 import uuid
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 # jwt: PyJWT. 테스트에서 일부러 잘못된 토큰(다른 알고리즘, 만료, 클레임 빠짐)을 만들 때만 직접 쓴다.
+# get_default_algorithms: PyJWT가 알고리즘마다 쓰는 해시(키 길이 경고 기준)를 읽을 때 쓴다.
 import jwt
 import pytest
 from fastapi import HTTPException, Request
+from jwt.algorithms import get_default_algorithms
 from pydantic import ValidationError
 
 from app.config import (
@@ -229,6 +234,50 @@ def test_jwt_secret_problem_flags_empty_public_and_short_secrets():
     assert jwt_secret_problem("  change-me-to-a-random-secret  ") is not None
     assert jwt_secret_problem("x" * (MIN_JWT_SECRET_BYTES - 1)) is not None
     assert jwt_secret_problem("x" * MIN_JWT_SECRET_BYTES) is None
+
+
+# CI 워크플로(.github/workflows/ci.yml)의 JWT_SECRET_KEY도 저장소에 공개된 값이다. 32바이트를 넘어 길이
+# 검사만으로는 걸리지 않으므로 공개 값 목록에 있어야 한다. 값은 워크플로 파일에서 직접 읽어, CI 값을 바꾸면
+# 이 테스트가 목록도 고치라고 알린다. CI는 APP_ENV를 두지 않아(development) 경고만 나고 테스트는 그대로 돈다.
+CI_WORKFLOW = Path(__file__).resolve().parents[1] / ".github" / "workflows" / "ci.yml"
+
+
+def test_the_ci_workflow_secret_counts_as_a_public_value():
+    secrets_in_ci = re.findall(r"JWT_SECRET_KEY:\s*(\S+)", CI_WORKFLOW.read_text(encoding="utf-8"))
+
+    assert secrets_in_ci
+    for secret in secrets_in_ci:
+        assert len(secret.encode("utf-8")) >= MIN_JWT_SECRET_BYTES  # 길이만으로는 걸리지 않는 값이다
+        assert secret in PUBLIC_EXAMPLE_JWT_SECRETS
+        assert jwt_secret_problem(secret) is not None
+        with pytest.raises(ValidationError, match="JWT_SECRET_KEY"):
+            Settings(database_url="x", jwt_secret_key=secret, app_env="production", _env_file=None)
+
+
+# 비밀키 최소 길이는 서명 알고리즘의 해시 출력 길이다. RFC 7518 3.2절의 기준이고, PyJWT가
+# InsecureKeyLengthWarning을 내는 기준(hash_alg().digest_size)과도 같다. 그래서 HS512를 고르면 HS256에
+# 충분한 32바이트 키도 약한 키로 보고, production이면 시작하지 않는다. 기대값은 앱의 표가 아니라 PyJWT에서
+# 읽는다(두 기준이 어긋나면 이 테스트가 잡는다).
+@pytest.mark.parametrize("algorithm", ["HS256", "HS384", "HS512"])
+def test_the_secret_must_be_as_long_as_the_hash_of_the_signing_algorithm(algorithm):
+    minimum = get_default_algorithms()[algorithm].hash_alg().digest_size
+    short, enough = "x" * (minimum - 1), "x" * minimum
+
+    assert jwt_secret_problem(short, algorithm) is not None
+    assert jwt_secret_problem(enough, algorithm) is None
+    production = {"database_url": "x", "jwt_algorithm": algorithm, "app_env": "production", "_env_file": None}
+    with pytest.raises(ValidationError, match="JWT_SECRET_KEY"):
+        Settings(jwt_secret_key=short, **production)
+    assert Settings(jwt_secret_key=enough, **production).jwt_algorithm == algorithm
+
+
+# 시작 경고도 고른 알고리즘의 최소 길이를 알려 준다(HS512면 64바이트).
+def test_the_startup_warning_names_the_minimum_for_the_signing_algorithm(caplog):
+    settings = Settings(database_url="x", jwt_secret_key="k" * 48, jwt_algorithm="HS512", _env_file=None)
+
+    with caplog.at_level(logging.WARNING, logger="app.config"):
+        assert warn_if_weak_jwt_secret(settings) is True
+    assert "64 bytes" in caplog.text
 
 
 # 기본(APP_ENV=development)에서는 공개 예시 비밀키로도 설정이 만들어진다. 지금 로컬 실행을 깨지 않으려는

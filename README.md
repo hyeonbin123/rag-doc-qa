@@ -138,7 +138,9 @@ flowchart LR
 cp .env.example .env
 # .env를 열어 ANTHROPIC_API_KEY 등을 채운다
 ```
-`JWT_SECRET_KEY`는 반드시 `python -c "import secrets; print(secrets.token_urlsafe(48))"` 같은 무작위 값(32바이트 이상)으로 바꾼다. `.env.example`의 값은 공개돼 있어서, 그대로 두면 누구나 로그인 토큰을 만들 수 있다. 예시 값이거나 짧은 값이면 서버가 시작할 때 큰 경고를 남기고, `APP_ENV=production`이면 시작하지 않는다(기본 `development`는 경고만).
+`JWT_SECRET_KEY`는 반드시 `python -c "import secrets; print(secrets.token_urlsafe(48))"` 같은 무작위 값(32바이트 이상. `JWT_ALGORITHM`을 `HS384`·`HS512`로 바꾸면 48·64바이트 이상)으로 바꾼다. `.env.example`의 값은 공개돼 있어서, 그대로 두면 누구나 로그인 토큰을 만들 수 있다(CI 워크플로가 쓰는 값도 마찬가지로 공개 값 취급). 예시 값이거나 짧은 값이면 서버가 시작할 때 큰 경고를 남기고, `APP_ENV=production`이면 시작하지 않는다(기본 `development`는 경고만).
+
+설정값은 타입뿐 아니라 범위도 시작할 때 검사한다. `JWT_ALGORITHM`은 `HS256`(기본)·`HS384`·`HS512`만, `ACCESS_TOKEN_EXPIRE_MINUTES`·`REFRESH_TOKEN_EXPIRE_DAYS`·`MODEL_THREADS`는 1 이상만 받고, 어긋나면 서버와 `alembic`이 어느 설정이 틀렸는지 알리며 시작하지 않는다(2026-10-29부터. 그 전에는 서버가 뜬 뒤 첫 로그인이나 첫 질문에서 500이 나거나, 발급하자마자 만료된 토큰이 나왔다).
 
 관리자 적재 API(`POST /admin/documents/ingest`, `X-Admin-Token` 헤더)는 `ADMIN_INGEST_TOKEN`이 비어 있으면(기본값) 꺼져 있고 403을 돌려준다. 예전 예시 값 `change-me-admin-token`도 공개된 값이라 같은 취급을 한다. 쓰려면 `python -c "import secrets; print(secrets.token_urlsafe(32))"`로 만든 값을 넣는다. 아래 3단계의 CLI 적재는 이 토큰이 필요 없다. 요청 본문의 `commit_sha`·`limit`은 3단계의 `--commit`·`--limit`과 같은 규칙으로 검증하고(어긋나면 422), 같은 DB에서 적재가 이미 진행 중이면 409를 돌려준다.
 

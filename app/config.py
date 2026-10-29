@@ -2,7 +2,8 @@
 # 임베딩·재정렬 모델, 검색 모드, 모델 스레드 수, 관리자 적재 토큰이 여기 있다.
 # [왜 이 방식인가] pydantic-settings는 환경 변수와 .env 파일을 읽어 타입을 검사하고 기본값을 채운다. 그래서
 # 같은 코드가 호스트(.env의 localhost)와 컨테이너(compose가 덮어쓴 DATABASE_URL, OLLAMA_BASE_URL)에서 설정만
-# 바꿔 돈다. 잘못된 값(예: RETRIEVAL_MODE=foo)은 시작할 때 바로 오류가 난다.
+# 바꿔 돈다. 잘못된 값(예: RETRIEVAL_MODE=foo, MODEL_THREADS=0, JWT_ALGORITHM=RS256)은 시작할 때 바로 오류가
+# 난다. 타입만이 아니라 범위(1 이상, 허용 목록)도 필드에 적어 두어, 첫 요청에서 500으로 드러나지 않게 한다.
 # [연결] get_settings()로 앱 곳곳(DB 세션, 보안, 임베딩, 재정렬, 생성, 스레드 풀)과 Alembic(alembic/env.py),
 # 평가 스크립트가 같은 인스턴스를 읽는다. 각 기본값의 근거는 아래 기존 영어 주석과 docs/experiments.md에 있다.
 
@@ -10,30 +11,43 @@ import logging
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import model_validator
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 logger = logging.getLogger(__name__)
 
-# JWT 비밀키로 받지 않는 값: .env.example에 있는 공개 예시 문자열. 저장소가 공개라 누구나 아는 값이고, 이
-# 값으로 서명하면 사용자 UUID만 알아도 그 사용자의 토큰을 만들 수 있다(관리자 토큰의
-# PLACEHOLDER_ADMIN_TOKENS와 같은 생각, app/dependencies.py).
-PUBLIC_EXAMPLE_JWT_SECRETS = frozenset({"change-me-to-a-random-secret"})
-# HS256(HMAC-SHA256) 비밀키의 최소 길이(바이트). 해시 출력 길이(32바이트)보다 짧은 키는 RFC 7518 3.2절이
-# 금지하고, PyJWT도 이보다 짧으면 InsecureKeyLengthWarning을 낸다.
-MIN_JWT_SECRET_BYTES = 32
+# JWT 비밀키로 받지 않는 값: 이 저장소에 공개된 문자열. 저장소가 공개라 누구나 아는 값이고, 이 값으로
+# 서명하면 사용자 UUID만 알아도 그 사용자의 토큰을 만들 수 있다(관리자 토큰의 PLACEHOLDER_ADMIN_TOKENS와 같은
+# 생각, app/dependencies.py).
+# - change-me-to-a-random-secret: .env.example의 예시 값.
+# - ci-only-secret-not-used-by-any-deployment: CI 워크플로(.github/workflows/ci.yml)가 테스트에 쓰는 값.
+#   41바이트라 길이 검사만으로는 걸리지 않아 따로 적는다. CI는 APP_ENV를 두지 않으므로(development) 이
+#   값이어도 경고만 나고 테스트는 그대로 돈다(tests/test_security.py가 워크플로 파일에서 값을 읽어 이 목록과
+#   맞춰 본다).
+PUBLIC_EXAMPLE_JWT_SECRETS = frozenset(
+    {"change-me-to-a-random-secret", "ci-only-secret-not-used-by-any-deployment"}
+)
+# 서명 알고리즘별 비밀키 최소 길이(바이트) = 그 알고리즘의 해시 출력 길이. 이보다 짧은 HMAC 키는 RFC 7518
+# 3.2절이 금지하고, PyJWT도 같은 기준(hash_alg().digest_size)으로 InsecureKeyLengthWarning을 낸다. 키는 아래
+# Settings.jwt_algorithm의 허용 목록(HS256·HS384·HS512)과 같아야 한다.
+MIN_JWT_SECRET_BYTES_BY_ALGORITHM = {"HS256": 32, "HS384": 48, "HS512": 64}
+# 기본 알고리즘 HS256(HMAC-SHA256)의 최소 길이. 알고리즘을 따로 주지 않은 검사가 쓴다.
+MIN_JWT_SECRET_BYTES = MIN_JWT_SECRET_BYTES_BY_ALGORITHM["HS256"]
 
 
-# JWT 비밀키의 문제를 사람이 읽을 문장으로 돌려준다(문제가 없으면 None). 비어 있음, 공개 예시 값, 32바이트
-# 미만을 본다. 앞뒤 공백은 떼고 비교한다(.env에서 실수로 붙은 공백 때문에 검사를 피하지 않게).
-def jwt_secret_problem(secret: str) -> str | None:
+# JWT 비밀키의 문제를 사람이 읽을 문장으로 돌려준다(문제가 없으면 None). 비어 있음, 저장소에 공개된 값, 서명
+# 알고리즘의 최소 길이 미만을 본다. algorithm을 주지 않으면 기본값 HS256 기준(32바이트)이다. 앞뒤 공백은 떼고
+# 비교한다(.env에서 실수로 붙은 공백 때문에 검사를 피하지 않게). 목록에 없는 알고리즘 이름이면 HS256 기준으로
+# 보는데, Settings는 그런 이름을 먼저 거부하므로 설정에서 오는 값으로는 생기지 않는다.
+def jwt_secret_problem(secret: str, algorithm: str = "HS256") -> str | None:
     stripped = secret.strip()
     if not stripped:
         return "JWT_SECRET_KEY is empty"
     if stripped in PUBLIC_EXAMPLE_JWT_SECRETS:
-        return "JWT_SECRET_KEY is the public example value from .env.example"
-    if len(secret.encode("utf-8")) < MIN_JWT_SECRET_BYTES:
-        return f"JWT_SECRET_KEY is shorter than {MIN_JWT_SECRET_BYTES} bytes"
+        return "JWT_SECRET_KEY is a public value from this repository (.env.example or the CI workflow)"
+    minimum = MIN_JWT_SECRET_BYTES_BY_ALGORITHM.get(algorithm, MIN_JWT_SECRET_BYTES)
+    if len(secret.encode("utf-8")) < minimum:
+        return f"JWT_SECRET_KEY is shorter than {minimum} bytes, the minimum for {algorithm}"
     return None
 
 
@@ -53,10 +67,16 @@ class Settings(BaseSettings):
     # 경우에 설정 검증 오류로 시작하지 않는다(아래 _refuse_weak_secret_in_production). 바깥에 여는 배포는
     # production으로 두고 비밀키를 python -c "import secrets; print(secrets.token_urlsafe(48))" 같은 값으로
     # 바꾼다.
+    # production이면 FastAPI의 문서 페이지(/docs, /redoc)도 끈다(app/main.py의 docs_page_urls).
     app_env: Literal["development", "production"] = "development"
-    jwt_algorithm: str = "HS256"
-    access_token_expire_minutes: int = 30
-    refresh_token_expire_days: int = 7
+    # 서명 알고리즘은 문자열 비밀키를 쓰는 HMAC-SHA2 세 가지만 받는다. 예전에는 str이라 RS256 같은 값도 받아
+    # 서버는 뜨지만 첫 로그인에서 서명이 실패해 500이 됐다(비대칭 알고리즘은 문자열 키로 서명할 수 없다).
+    # 비밀키 최소 길이는 고른 알고리즘을 따른다(위 MIN_JWT_SECRET_BYTES_BY_ALGORITHM).
+    jwt_algorithm: Literal["HS256", "HS384", "HS512"] = "HS256"
+    # 토큰 수명은 1 이상만 받는다. 0이나 음수면 발급하자마자 만료된 토큰이 나와 로그인해도 모든 인증 요청이
+    # 401이 됐다.
+    access_token_expire_minutes: int = Field(30, ge=1)
+    refresh_token_expire_days: int = Field(7, ge=1)
 
     # 답변 생성기 선택. 기본은 비용 없이 반복할 수 있는 로컬 Ollama다(README '로컬 모델'). anthropic이면
     # Claude API를 쓰며 anthropic_api_key가 필요하다. README에 따르면 Claude 경로는 단위 테스트만 있고 실제
@@ -108,8 +128,10 @@ class Settings(BaseSettings):
     # 한국어 질문에는 다국어 cross-encoder를 쓴다(docs/experiments.md v9).
     reranker_model_name_ko: str = "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1"
     # CPU를 쓰는 모델 호출(임베딩, cross-encoder)을 돌리는 작업 스레드 수. 12코어 데스크톱에서 6개와 1개를
-    # 비교해 6으로 정했다. 자세한 근거는 app/services/inference.py.
-    model_threads: int = 6
+    # 비교해 6으로 정했다. 자세한 근거는 app/services/inference.py. 1 이상만 받는다. 스레드 풀은 첫 질문 때
+    # 만들어지므로, 예전에는 0 이하 값이 시작·/health를 통과한 뒤 첫 /query/ask에서 ValueError(500)로
+    # 드러났다.
+    model_threads: int = Field(6, ge=1)
     # fastapi_docs_commit_sha: 적재 요청·명령이 commit_sha(--commit)를 주지 않았을 때 적재할
     # tiangolo/fastapi의 ref(브랜치·태그·커밋 SHA). 비어 있으면(기본) 측정에 쓴 문서 스냅숏 커밋 50113da를
     # 쓴다(app/services/ingestion.py의 DOCS_SNAPSHOT_COMMIT·default_commit_ref). 최신 문서를 늘 받으려면
@@ -132,19 +154,21 @@ class Settings(BaseSettings):
         return self.reranker_model_name_ko if language == "ko" else self.reranker_model_name
 
     # APP_ENV=production일 때만 약한 JWT 비밀키를 거부한다. ValueError는 pydantic의 ValidationError가 되어
-    # Settings()가 실패하므로, uvicorn 시작(app/main.py)과 Alembic(alembic/env.py)이 모두 멈춘다.
+    # Settings()가 실패하므로, uvicorn 시작(app/main.py)과 Alembic(alembic/env.py)이 모두 멈춘다. 최소 길이는
+    # 설정한 서명 알고리즘 기준이다(HS512면 64바이트).
     @model_validator(mode="after")
     def _refuse_weak_secret_in_production(self) -> "Settings":
-        problem = jwt_secret_problem(self.jwt_secret_key)
+        problem = jwt_secret_problem(self.jwt_secret_key, self.jwt_algorithm)
         if self.app_env == "production" and problem:
             raise ValueError(f"{problem}; refusing to start with APP_ENV=production")
         return self
 
 
 # 개발 모드에서 JWT 비밀키가 약하면 눈에 띄는 경고를 남기고 True를 돌려준다(괜찮으면 False). 서버 시작 때
-# app/main.py의 lifespan이 한 번 부른다. 값 자체는 로그에 쓰지 않는다.
+# app/main.py의 lifespan이 한 번 부른다. 값 자체는 로그에 쓰지 않는다. 안내하는 최소 길이는 설정한 서명
+# 알고리즘 기준이다. 예시 명령의 token_urlsafe(48)은 64자(64바이트)라 HS512 기준도 넘는다.
 def warn_if_weak_jwt_secret(settings: Settings) -> bool:
-    problem = jwt_secret_problem(settings.jwt_secret_key)
+    problem = jwt_secret_problem(settings.jwt_secret_key, settings.jwt_algorithm)
     if problem is None:
         return False
     logger.warning(
@@ -155,7 +179,7 @@ def warn_if_weak_jwt_secret(settings: Settings) -> bool:
         "with such a key.\n%s",
         "=" * 78,
         problem,
-        MIN_JWT_SECRET_BYTES,
+        MIN_JWT_SECRET_BYTES_BY_ALGORITHM.get(settings.jwt_algorithm, MIN_JWT_SECRET_BYTES),
         "=" * 78,
     )
     return True
