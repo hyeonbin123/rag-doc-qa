@@ -8,32 +8,45 @@
 
 # [파일 역할] FastAPI 공식 문서(GitHub tiangolo/fastapi의 docs/en/docs/, docs/ko/docs/)를 받아 청킹·임베딩하고
 # documents·chunks 테이블에 넣는 적재 파이프라인.
-# [흐름] 커밋 정하기 → GitHub 트리에서 언어별 마크다운 경로 목록 → 원문을 최대 8개씩 동시에 받기 → 문서마다
-# 해시 비교(같으면 건너뜀) → 바뀐 문서는 기존 청크를 지우고 청킹·임베딩해 다시 넣기 → 전체 적재면 트리에서
-# 사라진 문서 지우기 → 커밋 → 바뀐 것이 있으면 VACUUM (ANALYZE).
+# [흐름] limit 검사 → 적재 잠금(pg_try_advisory_xact_lock, dry run은 제외) → GitHub 클라이언트 만들기(스레드
+# 풀) → ref를 40자 커밋 SHA로 해석 → GitHub 트리에서 언어별 마크다운 경로 목록 → 원문을 최대 8개씩 동시에 받기
+# → 문서마다 해시 비교(같으면 건너뜀) → 바뀐 문서는 기존 청크를 지우고 청킹(스레드 풀)·임베딩(모델 스레드)해
+# 다시 넣기 → 전체 적재면 트리에서 사라진 문서 지우기 → 커밋(잠금도 풀림) → 바뀐 것이 있으면 VACUUM (ANALYZE).
 # [설계 이유]
 # - 위 docstring처럼 내용 해시로 멱등하게 만들어, 다시 돌려도 바뀐 문서만 처리한다. 해시에 청커 버전과 임베딩
 #   모델 식별자를 넣은 이유는 아래 주석과 docs/experiments.md v1→v3, v8에 있다.
-# - 임베딩은 몇 분 걸리는 CPU 작업이라 모델 스레드(run_model)에서 돌려 API 서버가 적재 중에도 응답한다.
+# - 임베딩은 몇 분 걸리는 CPU 작업이라 모델 스레드(run_model)에서, 청킹과 GitHub 클라이언트 생성(CA 번들
+#   읽기)은 Starlette 스레드 풀(run_in_threadpool)에서 돌려 API 서버가 적재 중에도 응답한다.
+# - 적재 대상은 늘 커밋 SHA로 고정한다. ref 이름(브랜치·태그·짧은 SHA)을 받아도 GitHub에 물어 40자 SHA로
+#   바꾸고, 아무것도 주지 않으면 측정에 쓴 문서 스냅숏(DOCS_SNAPSHOT_COMMIT)을 쓴다. 그래서 문서 행의
+#   source_commit_sha가 늘 실제 커밋을 가리키고, README 절차를 그대로 따른 적재가 측정과 같은 코퍼스가 된다.
+# - 한 DB에서 적재는 한 번에 하나만 돈다(어드바이저리 잠금). 관리자 API와 CLI가 겹쳐 같은 문서를 둘 다 새로
+#   넣다가 한쪽이 몇 분 뒤 유일 제약 오류로 끝나는 일을 막는다.
 # [연결] 관리자 API(app/routers/documents.py)와 CLI(scripts/ingest_fastapi_docs.py)가 run_ingestion을,
-# scripts/fetch_docs.py가 경로 조회 함수들을 쓴다.
+# scripts/fetch_docs.py가 github_client·resolve_commit_sha·list_doc_paths를 쓴다.
 
 from __future__ import annotations
 
 import asyncio
 import hashlib
+import re
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
-# httpx: GitHub API와 raw 파일을 비동기로 받는다. SQLAlchemy: 문서 조회·청크 삭제·사라진 문서 삭제 질의. 앱
-# 내부: 모델, 청커, 임베딩 서비스 타입, 모델 스레드, 지원 언어.
+# httpx: GitHub API와 raw 파일을 비동기로 받는다. run_in_threadpool: 동기 함수(청킹, GitHub 클라이언트 생성)를
+# Starlette의 기본 스레드 풀에서 돌린다. SQLAlchemy: 문서 조회·청크 삭제·사라진 문서 삭제 질의와 어드바이저리
+# 잠금 SQL. 앱 내부:
+# 설정(기본 적재 ref), 모델, ref 형식 검사, 청커, 임베딩 서비스 타입, 모델 스레드, 지원 언어.
 import httpx
+from fastapi.concurrency import run_in_threadpool
 from sqlalchemy import and_, delete, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import get_settings
 from app.models.chunk import Chunk
 from app.models.document import Document
+from app.schemas.text import validate_git_ref
 from app.services.chunking import (
     CHUNKER_VERSION,
     build_embedding_text,
@@ -54,6 +67,35 @@ DOC_LANGUAGES: tuple[str, ...] = SUPPORTED_LANGUAGES
 SKIPPED_PAGES = {"translation-banner.md"}
 # 원문 파일을 동시에 받는 최대 개수. 수백 개 문서를 한꺼번에 요청하지 않도록 세마포어로 제한한다.
 MAX_CONCURRENT_FETCHES = 8
+# 측정에 쓴 문서 스냅숏: tiangolo/fastapi 커밋 50113da. docs/experiments.md의 복제 DB·재적재 명령(v12 이후)과
+# 본 DB의 277개 문서가 모두 이 커밋이고, README의 수치는 이 코퍼스에서 잰 것이다. commit_sha도 설정
+# FASTAPI_DOCS_COMMIT_SHA도 없을 때의 기본값이다. 기본을 master의 최신 커밋으로 두면(2026-10-29 전 동작)
+# README 절차를 그대로 따른 적재가 측정과 다른 코퍼스가 되고 전체 적재의 삭제 동기화까지 일어나므로 재현 쪽을
+# 기본으로 둔다. 최신 문서는 --commit master(또는 설정에 master)로 명시해서 받는다.
+DOCS_SNAPSHOT_COMMIT = "50113da16fec53b66b80d75e80a89296de4fa5a5"
+# GitHub commits API가 돌려주는 커밋 SHA의 형식. 문서 행의 source_commit_sha(String(40))과 트리·원문 URL이 이
+# 형식을 가정한다.
+_COMMIT_SHA_RE = re.compile(r"[0-9a-f]{40}")
+# 적재 잠금에 쓰는 PostgreSQL 어드바이저리 잠금 키(bigint). 'rag-doc-qa/ingestion'의 SHA-256 앞 8바이트를
+# 빅엔디언 부호 있는 64비트 정수로 읽은 고정 상수다(int.from_bytes(digest[:8], "big", signed=True)). 같은 DB를
+# 쓰는 모든 프로세스(관리자 API, CLI)가 같은 키를 쓰므로 한 DB에서 적재는 한 번에 하나만 돈다. 이 DB를 함께
+# 쓰는 다른 코드가 같은 키로 어드바이저리 잠금을 쓰지 않는 한 충돌하지 않는다(지금은 이 잠금 하나뿐이다).
+INGESTION_LOCK_KEY = 2126143313622324131
+
+
+# 같은 DB에서 다른 적재(관리자 API의 다른 요청이나 CLI 프로세스)가 진행 중이라 이번 적재를 시작하지 않았을
+# 때의 예외. 라우터는 409로, CLI는 종료 코드 1로 바꾼다.
+class IngestionAlreadyRunning(RuntimeError):
+    """Another ingestion holds the ingestion lock on this database."""
+
+
+# GitHub API·raw 파일을 받는 HTTP 클라이언트. 30초 제한, User-Agent(GitHub API는 User-Agent 없는 요청을 거부),
+# 리디렉션 따라가기(저장소가 fastapi/fastapi로 옮겨져 tiangolo/fastapi 주소는 301로 안내된다). 함수로 둔 이유:
+# run_ingestion과 scripts/fetch_docs.py가 같은 설정을 쓰고, 테스트가 이 함수를 MockTransport 클라이언트로 바꿔
+# 네트워크 없이 ref 해석·URL 구성까지 실제 코드로 검증하기 위해서다(tests/test_ingestion.py,
+# tests/test_fetch_docs.py).
+def github_client() -> httpx.AsyncClient:
+    return httpx.AsyncClient(timeout=30.0, headers={"User-Agent": "rag-doc-qa-ingest"}, follow_redirects=True)
 
 
 # 언어별 문서 폴더 경로(docs/<언어>/docs/). 경로 선택과 사라진 문서 판정에 쓴다.
@@ -78,14 +120,42 @@ def select_doc_paths(tree: list[dict], languages: Sequence[str]) -> list[tuple[s
     return selected
 
 
-# 적재할 커밋을 정한다. 지정했으면 그대로 쓰고, 없으면 master 브랜치의 최신 커밋 SHA를 조회한다. 이후 모든
-# 파일을 이 한 커밋에서 받으므로, 적재 도중 상류가 바뀌어도 문서들이 서로 다른 시점으로 섞이지 않는다.
+# commit_sha(요청 본문·--commit)가 없을 때 적재할 ref. 설정 FASTAPI_DOCS_COMMIT_SHA가 비어 있지 않으면 그
+# 값(브랜치·태그·SHA. 최신 문서를 늘 받으려면 master), 비어 있으면 측정 스냅숏 DOCS_SNAPSHOT_COMMIT. 설정값도
+# 같은 형식 검사를 거치고, 어긋나면 어느 설정이 문제인지 담은 ValueError를 낸다.
+def default_commit_ref() -> str:
+    configured = get_settings().fastapi_docs_commit_sha.strip()
+    if not configured:
+        return DOCS_SNAPSHOT_COMMIT
+    try:
+        return validate_git_ref(configured)
+    except ValueError as exc:
+        raise ValueError(f"FASTAPI_DOCS_COMMIT_SHA {configured!r}: {exc}") from exc
+
+
+# 적재할 커밋을 정한다. commit_sha(브랜치·태그·짧은 SHA·40자 SHA)가 없으면 default_commit_ref()를 쓰고, 어느
+# 경우든 GitHub의 `GET /repos/{REPO}/commits/{ref}`로 40자 커밋 SHA를 얻어 그 값만 돌려준다(이 호출은 예전
+# master 기본 경로와 같은 한 번이다). 이후 트리·원문 URL과 문서 행의 source_commit_sha에 이 SHA만 쓰이므로,
+# 적재 도중 상류가 바뀌어도 문서들이 서로 다른 시점으로 섞이지 않고, 'master' 같은 ref 이름이 아니라 실제
+# 커밋이 기록된다(2026-10-29 전에는 값이 있으면 조회 없이 그대로 써서 ref 이름이 저장됐다).
+# - ref 형식은 validate_git_ref로 먼저 검사한다(app/schemas/text.py). 이 검사는 보안 통제가 아니라 정확성
+#   검사다: 신뢰 경계는 관리자 토큰이고, 40자 16진수만 받아도 GitHub가 포크 네트워크의 커밋을 원 저장소 경로로
+#   내주므로 다른 내용의 주입은 막지 못한다. 막는 것은 '..' 세그먼트로 다른 API 경로를 두드리는 일(httpx가 점
+#   세그먼트를 정규화한다), 저장 열(String(40))을 넘는 값이 임베딩 뒤에 실패하는 일, 시험 적재 의도와 출처
+#   기록이 어긋나는 일이다.
+# - GitHub가 모르는 ref면 404가 HTTPStatusError로 그대로 올라가 트리·원문을 받기 전에 끝난다. 응답이 커밋
+#   하나(JSON 객체)가 아니거나 그 sha가 40자 16진수가 아니면 RuntimeError(저장 열과 URL이 가정하는 형식). JSON
+#   배열도 같은 RuntimeError로 거부하는 이유: GitHub는 commits/{ref} 아래에 목록을 돌려주는 하위 경로(예:
+#   {ref}/statuses, {ref}/pulls)도 두어, 형식 검사를 통과한 ref가 그런 경로에 닿으면 커밋 대신 목록이 온다.
 async def resolve_commit_sha(client: httpx.AsyncClient, commit_sha: str | None = None) -> str:
-    if commit_sha:
-        return commit_sha
-    resp = await client.get(f"{GITHUB_API}/repos/{REPO}/commits/master")
+    ref = validate_git_ref(commit_sha) if commit_sha is not None else default_commit_ref()
+    resp = await client.get(f"{GITHUB_API}/repos/{REPO}/commits/{ref}")
     resp.raise_for_status()
-    return resp.json()["sha"]
+    data = resp.json()
+    sha = data.get("sha") if isinstance(data, dict) else None
+    if not isinstance(sha, str) or _COMMIT_SHA_RE.fullmatch(sha) is None:
+        raise RuntimeError(f"GitHub returned an unexpected commit sha for {ref!r}: {sha!r}")
+    return sha
 
 
 # 커밋의 전체 파일 트리를 한 번에(recursive) 받아 문서 경로를 고른다.
@@ -135,6 +205,24 @@ async def _vacuum_chunks(db: AsyncSession) -> None:
         await conn.execute(text("VACUUM (ANALYZE) chunks"))
 
 
+# 적재 잠금을 시도한다. pg_try_advisory_xact_lock은 다른 트랜잭션이 같은 키를 쥐고 있으면 기다리지 않고
+# false를 돌려주므로, 그때는 IngestionAlreadyRunning을 낸다. 잠금은 현재 트랜잭션이 끝날 때(run_ingestion 끝의
+# commit, 또는 오류 뒤 세션이 닫히며 하는 rollback) 저절로 풀려 따로 해제할 것이 없다. 같은 DB를 쓰는 모든
+# 프로세스(관리자 API 워커, CLI)에 걸쳐 동작한다. 2026-10-29 전에는 잠금이 없어 두 적재가 함께 돌았다. 둘 다
+# 아직 commit되지 않은 상대의 행을 보지 못하고 같은 문서를 쓰므로, 늦은 쪽은 같은 키를 쓰는 첫 SQL 문(새 문서
+# 행 INSERT, 바뀐 문서의 청크 교체)에서 먼저 쪽이 commit할 때까지(전체 적재면 몇 분) 기다린 뒤 유일
+# 제약(documents.source_path 또는 chunks의 (document_id, chunk_index)) 위반으로 끝났다(관리자 API면 500). 늦은
+# 쪽의 변경은 롤백돼 데이터는 깨지지 않지만 그동안의 작업과 기다린 시간을 버린다.
+async def _acquire_ingestion_lock(db: AsyncSession) -> None:
+    locked = await db.scalar(
+        text("SELECT pg_try_advisory_xact_lock(CAST(:key AS bigint))"), {"key": INGESTION_LOCK_KEY}
+    )
+    if not locked:
+        raise IngestionAlreadyRunning(
+            "another ingestion is already running on this database; wait for it to finish and retry"
+        )
+
+
 # 적재 결과 집계. chunks_skipped는 이름과 달리 해시가 같아 건너뛴 '문서' 수다(문서마다 1씩 더한다).
 # documents_processed는 새로 넣거나 갱신한 문서 수(dry_run이면 그럴 문서 수).
 @dataclass
@@ -150,9 +238,14 @@ class IngestOutcome:
 
 # 적재 본체.
 # - embedder_for: 언어 → 임베딩 서비스. 문서 언어마다 그 언어의 모델로 임베딩한다.
-# - limit: 앞에서 n개 경로만 처리(시험용). 이때는 사라진 문서 삭제를 하지 않는다.
-# - dry_run: DB를 바꾸지 않고 처리·삭제될 개수만 센다.
+# - commit_sha: 적재할 ref(브랜치·태그·SHA). 없으면 default_commit_ref(). 어느 쪽이든 resolve_commit_sha가
+#   40자 SHA로 바꾼다.
+# - limit: 앞에서 n개 경로만 처리(시험용), 1 이상. 이때는 사라진 문서 삭제를 하지 않는다. 0·음수는
+#   ValueError다: 2026-10-29 전에는 참·거짓으로 판정해 0이 '전체 적재 + 삭제', 음수가 paths[:-n](뒤 n개 제외,
+#   삭제 생략)이 됐다.
+# - dry_run: DB를 바꾸지 않고 처리·삭제될 개수만 센다(잠금도 잡지 않는다).
 # - languages: 적재할 언어(CLI의 --languages). 삭제도 이 언어 범위 안에서만 한다.
+# 같은 DB에서 다른 적재가 진행 중이면(어드바이저리 잠금) 아무 일도 하지 않고 IngestionAlreadyRunning을 낸다.
 async def run_ingestion(
     db: AsyncSession,
     embedder_for: Callable[[str], EmbeddingService],
@@ -161,6 +254,9 @@ async def run_ingestion(
     dry_run: bool = False,
     languages: Sequence[str] = DOC_LANGUAGES,
 ) -> IngestOutcome:
+    if limit is not None and limit < 1:
+        raise ValueError("limit must be at least 1 (omit it to ingest every page)")
+
     start = time.perf_counter()
     documents_processed = 0
     documents_deleted = 0
@@ -168,18 +264,29 @@ async def run_ingestion(
     chunks_updated = 0
     chunks_skipped = 0
 
-    # 네트워크 단계: 커밋 → 경로 목록 → 원문 받기. User-Agent를 붙이는 것은 GitHub API가 요청에 User-Agent를
-    # 요구하기 때문이다. listed는 트리에 있는 전체 경로(삭제 판정용)이고, limit은 그 뒤에 적용한다.
-    async with httpx.AsyncClient(
-        timeout=30.0, headers={"User-Agent": "rag-doc-qa-ingest"}, follow_redirects=True
-    ) as client:
+    # 잠금: 관리자 API의 다른 요청이나 CLI 프로세스가 같은 DB에 적재 중이면 바로 거부한다. 트랜잭션 잠금이라
+    # 맨 끝의 commit(또는 오류로 세션이 닫힐 때의 rollback)과 함께 풀린다. 네트워크 단계 앞에서 잡아, 거부되는
+    # 쪽이 GitHub에서 수백 파일을 받는 일도 하지 않게 한다. dry_run은 DB를 쓰지 않으므로 잠그지 않는다.
+    if not dry_run:
+        await _acquire_ingestion_lock(db)
+
+    # 네트워크 단계: 커밋 → 경로 목록 → 원문 받기(클라이언트 설정은 github_client 주석). listed는 트리에 있는
+    # 전체 경로(삭제 판정용)이고, limit은 그 뒤에 적용한다. 클라이언트는 Starlette 스레드 풀에서 만든다.
+    # httpx가 기본 SSL 컨텍스트를 만들며 certifi CA 번들을 동기로 읽어 Windows 호스트에서 0.3~0.4초가 걸리기
+    # 때문이다(2026-10-29, CPU 부하 약 65%에서 4번 재어 0.32~0.43초). 루프 위에서 만들면 그동안 다른 요청이
+    # 멈춘다(청킹을 스레드로 보내는 것과 같은 이유). 생성자는 이벤트 루프에 묶이는 것을 만들지 않으므로(연결
+    # 풀의 잠금은 처음 쓸 때 만든다) 다른 스레드에서 만들어 이 루프에서 써도 된다. Ollama
+    # 호출(app/services/generation.py의 ollama_ssl_context)처럼 컨텍스트를 캐시하지 않는 이유: 적재 한 번에
+    # 클라이언트도 한 번이라, 스레드에서 한 번 읽는 쪽이 전역 상태 없이 간단하다.
+    client = await run_in_threadpool(github_client)
+    async with client:
         sha = await resolve_commit_sha(client, commit_sha)
         paths = await list_doc_paths(client, sha, languages)
         listed = {path for path, _ in paths}
         # 페이지가 하나라도 나온 언어만 사라진 문서를 지운다. 목록이 비었다면 페이지가 정말 하나도 없다기보다
         # 상류의 폴더 구조가 바뀌었거나 언어 이름을 잘못 썼을 가능성이 크기 때문이다.
         listed_languages = sorted({language for _, language in paths})
-        if limit:
+        if limit is not None:
             paths = paths[:limit]
 
         # 모든 파일을 gather로 동시에 요청하되, 세마포어로 한 번에 8개까지만 실제로 내려받게 한다.
@@ -209,7 +316,11 @@ async def run_ingestion(
             continue
 
         title = extract_title(raw_text, fallback=path)
-        chunk_results = chunk_markdown(raw_text)
+        # 청킹(줄마다 tiktoken 인코딩과 정규식)은 문서 하나에 보통 수 ms지만, 가장 큰
+        # 문서(en/docs/release-notes.md, 약 695,000자)는 0.3~0.4초가 걸려 루프 위에서 돌면 그동안 다른 요청이
+        # 멈춘다(2026-10-29 전 동작). Starlette 기본 스레드 풀(run_in_threadpool)로 보낸다. 모델 스레드
+        # 풀(run_model)과 따로 두어 임베딩 뒤에 줄 서지 않게 한다. 청크 내용은 어디서 돌든 같다.
+        chunk_results = await run_in_threadpool(chunk_markdown, raw_text)
 
         # dry_run이면 청크 수만 세고 DB는 건드리지 않는다.
         if dry_run:
@@ -276,7 +387,7 @@ async def run_ingestion(
     # 것. startswith에 autoescape=True를 줘 경로의 %·_ 같은 문자가 LIKE 와일드카드로 해석되지 않게 한다.
     # ORM 객체를 읽지 않는 일괄 DELETE라 청크 정리는 DB의 ON DELETE CASCADE에 맡기고,
     # synchronize_session=False로 세션 동기화를 생략한다. dry_run이면 지울 개수만 센다.
-    if not limit and listed_languages:
+    if limit is None and listed_languages:
         stale = and_(
             or_(
                 *(
@@ -296,8 +407,8 @@ async def run_ingestion(
             )
             documents_deleted = result.rowcount
 
-    # 모든 변경을 한 번에 커밋한다. 무언가 바뀌었을 때만 VACUUM을 돌린다(VACUUM은 트랜잭션 밖이어야 하므로
-    # 커밋 뒤).
+    # 모든 변경을 한 번에 커밋한다(적재 잠금도 이때 풀린다). 무언가 바뀌었을 때만 VACUUM을 돌린다(VACUUM은
+    # 트랜잭션 밖이어야 하므로 커밋 뒤).
     if not dry_run:
         await db.commit()
         if documents_processed or documents_deleted:

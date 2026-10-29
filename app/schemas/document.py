@@ -6,19 +6,23 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field
 
-# NulFreeStr: DB에 저장되는 문자열에서 NUL(U+0000)을 422로 거부하는 타입(app/schemas/text.py).
-from app.schemas.text import NulFreeStr
+# GitRefStr: NUL(U+0000)을 거부하고 브랜치·태그·커밋 SHA로 안전한 형식만 받는 타입(app/schemas/text.py). 둘 다
+# 어긋나면 422다.
+from app.schemas.text import GitRefStr
 
 
 # 관리자 적재 요청.
-# - commit_sha: 가져올 tiangolo/fastapi 커밋. 없으면 master의 최신 커밋. 문서마다 source_commit_sha로
-#   저장되므로 NUL을 막는다.
-# - limit: 앞에서 n개 문서만 처리(시험용). limit이 있으면 사라진 문서 삭제를 하지
-#   않는다(app/services/ingestion.py).
+# - commit_sha: 가져올 tiangolo/fastapi의 ref(브랜치·태그·짧은 SHA·40자 SHA). 없으면 설정
+#   FASTAPI_DOCS_COMMIT_SHA, 그것도 비어 있으면 측정에 쓴 문서 스냅숏(app/services/ingestion.py의
+#   DOCS_SNAPSHOT_COMMIT). 어느 값이든 적재가 GitHub에 물어 40자 커밋 SHA로 바꾼 뒤 그 SHA만 URL과 문서
+#   행(source_commit_sha)에 쓴다. 형식 검사는 보안 통제가 아니라 정확성 검사다(ingestion.py 주석).
+# - limit: 앞에서 n개 문서만 처리(시험용), 1 이상. limit이 있으면 사라진 문서 삭제를 하지
+#   않는다(app/services/ingestion.py). 0·음수를 422로 막는 이유: 적재 코드가 limit의 참·거짓을 보던 때 0은
+#   'limit 없음'(전체 적재 + 삭제)이 되고 음수는 paths[:-n]으로 뒤 n개를 뺐다.
 # - dry_run: DB를 바꾸지 않고 처리할 문서·청크 수와 지울 문서 수만 센다.
 class IngestRequest(BaseModel):
-    commit_sha: NulFreeStr | None = None
-    limit: int | None = None
+    commit_sha: GitRefStr | None = None
+    limit: int | None = Field(default=None, ge=1)
     dry_run: bool = False
 
 

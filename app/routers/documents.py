@@ -16,7 +16,7 @@ from app.models.chunk import Chunk
 from app.models.document import Document
 from app.schemas.document import DocumentOut, IngestRequest, IngestResult
 from app.services.embedding import EmbeddingService
-from app.services.ingestion import run_ingestion
+from app.services.ingestion import IngestionAlreadyRunning, run_ingestion
 from app.services.language import Language
 
 # prefix 없이 경로를 각각 적는다(관리자 경로와 공개 경로의 앞부분이 다르다).
@@ -24,27 +24,37 @@ router = APIRouter(tags=["documents"])
 
 
 # 관리자 적재. dependencies=[Depends(require_admin_token)]로 X-Admin-Token 헤더가 맞아야만 실행된다.
-# GitHub에서 문서를 받아 청킹·임베딩 후 DB에 넣고, 전체 적재면 사라진 문서도 지운다.
-# 문서 언어마다 다른 임베딩 모델을 쓰므로 모델 하나가 아니라 '언어 → 모델' 함수(embedder_for)를 넘긴다.
-# 임베딩은 run_ingestion 안에서 모델 스레드로 돌아, 적재하는 동안에도 서버가 다른 요청에 답한다.
-# 적재는 몇 분 걸릴 수 있는데 요청 하나 안에서 끝까지 한다(백그라운드 잡 큐는 README '하지 않은 것'에 있다).
+# GitHub에서 문서를 받아 청킹·임베딩 후 DB에 넣고, 전체 적재면 사라진 문서도 지운다. 요청 본문(commit_sha의
+# ref 형식, limit ≥ 1)은 IngestRequest가 검사해 어긋나면 422다. 문서 언어마다 다른 임베딩 모델을 쓰므로 모델
+# 하나가 아니라 '언어 → 모델' 함수(embedder_for)를 넘긴다. 임베딩은 run_ingestion 안에서 모델 스레드로, 청킹과
+# GitHub 클라이언트 생성은 Starlette 스레드 풀로 돌아 적재하는 동안에도 서버가 다른 요청에 답한다. 적재는 몇
+# 분 걸릴 수 있는데 요청 하나 안에서 끝까지 한다(백그라운드 잡 큐는 README '하지 않은 것'에 있다). 같은 DB에서
+# 다른 적재(이 API의 다른 요청이나 CLI)가 진행 중이면 409다. responses의 409 설명은 OpenAPI 문서(/docs)에
+# 그대로 나가는 글이라 다른 라우터(auth의 가입 409)처럼 영어로 둔다.
 @router.post(
     "/admin/documents/ingest",
     response_model=IngestResult,
     dependencies=[Depends(require_admin_token)],
+    responses={status.HTTP_409_CONFLICT: {"description": "Ingestion already running"}},
 )
 async def ingest_documents(
     payload: IngestRequest,
     db: AsyncSession = Depends(get_db),
     embedder_for: Callable[[Language], EmbeddingService] = Depends(get_embedder),
 ) -> IngestResult:
-    outcome = await run_ingestion(
-        db,
-        embedder_for,
-        commit_sha=payload.commit_sha,
-        limit=payload.limit,
-        dry_run=payload.dry_run,
-    )
+    try:
+        outcome = await run_ingestion(
+            db,
+            embedder_for,
+            commit_sha=payload.commit_sha,
+            limit=payload.limit,
+            dry_run=payload.dry_run,
+        )
+    except IngestionAlreadyRunning as exc:
+        # 다른 적재가 어드바이저리 잠금을 쥔 상태. 아무것도 하지 않았음을 409로 알린다(예전에는 둘 다 돌다가
+        # 늦은 쪽이 먼저 쪽의 commit을 몇 분 기다린 뒤 유일 제약 위반 500으로 끝났다,
+        # app/services/ingestion.py 주석).
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="ingestion already running") from exc
     # 내부 결과(IngestOutcome)에서 API로 보일 필드만 골라 응답 모델로 옮긴다(commit_sha는 응답에 넣지 않는다).
     return IngestResult(
         documents_processed=outcome.documents_processed,
