@@ -392,3 +392,23 @@ def test_committed_v16_panel_sample_matches_the_sampler():
     _check_pairs_complete(chosen, records)
     sizes = [sum(1 for k in keys if k["batch"] == b) for b in range(1, judge_panel.PAIR_BATCHES + 1)]
     assert sizes == [26, 25, 25, 25, 26, 24, 24, 24]
+
+
+# 커밋된 v16 Claude 라벨(표본·열쇠 커밋 뒤에 붙임)이 라벨러 파일의 199개를 같은 순서로 하나씩 덮고, I5와
+# 같은 항목(정확도·충실도 1~5 정수, 환각 여부, 메모)만 갖는다. 짝 비교의 답 160개는 모두 지문으로 라벨을
+# 찾을 수 있다(짝 완결).
+def test_committed_v16_labels_cover_the_sample_in_order():
+    sample = read_jsonl(judge_panel.RUNS / "v16_panel_sample.jsonl")
+    labels = read_jsonl(judge_panel.RUNS / "v16_claude_labels.jsonl")
+    assert [label["sample_id"] for label in labels] == [s["sample_id"] for s in sample]
+    for label in labels:
+        assert set(label) == {"sample_id", "correctness_score", "faithfulness_score", "hallucinated", "note"}
+        for field in ("correctness_score", "faithfulness_score"):
+            assert type(label[field]) is int and 1 <= label[field] <= 5
+        assert type(label["hallucinated"]) is bool and isinstance(label["note"], str)
+    keys = {k["sample_id"]: k["key"] for k in read_jsonl(judge_panel.RUNS / "v16_panel_key.jsonl")}
+    records = judge_panel.records_by_key()
+    labelled = {judge_panel.fingerprint(records[keys[label["sample_id"]]]) for label in labels}
+    pair_keys = judge_panel.pair_record_keys()
+    assert len(pair_keys) == 160
+    assert all(judge_panel.fingerprint(records[key]) in labelled for key in pair_keys)

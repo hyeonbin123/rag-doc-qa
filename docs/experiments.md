@@ -1814,6 +1814,13 @@ dev = qa_dev_ko 32 + qa_dev2_ko 40, 72문항 한 번에. 복제 DB `ragdb_p1_<�
 - 전달 문단(원문, 지침 끝에 `## Delivery in this run` 제목으로 붙임): "This replaces only the file handling described above. You have no tools, so you cannot open, list or search any file. The lines of your input file are reproduced below between the lines BEGIN INPUT and END INPUT, one JSON object per line. Grade every line by this guide and return the grades as your structured output: an object whose `items` array has exactly one entry per input line, in the same order, each with `sample_id`, `correctness_score`, `faithfulness_score`, `hallucinated` and `note` as defined above. Do not write any file."
 - 결과는 `eval/runs/v16_claude_labels.jsonl`(라벨러 파일 순서, I5와 같은 항목)로 모아 보고를 돌리기 전에 커밋함. 출력이 순서·id 검사를 통과하지 못하거나 실행이 실패한 묶음만 같은 입력으로 다시 돌리고 그 사실을 기록함. 라벨을 보고 고치거나 묶음을 골라 다시 붙이지 않음
 
+**라벨 기록** (2026-10-30 05:08~05:13 KST, 위 규칙 커밋 `0df291d` 뒤, 보고는 아직 돌리지 않음)
+- 8개 실행 모두 성공. 실행마다 시작 이벤트의 도구 목록은 구조화 출력용 `StructuredOutput` 하나, MCP 서버 0개였고, 실행 중 도구 호출도 그것뿐이었음. 실행 시간 48~71초, 입력 약 8.7만~10.2만 토큰, 출력 4.9천~7.7천 토큰(그중 생각 2.5천~3.4천)
+- 묶음 5는 첫 구조화 출력이 26개 중 25개라 스키마(문항 수 고정)에 걸려 같은 실행 안에서 다시 냈고, 두 번째 출력이 통과함
+- 묶음 2는 첫 실행이 25개를 모두 한 번씩 냈지만 입력 10번째 문항을 18번째에 놓아 순서 검사에 걸림 → 규칙대로 같은 입력으로 다시 돌렸고 다시 돌린 출력이 통과해 그것을 씀(첫 실행의 라벨은 쓰지 않음. 두 실행의 정확도 라벨은 25개 중 24개가 같고 1개가 1점 차이)
+- 정확도 라벨 분포(199개): 1점 8, 2점 27, 3점 56, 4점 65, 5점 43. 비용은 정가 환산 약 7.2달러(묶음 2의 첫 실행 포함)
+- `tests/test_v16_eval.py`가 라벨이 라벨러 파일의 199개를 같은 순서로 하나씩 덮고 짝 비교의 답 160개가 모두 라벨을 찾음을 고정함
+
 **보고** (보고만. 결과 `eval/runs/v16_panel.pairs.json`, 리포트 `eval/reports/judge_pairs_v16_panel_*.md`)
 - 명령: `python -m eval.judge_panel report-pairs --tag v16_panel --labels J1v15 J2v15 J3v15 --claude eval/runs/v16_claude_labels.jsonl --key eval/runs/v16_panel_key.jsonl --v15-claude eval/runs/v15_i5_claude_labels.jsonl --v15-key eval/runs/v15_i5_panel_key.jsonl --focus J2v15 J2v15+J3v15`
 1. Claude 라벨 기준 A.X 우위: v13 채택 80쌍(영어 40, 한국어 40)의 G0·G3 정확도 합과 차이(G3 − G0), 문항별 차이 평균의 대응표본 bootstrap 90% 구간(10,000회, seed 20261003. I5 결정 방향 표와 같은 계산), 언어별
