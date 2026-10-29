@@ -50,6 +50,23 @@ services:
     # 137)로 끝났다. Dockerfile의 CMD와 같은 명령이다.
     command: >
       sh -c "alembic upgrade head && exec uvicorn app.main:app --host 0.0.0.0 --port 8000"
+    # 헬스체크: 컨테이너 안에서 /health를 불러 status가 "ok"(DB의 SELECT 1까지 성공)일 때만 healthy로 본다. uvicorn은
+    # 시작 훅(임베딩 모델 올리기)이 끝나야 요청을 받으므로, healthy는 '질문을 받을 준비가 됨'을 뜻한다. 그래서
+    # `docker compose up --wait api`(docs/security-scan.md)가 컨테이너가 떴을 때가 아니라 이때까지 기다린다. 이미지에
+    # curl이 없어 파이썬 표준 라이브러리로 부른다. /health는 DB가 안 되면 200에 status "degraded"를 돌려주므로 상태
+    # 코드만 봐서는 안 된다. start_period 동안의 실패는 세지 않고(마이그레이션·모델 올리기에 걸리는 시간),
+    # start_interval로 그동안 2초마다 확인해 준비되는 즉시 healthy가 된다.
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import json, urllib.request; r = urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=4); raise SystemExit(json.load(r)['status'] != 'ok')"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 120s
+      start_interval: 2s
 
 volumes:
   pgdata:

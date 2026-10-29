@@ -16,6 +16,10 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-raguser}:${POSTGRES_PASSWORD:-ragpass}@db:5432/${SCAN_DB:-ragdb_scan}
       GENERATION_PROVIDER: ollama
+      # 스캔 대상은 생성기 대역(ollama)만 쓰므로 Claude API 키가 필요 없다. docker-compose.yml의 env_file: .env는 .env의
+      # 모든 값을 컨테이너 환경에 넣어, .env에 키가 있으면 수천 건의 공격 요청을 받는 이 프로세스의 환경(docker
+      # inspect, /proc/<pid>/environ)에도 그대로 보인다. 여기서 빈 값으로 덮어써 스캔 대상에는 키가 없게 한다.
+      ANTHROPIC_API_KEY: ""
       OLLAMA_BASE_URL: http://ollama-stub:11434
       # One token has to last the whole scan (the default is 30 minutes).
       ACCESS_TOKEN_EXPIRE_MINUTES: "240"
