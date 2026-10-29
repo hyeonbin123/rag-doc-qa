@@ -337,6 +337,13 @@ def gate(
 # --- 리포트 ---
 
 
+# 부호를 붙인 차이 합. 판정 점수는 보통 1~5 정수라 합도 정수로(+3) 쓰고, 두 판정기 평균 라벨
+# (eval/judge_stability.py average)은 0.5점 단위라 합도 그대로(+1.5, 정수가 되면 +2) 쓴다. 예전에는
+# 정수만 받는 서식(+d)이라 평균 라벨에서 ValueError로 멈췄다. 정수 합의 표기는 예전과 같다.
+def _signed(total: float) -> str:
+    return f"{total:+d}" if isinstance(total, int) else f"{total:+g}"
+
+
 # 기준 팔과 다른 팔의 같은 문항(셋, id)끼리 정확도 차이를 모아 '차이 합 (평균 [bootstrap 90% 구간])'으로 쓴다.
 # 양쪽 다 판정된 문항만 쓰고, language를 주면 그 언어만 본다.
 def _ci_cell(base: list[dict], other: list[dict], language: str | None) -> str:
@@ -349,7 +356,7 @@ def _ci_cell(base: list[dict], other: list[dict], language: str | None) -> str:
     if not diffs:
         return "n/a"
     mean, low, high = paired_bootstrap_ci(diffs)
-    return f"{sum(diffs):+d} ({mean:+.3f} [{low:+.3f}, {high:+.3f}])"
+    return f"{_signed(sum(diffs))} ({mean:+.3f} [{low:+.3f}, {high:+.3f}])"
 
 
 # 두 팔에서 답 글이 다른 문항 수(답 해시 비교).

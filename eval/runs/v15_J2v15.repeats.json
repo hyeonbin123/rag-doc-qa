@@ -1,0 +1,214 @@
+{
+  "tag": "v15_J2v15",
+  "date": "2026-10-29T17:58:33.275013+00:00",
+  "labels": [
+    "J2v15r1",
+    "J2v15r2",
+    "J2v15r3"
+  ],
+  "gen_files": [
+    "eval/runs/v13_adopt_g0_qa_test3b_en.raw.gen.jsonl",
+    "eval/runs/v13_adopt_g0_qa_test3b_ko.raw.gen.jsonl",
+    "eval/runs/v13_adopt_g3_qa_test3b_en.raw.gen.jsonl",
+    "eval/runs/v13_adopt_g3_qa_test3b_ko.raw.gen.jsonl",
+    "eval/runs/v13b_b2_g3_b0.lg.gen.jsonl",
+    "eval/runs/v13b_b2_g3_p.lg.gen.jsonl",
+    "eval/runs/v14_c3_qa_dev.lg.gen.jsonl",
+    "eval/runs/v14_c3_qa_dev2_ko.lg.gen.jsonl",
+    "eval/runs/v14_c3_qa_dev_ko.lg.gen.jsonl",
+    "eval/runs/v14_c4_qa_dev.lg.gen.jsonl",
+    "eval/runs/v14_c4_qa_dev2_ko.lg.gen.jsonl",
+    "eval/runs/v14_c4_qa_dev_ko.lg.gen.jsonl"
+  ],
+  "n": 448,
+  "any_raw_diff": 0,
+  "any_score_diff": 0,
+  "first_differs_from_median": 0,
+  "vs_first": {
+    "J2v15r2": {
+      "raw_diff": 0,
+      "score_diff": 0,
+      "changed": []
+    },
+    "J2v15r3": {
+      "raw_diff": 0,
+      "score_diff": 0,
+      "changed": []
+    }
+  },
+  "correctness_sum": {
+    "J2v15r1": 1922,
+    "J2v15r2": 1922,
+    "J2v15r3": 1922,
+    "median": 1922
+  },
+  "stats": {
+    "J2v15r1": {
+      "n": 448,
+      "judge_ms_p50": 3451.2762500089593,
+      "cached_tokens_seen": 448,
+      "cached_tokens_p50": 0.0,
+      "cached_tokens_max": 0
+    },
+    "J2v15r2": {
+      "n": 448,
+      "judge_ms_p50": 3366.311300022062,
+      "cached_tokens_seen": 448,
+      "cached_tokens_p50": 0.0,
+      "cached_tokens_max": 0
+    },
+    "J2v15r3": {
+      "n": 448,
+      "judge_ms_p50": 3373.899900005199,
+      "cached_tokens_seen": 448,
+      "cached_tokens_p50": 0.0,
+      "cached_tokens_max": 0
+    }
+  },
+  "per_file": [
+    {
+      "gen": "eval/runs/v13_adopt_g0_qa_test3b_en.raw.gen.jsonl",
+      "n": 40,
+      "raw_diff": {
+        "J2v15r2": 0,
+        "J2v15r3": 0
+      },
+      "score_diff": {
+        "J2v15r2": 0,
+        "J2v15r3": 0
+      }
+    },
+    {
+      "gen": "eval/runs/v13_adopt_g0_qa_test3b_ko.raw.gen.jsonl",
+      "n": 40,
+      "raw_diff": {
+        "J2v15r2": 0,
+        "J2v15r3": 0
+      },
+      "score_diff": {
+        "J2v15r2": 0,
+        "J2v15r3": 0
+      }
+    },
+    {
+      "gen": "eval/runs/v13_adopt_g3_qa_test3b_en.raw.gen.jsonl",
+      "n": 40,
+      "raw_diff": {
+        "J2v15r2": 0,
+        "J2v15r3": 0
+      },
+      "score_diff": {
+        "J2v15r2": 0,
+        "J2v15r3": 0
+      }
+    },
+    {
+      "gen": "eval/runs/v13_adopt_g3_qa_test3b_ko.raw.gen.jsonl",
+      "n": 40,
+      "raw_diff": {
+        "J2v15r2": 0,
+        "J2v15r3": 0
+      },
+      "score_diff": {
+        "J2v15r2": 0,
+        "J2v15r3": 0
+      }
+    },
+    {
+      "gen": "eval/runs/v13b_b2_g3_b0.lg.gen.jsonl",
+      "n": 40,
+      "raw_diff": {
+        "J2v15r2": 0,
+        "J2v15r3": 0
+      },
+      "score_diff": {
+        "J2v15r2": 0,
+        "J2v15r3": 0
+      }
+    },
+    {
+      "gen": "eval/runs/v13b_b2_g3_p.lg.gen.jsonl",
+      "n": 40,
+      "raw_diff": {
+        "J2v15r2": 0,
+        "J2v15r3": 0
+      },
+      "score_diff": {
+        "J2v15r2": 0,
+        "J2v15r3": 0
+      }
+    },
+    {
+      "gen": "eval/runs/v14_c3_qa_dev.lg.gen.jsonl",
+      "n": 32,
+      "raw_diff": {
+        "J2v15r2": 0,
+        "J2v15r3": 0
+      },
+      "score_diff": {
+        "J2v15r2": 0,
+        "J2v15r3": 0
+      }
+    },
+    {
+      "gen": "eval/runs/v14_c3_qa_dev2_ko.lg.gen.jsonl",
+      "n": 40,
+      "raw_diff": {
+        "J2v15r2": 0,
+        "J2v15r3": 0
+      },
+      "score_diff": {
+        "J2v15r2": 0,
+        "J2v15r3": 0
+      }
+    },
+    {
+      "gen": "eval/runs/v14_c3_qa_dev_ko.lg.gen.jsonl",
+      "n": 32,
+      "raw_diff": {
+        "J2v15r2": 0,
+        "J2v15r3": 0
+      },
+      "score_diff": {
+        "J2v15r2": 0,
+        "J2v15r3": 0
+      }
+    },
+    {
+      "gen": "eval/runs/v14_c4_qa_dev.lg.gen.jsonl",
+      "n": 32,
+      "raw_diff": {
+        "J2v15r2": 0,
+        "J2v15r3": 0
+      },
+      "score_diff": {
+        "J2v15r2": 0,
+        "J2v15r3": 0
+      }
+    },
+    {
+      "gen": "eval/runs/v14_c4_qa_dev2_ko.lg.gen.jsonl",
+      "n": 40,
+      "raw_diff": {
+        "J2v15r2": 0,
+        "J2v15r3": 0
+      },
+      "score_diff": {
+        "J2v15r2": 0,
+        "J2v15r3": 0
+      }
+    },
+    {
+      "gen": "eval/runs/v14_c4_qa_dev_ko.lg.gen.jsonl",
+      "n": 32,
+      "raw_diff": {
+        "J2v15r2": 0,
+        "J2v15r3": 0
+      },
+      "score_diff": {
+        "J2v15r2": 0,
+        "J2v15r3": 0
+      }
+    }
+  ]
+}

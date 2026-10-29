@@ -4,7 +4,8 @@ docs/experiments.md v15의 결정 규칙이 코드와 같은지 고정한다. DB
 """
 
 # [테스트 묶음] eval/judge_stability.py, eval/citation_arms.py, eval/refusal.py, eval/judge_panel.py의 순수
-# 함수와, eval/judge.py에 더한 think·캐시 되돌리기 요청 본문.
+# 함수와, eval/judge.py에 더한 think·캐시 되돌리기 요청 본문. 두 판정기 평균 라벨(0.5점 단위)은
+# eval/generator_arms.py summary와 eval/refusal.py가 그대로 합치는지도 본다.
 # [왜 중요한가] 이 도구들은 측정 전에 등록한 규칙을 그대로 옮긴 것이다. 규칙과 다르게 세면 측정 뒤에 결정이
 # 바뀌므로, 경계값(같음/다름, 허용 폭의 끝)을 가짜 기록으로 고정한다.
 
@@ -14,8 +15,8 @@ from pathlib import Path
 
 import pytest
 
-from eval import citation_arms, judge_panel, judge_stability, refusal
-from eval.common import format_ids_lines, read_ids_file, read_json, read_jsonl
+from eval import citation_arms, generator_arms, judge_panel, judge_stability, refusal
+from eval.common import format_ids_lines, read_ids_file, read_json, read_jsonl, write_jsonl
 from eval.judge import (
     FLUSH_MESSAGES,
     JudgeConfig,
@@ -24,6 +25,7 @@ from eval.judge import (
     ollama_flush_payload,
     ollama_judge_payload,
 )
+from eval.run_judge import judged_path
 
 # --- eval/judge.py: think, 캐시 되돌리기 ---
 
@@ -143,6 +145,220 @@ def test_median_judgments():
         [[j(3, 5, True)], [j(None, None, None, "HTTP 400")], [j(4, 4, True)]], "J1m3"
     )
     assert merged[0]["correctness_score"] is None
+
+
+# 반복 판정 비교·평균 합치기 테스트용 판정 기록 하나. answer로 answer_sha1을 만들어, 같은 답을 판정했는지
+# 가르는 확인이 실제 기록과 같은 필드로 돌게 한다.
+def _judgment(
+    item_id, raw="{}", c=4, f=4, h=False, answer="x", label="r", model="m", err=None, dataset="qa_dev.jsonl"
+):
+    return {
+        "id": item_id,
+        "dataset": dataset,
+        "judge_label": label,
+        "judge_model": model,
+        "answer_sha1": answer_sha1(answer),
+        "raw": raw,
+        "correctness_score": c,
+        "faithfulness_score": f,
+        "hallucinated": h,
+        "error": err,
+        "truncation": "error" if err else "ok",
+        "judge_ms": 2000.0,
+    }
+
+
+# repeats: 반복 판정 사이에 판정 원문이 다른 문항과 점수가 다른 문항을 따로 세고, 첫 판정이 문항별 중앙값과
+# 다른 문항도 센다. 같은 (데이터셋, id)가 두 생성 기록(두 팔)에 있어도 한 문항으로 합치지 않는다. 다른 답을
+# 판정한 기록은 반복으로 보지 않는다.
+def test_repeats_counts_items_that_differ_between_repeated_judgments(tmp_path):
+    gens = [tmp_path / "v16_c5_qa_dev.lg.gen.jsonl", tmp_path / "v16_c6_qa_dev.lg.gen.jsonl"]
+    labels = ["r1", "r2", "r3"]
+
+    def write(label, per_gen):
+        for gen, records in zip(gens, per_gen, strict=True):
+            write_jsonl(judged_path(gen, label), records)
+
+    same = [[_judgment("d1"), _judgment("d2")], [_judgment("d1", answer="y"), _judgment("d2", answer="y")]]
+    for label in labels:
+        write(label, same)
+    result = judge_stability.repeats(gens, labels)
+    assert result["n"] == 4  # 두 팔의 d1·d2를 따로 셈
+    assert (result["any_raw_diff"], result["any_score_diff"], result["first_differs_from_median"]) == (
+        0,
+        0,
+        0,
+    )
+
+    # r3에서 c6 팔 d1의 원문만 다름(점수는 같음) → 원문 1, 점수 0
+    write("r3", [same[0], [_judgment("d1", raw="{ }", answer="y"), _judgment("d2", answer="y")]])
+    result = judge_stability.repeats(gens, labels)
+    assert (result["any_raw_diff"], result["any_score_diff"]) == (1, 0)
+    assert result["vs_first"]["r3"]["raw_diff"] == 1 and result["vs_first"]["r2"]["raw_diff"] == 0
+
+    # r2에서 c5 팔 d2의 점수가 5 → 점수가 다른 문항 1. 중앙값(4, 5, 4 → 4)은 r1과 같음
+    write("r2", [[_judgment("d1"), _judgment("d2", raw="{5}", c=5)], same[1]])
+    result = judge_stability.repeats(gens, labels)
+    assert result["any_score_diff"] == 1
+    assert result["vs_first"]["r2"]["changed"] == ["v16_c5_qa_dev.lg.gen.jsonl#d2"]
+    assert result["first_differs_from_median"] == 0
+
+    # r3도 5점이면 중앙값(4, 5, 5 → 5)이 r1과 달라짐
+    write("r3", [[_judgment("d1"), _judgment("d2", raw="{5}", c=5)], same[1]])
+    result = judge_stability.repeats(gens, labels)
+    assert result["first_differs_from_median"] == 1
+    assert result["correctness_sum"] == {"r1": 16, "r2": 17, "r3": 17, "median": 17}
+
+    write("r3", [[_judgment("d1", answer="z"), _judgment("d2")], same[1]])
+    with pytest.raises(ValueError, match="different answer"):
+        judge_stability.repeats(gens, labels)
+    with pytest.raises(ValueError, match="two labels"):
+        judge_stability.repeats(gens, ["r1"])
+
+
+# average: 두 판정기의 문항별 평균. 정확도·충실도는 평균(0.5점 단위), 환각은 둘 중 하나라도 표시하면 표시, 한
+# 판정이라도 오류·빈 판정이면 빈 판정(오류 문구는 남김). 다른 문항·다른 답을 판정한 기록은 합치지 않는다.
+def test_average_judgments_means_the_scores_and_keeps_a_hallucination_flag_from_either_judge():
+    j2 = [
+        _judgment("a", c=4, f=5, h=False, label="J2", model="m2"),
+        _judgment("b", c=3, f=3, label="J2", model="m2"),
+        _judgment("c", label="J2", model="m2"),
+    ]
+    j3 = [
+        _judgment("a", c=5, f=4, h=True, label="J3", model="m3"),
+        _judgment("b", c=3, f=3, label="J3", model="m3"),
+        _judgment("c", raw=None, c=None, f=None, h=None, label="J3", model="m3", err="HTTP 500"),
+    ]
+    merged = judge_stability.average_judgments([j2, j3], "J23")
+    assert [(m["correctness_score"], m["faithfulness_score"], m["hallucinated"]) for m in merged] == [
+        (4.5, 4.5, True),
+        (3.0, 3.0, False),
+        (None, None, None),
+    ]
+    first = merged[0]
+    assert (first["judge_label"], first["merged_from"], first["judge_model"]) == (
+        "J23",
+        ["J2", "J3"],
+        "m2+m3",
+    )
+    assert first["raw"] is None and first["judge_ms"] is None  # 한 번의 호출이 낸 값이 아님
+    assert (merged[2]["error"], merged[2]["truncation"]) == ("HTTP 500", "error")
+    with pytest.raises(ValueError, match="different answer"):
+        judge_stability.average_judgments([j2, [_judgment("a", answer="other"), *j3[1:]]], "J23")
+    with pytest.raises(ValueError, match="different items"):
+        judge_stability.average_judgments([j2, j3[:2]], "J23")
+
+
+# average 명령으로 만든 라벨(0.5점 단위)을 결정 도구가 그대로 읽어 합친다: generator_arms summary의 언어별
+# 합과 기준 팔과의 차이(정수가 아닌 합의 표기 포함), eval.refusal dev의 '판정 4 이상' 문턱과 test의 F3 합.
+def test_an_average_label_sums_in_half_points_through_generator_arms_and_refusal(tmp_path, monkeypatch):
+    answers = {
+        "a": {"d1": "I don't know.", "d2": "Use Query.", "d3": "Path를 쓰세요."},
+        "b": {"d1": "Use Path.", "d2": "Use Query(alias=...).", "d3": "Path를 쓰면 됩니다."},
+    }
+    scores = {  # 판정기 → 팔 → 문항 → (정확도, 환각)
+        "J2": {
+            "a": {"d1": (4, False), "d2": (3, True), "d3": (5, False)},
+            "b": {"d1": (5, False), "d2": (4, False), "d3": (5, False)},
+        },
+        "J3": {
+            "a": {"d1": (5, False), "d2": (3, False), "d3": (4, False)},
+            "b": {"d1": (5, False), "d2": (3, False), "d3": (5, False)},
+        },
+    }
+    gens = {}
+    for arm, by_id in answers.items():
+        gens[arm] = tmp_path / f"v16_{arm}_qa_dev.lg.gen.jsonl"
+        write_jsonl(
+            gens[arm],
+            [
+                _gen_record(i, text, 1000.0, [1], language="ko" if i == "d3" else "en")
+                for i, text in by_id.items()
+            ],
+        )
+        for label, by_arm in scores.items():
+            write_jsonl(
+                judged_path(gens[arm], label),
+                [
+                    _judgment(i, c=c, f=c, h=h, answer=by_id[i], label=label, model=label)
+                    for i, (c, h) in by_arm[arm].items()
+                ],
+            )
+    argv = ["judge_stability", "average", "--labels", "J2", "J3", "--out-label", "J23"]
+    monkeypatch.setattr(sys, "argv", [*argv, "--gen", str(gens["a"]), str(gens["b"])])
+    assert judge_stability.main() == 0
+
+    _, data = generator_arms.summary_report("t", "J23", {"A": [gens["a"]], "B": [gens["b"]]}, "A")
+    a, b = (data["arms"][arm]["summary"] for arm in ("A", "B"))
+    assert [a[lang]["correctness_sum"] for lang in ("en", "ko", "all")] == [7.5, 4.5, 12.0]
+    assert (b["all"]["correctness_sum"], a["all"]["hallucinated"]) == (13.5, 1)
+    vs = data["arms"]["B"]["vs_baseline"]
+    assert [vs[lang].split()[0] for lang in ("en", "ko", "all")] == ["+1", "+0.5", "+1.5"]
+
+    base, cand = (refusal.load_answers([gens[arm]], "J23") for arm in ("a", "b"))
+    assert refusal.dev_command(base, {})["languages"]["en"]["false_refusals"] == ["d1"]  # 거절, 평균 4.5 ≥ 4
+    result = refusal.test_command({}, {}, {}, base, cand, [], c_adopted=False)
+    assert result["answerable_correctness"] == {"base": 12.0, "cand": 13.5}
+    assert result["conditions"]["F3_answer_quality"] is True
+
+
+# 커밋된 판정 기록이 있는 곳. 아래 두 테스트는 저장된 v15 판정만 읽으므로 DB·Ollama 없이 돈다.
+V15_RUNS = Path(judge_stability.__file__).parent / "runs"
+
+
+# 세 회 판정 묶음의 생성 기록들: <stem>.<판정 라벨>r1.judge.jsonl이 있는 <stem>.gen.jsonl.
+def _v15_repeat_gens(label: str) -> list[Path]:
+    suffix = f".{label}r1.judge.jsonl"
+    return sorted(
+        V15_RUNS / (p.name.removesuffix(suffix) + ".gen.jsonl") for p in V15_RUNS.glob(f"*{suffix}")
+    )
+
+
+# v15 I3~I5의 '같은 순서 3회 중앙값'은 1,847문항에서 아무것도 바꾸지 않았다(docs/experiments.md I2 결과의
+# 2026-10-30 추가 분석): r1·r2·r3의 판정 원문이 모든 문항에서 같고, 결정에 쓴 중앙값 파일(J1v15·J2v15·J3v15)의
+# 점수도 r1과 같다. 커밋된 repeats 결과 파일과도 같은지 본다. v16부터의 1회 판정 규칙의 근거를 저장된 기록으로
+# 고정한다.
+@pytest.mark.parametrize("label, files, n", [("J1v15", 38, 951), ("J2v15", 12, 448), ("J3v15", 12, 448)])
+def test_the_v15_three_judgment_median_never_differed_from_the_first_judgment(label, files, n):
+    gens = _v15_repeat_gens(label)
+    assert len(gens) == files
+    result = judge_stability.repeats(gens, [f"{label}r1", f"{label}r2", f"{label}r3"])
+    assert result["n"] == n
+    assert (result["any_raw_diff"], result["any_score_diff"], result["first_differs_from_median"]) == (
+        0,
+        0,
+        0,
+    )
+
+    def scores(path: Path) -> dict:
+        return {
+            (j["dataset"], j["id"]): (j["correctness_score"], j["faithfulness_score"], j["hallucinated"])
+            for j in read_jsonl(path)
+        }
+
+    for gen in gens:
+        assert scores(judged_path(gen, label)) == scores(judged_path(gen, f"{label}r1")), gen.name
+    committed = read_json(V15_RUNS / f"v15_{label}.repeats.json")
+    assert {k: v for k, v in committed.items() if k not in ("tag", "date")} == result
+
+
+# 경계 규칙의 폭(1점)의 근거: v15 I2에서 같은 dev 답 104문항을 이력만 바꿔 판정한 패스들(A1 기준, 곧바로
+# 다시, 역순, 캐시 되돌리기 정순·역순, 다시 올린 뒤)의 언어별 정확도 합은 영어 32문항 152~153, 한국어 72문항
+# 343~345로 A1(152, 344)에서 많아야 1점 움직였다(docs/experiments.md의 '규칙 변경 (v16부터): 판정 절차').
+def test_the_v15_i2_passes_moved_each_language_sum_by_at_most_one_point():
+    sums = {}
+    for label in ("J1sA1", "J1sA2", "J1sR", "J1sF1", "J1sF2", "J1sL"):
+        totals = {
+            name: sum(
+                j["correctness_score"] or 0
+                for j in read_jsonl(V15_RUNS / f"v14_c3_{name}.lg.{label}.judge.jsonl")
+            )
+            for name in ("qa_dev", "qa_dev_ko", "qa_dev2_ko")
+        }
+        sums[label] = (totals["qa_dev"], totals["qa_dev_ko"] + totals["qa_dev2_ko"])
+    assert sums["J1sA1"] == (152, 344)
+    assert sorted({en for en, _ in sums.values()}) == [152, 153]
+    assert sorted({ko for _, ko in sums.values()}) == [343, 344, 345]
 
 
 # --- eval/citation_arms.py ---
