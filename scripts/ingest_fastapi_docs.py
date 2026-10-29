@@ -118,9 +118,10 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-# 적재를 한 번 실행하고 결과를 사람이 읽기 좋게 출력한 뒤 종료 코드를 돌려준다. get_embedding_service를 함수째
-# 넘기는 이유: run_ingestion이 문서마다 언어에 맞는 모델(영어 bge-small, 한국어 granite-311m)을 골라 쓰기
-# 때문이다. dry_run이면 DB에 쓰지 않고 처리·삭제될 개수만 센다. 같은 DB에서 다른 적재가 진행
+# 적재를 한 번 실행하고 결과를 사람이 읽기 좋게 출력한 뒤 종료 코드를 돌려준다.
+# get_embedding_service를 함수째 넘기는 이유: run_ingestion이 문서마다 언어에 맞는 모델(영어 bge-small, 한국어
+# granite-311m)을 골라 쓰기 때문이다.
+# dry_run이면 DB에 쓰지 않고 처리·삭제될 개수만 센다. 같은 DB에서 다른 적재가 진행
 # 중이면(IngestionAlreadyRunning) 메시지를 stderr에 적고 1을 돌려준다(아무것도 바꾸지 않았다).
 async def main(
     commit_sha: str | None, limit: int | None, dry_run: bool, languages: tuple[str, ...]

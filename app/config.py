@@ -114,10 +114,10 @@ class Settings(BaseSettings):
     # tiangolo/fastapi의 ref(브랜치·태그·커밋 SHA). 비어 있으면(기본) 측정에 쓴 문서 스냅숏 커밋 50113da를
     # 쓴다(app/services/ingestion.py의 DOCS_SNAPSHOT_COMMIT·default_commit_ref). 최신 문서를 늘 받으려면
     # master를 넣는다. 어느 값이든 적재가 GitHub에 물어 40자 SHA로 바꾼 뒤 쓴다. 2026-10-29 전에는 코드가 이
-    # 필드를 읽지 않았고 기본 적재 대상은 master의 최신 커밋이었다. admin_ingest_token: 관리자 적재
-    # API(/admin/documents/ingest)의 X-Admin-Token 헤더와 비교하는 값(app/dependencies.py의
-    # require_admin_token). 기본값은 비어 있고, 비어 있거나 예전 공개 예시 값('change-me-admin-token')이면
-    # 관리자 적재 API가 꺼진다(403). 쓰려면 .env에 추측할 수 없는 값을 넣는다.
+    # 필드를 읽지 않았고 기본 적재 대상은 master의 최신 커밋이었다.
+    # admin_ingest_token: 관리자 적재 API(/admin/documents/ingest)의 X-Admin-Token 헤더와 비교하는
+    # 값(app/dependencies.py의 require_admin_token). 기본값은 비어 있고, 비어 있거나 예전 공개 예시
+    # 값('change-me-admin-token')이면 관리자 적재 API가 꺼진다(403). 쓰려면 .env에 추측할 수 없는 값을 넣는다.
     fastapi_docs_commit_sha: str = ""
     admin_ingest_token: str = ""
 

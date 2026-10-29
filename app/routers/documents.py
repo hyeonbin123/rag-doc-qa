@@ -25,12 +25,14 @@ router = APIRouter(tags=["documents"])
 
 # 관리자 적재. dependencies=[Depends(require_admin_token)]로 X-Admin-Token 헤더가 맞아야만 실행된다.
 # GitHub에서 문서를 받아 청킹·임베딩 후 DB에 넣고, 전체 적재면 사라진 문서도 지운다. 요청 본문(commit_sha의
-# ref 형식, limit ≥ 1)은 IngestRequest가 검사해 어긋나면 422다. 문서 언어마다 다른 임베딩 모델을 쓰므로 모델
-# 하나가 아니라 '언어 → 모델' 함수(embedder_for)를 넘긴다. 임베딩은 run_ingestion 안에서 모델 스레드로, 청킹과
-# GitHub 클라이언트 생성은 Starlette 스레드 풀로 돌아 적재하는 동안에도 서버가 다른 요청에 답한다. 적재는 몇
-# 분 걸릴 수 있는데 요청 하나 안에서 끝까지 한다(백그라운드 잡 큐는 README '하지 않은 것'에 있다). 같은 DB에서
-# 다른 적재(이 API의 다른 요청이나 CLI)가 진행 중이면 409다. responses의 409 설명은 OpenAPI 문서(/docs)에
-# 그대로 나가는 글이라 다른 라우터(auth의 가입 409)처럼 영어로 둔다.
+# ref 형식, limit ≥ 1)은 IngestRequest가 검사해 어긋나면 422다.
+# 문서 언어마다 다른 임베딩 모델을 쓰므로 모델 하나가 아니라 '언어 → 모델' 함수(embedder_for)를 넘긴다.
+# 임베딩은 run_ingestion 안에서 모델 스레드로, 청킹과 GitHub 클라이언트 생성은 Starlette 스레드 풀로 돌아
+# 적재하는 동안에도 서버가 다른 요청에 답한다.
+# 적재는 몇 분 걸릴 수 있는데 요청 하나 안에서 끝까지 한다(백그라운드 잡 큐는 README '하지 않은 것'에 있다).
+# 같은 DB에서 다른 적재(이 API의 다른 요청이나 CLI)가 진행 중이면 409다.
+# responses의 409 설명은 OpenAPI 문서(/docs)에 그대로 나가는 글이라 다른 라우터(auth의 가입 409)처럼 영어로
+# 둔다.
 @router.post(
     "/admin/documents/ingest",
     response_model=IngestResult,
