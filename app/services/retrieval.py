@@ -46,7 +46,9 @@ SCORE_FLOORS: dict[str, float] = {}
 # 썼다. k가 크면 1위와 10위의 점수 차가 작아져 한 목록의 1위가 결과를 독점하지 못한다.
 RRF_K = 60
 # pgvector의 HNSW 탐색은 최대 hnsw.ef_search개(기본 40) 행만 돌려준다. LIMIT을 더 크게 잡아도 dense 후보
-# 목록은 어차피 조용히 40개로 줄어든다.
+# 목록은 어차피 조용히 40개로 줄어든다. 다만 플래너가 정확 탐색(Seq Scan + 정렬)을 고르면 LIMIT만큼
+# 돌려주는데, 지금 규모(언어당 청크 수백 개)에서는 2026-10-04 이후 기록된 계획이 모두 정확 탐색이었다
+# (dense_search_sql 위 주석, docs/experiments.md 기타 관찰).
 CANDIDATE_POOL = 40
 # 표준 BM25 기본값(Lucene·Elasticsearch와 같음). 일부러 튜닝하지 않았다.
 # k1: 단어가 반복될수록 점수가 늘다가 포화하는 정도. b: 문서 길이 정규화 강도(0이면 길이 무시, 1이면 완전
@@ -227,6 +229,10 @@ def _language_sql(language: Language) -> str:
 # dense 검색 SQL. ORDER BY 거리 + LIMIT 형태라 그 언어의 HNSW 인덱스로 근사 최근접 탐색을 할 수 있다. 1 -
 # 코사인 거리 = 코사인 유사도를 score로 돌려준다. 평가의 실행 계획 확인(eval/retrieval_checks.py)도 이 함수로
 # 앱과 똑같은 SQL을 EXPLAIN한다.
+# HNSW를 쓸지 정확 탐색(Seq Scan + 정렬)을 할지는 플래너가 비용 추정으로 고른다. 지금 규모(청크 영어 914개,
+# 한국어 621개)에서는 정확 탐색 쪽 추정이 조금 싸서 2026-10-04 이후 기록된 계획은 모두 정확 탐색이었고
+# 결과도 --exact와 같았다. 영어는 두 추정의 차이가 2~4%라 전체 재적재로 테이블이 커지면 HNSW로 바뀐다(DB
+# 사본으로 확인). HNSW 인덱스는 코퍼스가 커질 때를 위한 것이다(docs/experiments.md 기타 관찰).
 def dense_search_sql(language: Language) -> str:
     """한 언어의 dense 검색 SQL 문(바인드 값은 :qvec와 :top_k)."""
     return f"""
@@ -277,7 +283,7 @@ async def cross_lingual_search(
     """여러 번역을 한꺼번에 dense 검색하되, 한 페이지는 한 번역만 남긴다.
 
     검색하는 모든 언어를 질문과 같은 다국어 모델로 임베딩했을 때만 의미가 있다(docs/experiments.md v12,
-    "T3"). 그래야 점수가 한 척도 위에 있어 합칠 수 있다. 언어마다 (그 언어의 HNSW 인덱스로) 상위
+    "T3"). 그래야 점수가 한 척도 위에 있어 합칠 수 있다. 언어마다 (한 언어 dense 검색과 같은 SQL로) 상위
     2 * top_k개를 뽑아 점수순으로 합친다. 어떤 청크의 페이지가 다른 번역으로 이미 목록에 있으면 그 청크는
     건너뛰어, 같은 내용이 top_k 자리를 두 번 차지하지 않게 한다. 같은 번역 안에서 한 페이지의 청크가 여러
     개인 것은 한 언어 검색과 마찬가지로 그대로 둔다.
