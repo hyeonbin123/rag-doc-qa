@@ -9,12 +9,13 @@ docs/experiments.md v15의 결정 규칙이 코드와 같은지 고정한다. DB
 # 바뀌므로, 경계값(같음/다름, 허용 폭의 끝)을 가짜 기록으로 고정한다.
 
 import json
+import sys
 from pathlib import Path
 
 import pytest
 
 from eval import citation_arms, judge_panel, judge_stability, refusal
-from eval.common import read_json, read_jsonl
+from eval.common import format_ids_lines, read_ids_file, read_json, read_jsonl
 from eval.judge import (
     FLUSH_MESSAGES,
     JudgeConfig,
@@ -294,6 +295,45 @@ def test_floors_command_marks_a_language_effective_only_with_a_zero_chunk_unansw
     assert result["candidate_floors"] == {}
 
 
+# 다시 생성할 문항은 (데이터셋, id)로 고른다. test3b 영어·한국어 셋처럼 두 셋이 같은 id를 쓰면, 문맥이 바뀐
+# 셋의 문항만 목록에 들어가야 한다. v15 I4에서는 id만 적은 목록을 썼기 때문에, 한쪽 셋에서만 문맥이 바뀐 id가
+# 다른 셋에서도 두 팔로 다시 생성됐다. changed 명령은 '데이터셋<TAB>id' 줄을 쓰고, run_answer_eval의
+# --ids-file 읽기(read_ids_file)는 자기 데이터셋 줄만 받는다. 데이터셋 이름이 없는 검색 기록으로는 목록을
+# 만들지 않는다.
+def test_changed_ids_name_the_dataset_so_a_shared_id_is_regenerated_only_where_its_context_changed(
+    tmp_path, monkeypatch
+):
+    scores = [0.9, 0.85, 0.82, 0.81, 0.80]
+    en = {**_retrieval("n010", scores, gold_ranks={1}, language="en"), "dataset": "qa_test3b_en.jsonl"}
+    ko = {**_retrieval("n010", scores, gold_ranks={1}, language="ko"), "dataset": "qa_test3b_ko.jsonl"}
+    floors = {"en": 0.5, "ko": 0.83}  # 영어는 다섯 개가 모두 남고(문맥 그대로), 한국어는 셋이 빠짐
+    pairs = refusal.changed_ids([en, ko], floors)
+    assert pairs == [("qa_test3b_ko.jsonl", "n010")]
+
+    ids_file = tmp_path / "ids.txt"
+    ids_file.write_text(format_ids_lines(pairs), encoding="utf-8")
+    assert read_ids_file(ids_file, "qa_test3b_ko.jsonl") == {"n010"}
+    assert read_ids_file(ids_file, "qa_test3b_en.jsonl") == set()
+
+    # 명령행 changed: 검색 기록 파일들 → 데이터셋<TAB>id 줄(LF)
+    floors_path = tmp_path / "floors.json"
+    floors_path.write_text(json.dumps({"candidate_floors": floors}), encoding="utf-8")
+    retrieval_paths = []
+    for record in (en, ko):
+        path = tmp_path / f"{record['dataset']}.retrieval.jsonl"
+        path.write_text(json.dumps(record) + "\n", encoding="utf-8")
+        retrieval_paths.append(str(path))
+    out = tmp_path / "out" / "changed.txt"
+    argv = ["eval.refusal", "changed", "--floors", str(floors_path), "--out", str(out), *retrieval_paths]
+    monkeypatch.setattr(sys, "argv", argv)
+    assert refusal.main() == 0
+    assert out.read_bytes() == b"qa_test3b_ko.jsonl\tn010\n"
+
+    without_dataset = {k: v for k, v in ko.items() if k != "dataset"}
+    with pytest.raises(ValueError, match="dataset"):
+        refusal.changed_ids([without_dataset], floors)
+
+
 # (c) dev 조건: '판정 4점 이상인데 거절로 분류된' 답이 언어별 1개까지면 test 후보.
 def test_dev_command_counts_false_refusals():
     def pair(item_id, answer, score, language="en"):
@@ -414,6 +454,45 @@ def test_i4_test_retally_matches_the_committed_decision():
     assert result["adopt_empty_citations"] is True
 
 
+# I4 test에서 id만 적은 목록 때문에 문맥이 그대로인데도 두 팔로 다시 생성된 문항: test3b 영어 5개와 한국어
+# 3개(같은 id가 다른 언어 셋에서 문맥이 바뀜). 이 8문항은 두 팔의 J1v15 합이 같아(영어 23·23, 한국어 13·13) F3
+# 결과에 영향이 없었다. 데이터셋을 구분해 다시 고르면 54문항이고, 그 위에서도 F3는 그대로 떨어진다(254 → 196,
+# 허용 폭 −2). docs/experiments.md I4 test 결과의 '영향 0' 확인을 저장된 기록으로 고정한다.
+def test_i4_items_regenerated_through_shared_ids_did_not_move_f3():
+    floors = read_json(I4_RUNS / "v15_i4_floors.json")["candidate_floors"]
+    changed = {
+        pair
+        for name in I4_USED_TEST_SETS
+        for pair in refusal.changed_ids(read_jsonl(I4_RUNS / f"v15_i4_ret_{name}.retrieval.jsonl"), floors)
+    }
+    base = _i4_answers([f"v15_i4_ubase_{name}" for name in I4_USED_TEST_SETS])
+    cand = _i4_answers([f"v15_i4_ucand_{name}" for name in I4_USED_TEST_SETS])
+    regenerated = set(base) & set(cand)
+    assert (len(changed), len(regenerated)) == (54, 62)
+    assert changed <= regenerated
+    extra = regenerated - changed
+    assert sorted(extra) == [
+        *(("qa_test3b_en.jsonl", i) for i in ("n010", "n050", "n077", "n097", "n115")),
+        *(("qa_test3b_ko.jsonl", i) for i in ("n034", "n051", "n061")),
+    ]
+
+    # test_command의 F3와 같은 점수: 판정이 없으면(청크 0개) 가장 나쁜 점수로 센다.
+    def total(rows: dict, keys, language: str | None = None) -> int:
+        return sum(
+            (rows[k][1] or {}).get("correctness_score") or refusal.UNJUDGED_SCORE
+            for k in keys
+            if language is None or rows[k][0]["language"] == language
+        )
+
+    # 문맥이 같아도 생성 비결정성으로 답은 6개가 달라졌지만 판정 합은 같았다.
+    assert sum(base[k][0]["answer"] != cand[k][0]["answer"] for k in extra) == 6
+    assert [total(base, extra, "en"), total(cand, extra, "en")] == [23, 23]
+    assert [total(base, extra, "ko"), total(cand, extra, "ko")] == [13, 13]
+    assert [total(base, regenerated), total(cand, regenerated)] == [290, 232]  # 기록된 F3
+    assert [total(base, changed), total(cand, changed)] == [254, 196]
+    assert total(cand, changed) < total(base, changed) - refusal.JUDGE_TOLERANCE
+
+
 # --- eval/judge_panel.py ---
 
 
@@ -452,14 +531,15 @@ def test_stratified_sample_fills_the_cells():
 
 
 # 커밋된 판정 패널 표본(라벨러 파일·열쇠 파일)이 저장된 기록에서 고정 seed로 다시 뽑은 표본과 같고, Claude
-# 라벨이 표본의 80문항을 같은 순서로 하나씩 덮는지 확인한다(라벨을 붙인 뒤 표본을 바꾸지 않았다는 확인).
+# 라벨이 표본의 80문항을 같은 순서로 하나씩 덮는지 확인한다(라벨을 붙인 뒤 표본을 바꾸지 않았다는 확인). v15
+# 표본은 옛 지문(id, 답, 청크 id)으로 중복을 뺀 모집단에서 뽑았으므로 그 지문(dedup="v15")으로 다시 뽑는다.
 def test_committed_panel_sample_and_labels_match_the_sampler():
     runs = Path(judge_panel.__file__).parent / "runs"
 
     def lines(name: str) -> list[dict]:
         return [json.loads(line) for line in (runs / name).read_text(encoding="utf-8").splitlines()]
 
-    chosen = judge_panel.stratified_sample(judge_panel.population())
+    chosen = judge_panel.stratified_sample(judge_panel.population(dedup="v15"))
     keys = lines("v15_i5_panel_key.jsonl")
     assert sorted(k["key"] for k in keys) == sorted(i["key"] for i in chosen)
     assert all(judge_panel.blind_id(k["key"]) == k["sample_id"] for k in keys)
@@ -472,3 +552,157 @@ def test_committed_panel_sample_and_labels_match_the_sampler():
         set(s) == {"sample_id", "language", "question", "context_passages", "answer", "reference_answer"}
         for s in sample
     )
+
+
+# 새 지문(데이터셋, id, 답, 청크 본문)은 다른 DB에서 만든 같은 답(청크 id만 다름)을 한 번만 센다. v15 표본에
+# 쓴 옛 지문(id, 답, 청크 id)은 그런 둘을 모두 넣었다(v13b B2의 B0와 v13 채택 G3 한국어가 그랬고, n086이
+# 표본에 두 번 들어감). 청크 본문이 다르거나 데이터셋이 다르면 다른 문항이다.
+def test_population_counts_an_answer_once_even_when_only_the_chunk_ids_differ(tmp_path, monkeypatch):
+    def record(dataset: str, chunk_id: str, content: str = "c") -> dict:
+        r = _gen_record("n086", "Path를 쓰세요.", 1000.0, [1])
+        r.update(dataset=dataset, chunks=[{"chunk_id": chunk_id, "content": content, "source_path": "a.md"}])
+        return r
+
+    files = [
+        _write(tmp_path, name, [record(dataset, chunk_id, content)], {"n086": 4})
+        for name, dataset, chunk_id, content in (
+            ("first", "qa_test3b_ko.jsonl", "1", "c"),
+            ("other_db", "qa_test3b_ko.jsonl", "99", "c"),  # 청크 id만 다름: 같은 문항
+            ("other_text", "qa_test3b_ko.jsonl", "1", "d"),  # 청크 본문이 다름: 다른 문항
+            ("other_set", "qa_test3b_en.jsonl", "1", "c"),  # 데이터셋이 다름: 다른 문항
+        )
+    ]
+    monkeypatch.setattr(judge_panel, "COMPARISONS", {"x": {"a": files}})
+    assert [i["key"] for i in judge_panel.population()] == [
+        "first.gen.jsonl#n086",
+        "other_text.gen.jsonl#n086",
+        "other_set.gen.jsonl#n086",
+    ]
+    assert judge_panel.unique_keys(judge_panel.records_by_key()) == {
+        "first.gen.jsonl#n086",
+        "other_text.gen.jsonl#n086",
+        "other_set.gen.jsonl#n086",
+    }
+    # 옛 지문은 청크 id만 보므로 청크 id가 같은 셋을 하나로, 다른 DB의 같은 답은 둘로 셌다.
+    assert [i["key"] for i in judge_panel.population(dedup="v15")] == [
+        "first.gen.jsonl#n086",
+        "other_db.gen.jsonl#n086",
+    ]
+    with pytest.raises(ValueError):
+        judge_panel.population(dedup="chunk_ids")
+
+
+# 길이 상관을 생성기별로 나눈다. 긴 답을 쓰는 생성기(A.X)가 점수도 높으면, 생성기 안에서는 길수록 점수가
+# 낮아도 풀링 상관은 양수가 된다(v15 I5의 풀링 값이 생성기와 섞인 이유). 기준 라벨과의 잔차(판정 − 기준)의
+# 길이 상관은 기준이 설명하지 못하는 길이 선호만 남긴다.
+def test_family_spearman_splits_a_pooled_length_correlation_by_generator():
+    keys, families, lengths, scores = [], {}, {}, {}
+    for k in range(10):
+        for family, base_length, base_score in (("qwen", 100, 3.0), ("ax", 1000, 5.0)):
+            key = f"{family}{k}"
+            keys.append(key)
+            families[key], lengths[key], scores[key] = family, base_length + k, base_score - k * 0.1
+    split = judge_panel.family_spearman(keys, lengths, scores, families)
+    assert split["all"] > 0.5
+    assert split["ax"] == pytest.approx(-1.0)
+    assert split["qwen"] == pytest.approx(-1.0)
+    residual = {k: lengths[k] / 10_000 for k in keys}  # 기준보다 긴 답에 조금씩 더 준 판정기의 잔차
+    assert judge_panel.family_spearman(keys, lengths, residual, families) == pytest.approx(
+        {"all": 1.0, "ax": 1.0, "qwen": 1.0}
+    )
+
+
+# kappa 보고: 평균 구성은 J1뿐 아니라 가장 좋은 단독 판정기와도 견준다(같은 입도의 비교. v15 I5의 J2+J3 평균은
+# J2 단독보다 0.013 높았을 뿐임). 같은 답·같은 문맥인 표본 문항은 찾아서 보고하고, 뒤의 것을 뺀 kappa를 함께
+# 낸다. 잔차-길이 상관은 판정기마다 낸다(J2처럼 기준과 똑같으면 잔차가 모두 0이라 None).
+def test_kappa_report_compares_averages_with_the_best_single_judge_and_drops_duplicates(tmp_path):
+    gold = [1, 2, 3, 4, 5, 1, 2, 3, 4, 5, 3, 3]
+    records, keys = {}, {}
+    for k in range(11):
+        key = f"f.gen.jsonl#q{k}"
+        records[key] = {
+            "id": f"q{k}",
+            "dataset": "d.jsonl",
+            "answer": "x" * (10 + k),
+            "model": "a.x-4.0-light",
+            "chunks": [{"chunk_id": str(k), "content": f"c{k}"}],
+        }
+        keys[f"s{k:02d}"] = key
+    # s11은 s10과 같은 답·같은 문맥(다른 파일, 다른 청크 id)
+    records["g.gen.jsonl#q10"] = {
+        **records["f.gen.jsonl#q10"],
+        "chunks": [{"chunk_id": "99", "content": "c10"}],
+    }
+    keys["s11"] = "g.gen.jsonl#q10"
+    noisy = [2, 2, 3, 5, 5, 1, 3, 3, 4, 4, 3, 3]
+    scores = {
+        "J1": {keys[s]: 6 - g for s, g in zip(sorted(keys), gold, strict=True)},
+        "J2": {keys[s]: g for s, g in zip(sorted(keys), gold, strict=True)},
+        "J3": {keys[s]: n for s, n in zip(sorted(keys), noisy, strict=True)},
+    }
+    claude_path, key_path = tmp_path / "claude.jsonl", tmp_path / "key.jsonl"
+    claude_path.write_text(
+        "".join(
+            json.dumps({"sample_id": s, "correctness_score": g}) + "\n"
+            for s, g in zip(sorted(keys), gold, strict=True)
+        ),
+        encoding="utf-8",
+    )
+    key_path.write_text(
+        "".join(json.dumps({"sample_id": s, "key": keys[s]}) + "\n" for s in sorted(keys)), encoding="utf-8"
+    )
+
+    result = judge_panel.kappa_report(["J1", "J2", "J3"], scores, claude_path, key_path, records)
+    configs = result["configs"]
+    assert result["n"] == 12
+    assert configs["J1"]["diff_vs_j1_ci90"] == [0.0, 0.0]
+    assert configs["J2"]["kappa"] == pytest.approx(1.0)
+    assert configs["J2+J3"]["best_single"] == "J2"
+    low, high = configs["J2+J3"]["diff_vs_best_single_ci90"]
+    assert low <= high <= 0  # 기준과 똑같은 J2보다 나을 수 없다
+    assert all("best_single" not in configs[label] for label in ("J1", "J2", "J3"))
+    assert result["duplicates"] == [["s10", "s11"]]
+    assert result["dedup"]["n"] == 11
+    assert set(result["dedup"]["kappa"]) == set(configs)
+    assert set(result["residual_length_spearman"]) == {"J1", "J2", "J3"}
+    assert result["residual_length_spearman"]["J2"]["all"] is None
+    assert set(result["reference_length_spearman"]) == {"all", "ax", "qwen"}
+
+
+# 커밋된 v15 표본(옛 지문으로 뽑음)에는 같은 답·같은 문맥이 한 쌍 있다: n086(v13 채택 G3 한국어 raw와 v13b
+# B2의 B0 lg, 청크 id만 다름). 새 지문은 이 쌍만 찾고, 뒤의 것을 빼고 다시 세도 모든 구성의 kappa 변화가 0.003
+# 이하다(docs/experiments.md I5 결과의 2026-10-29 추가 분석). bootstrap 없이 kappa 값만 비교한다.
+def test_committed_panel_sample_has_one_duplicate_pair_that_barely_moves_kappa():
+    def lines(name: str) -> list[dict]:
+        return read_jsonl(judge_panel.RUNS / name)
+
+    records = judge_panel.records_by_key()
+    # 저장된 답 448개 중 새 지문으로는 402개, 옛 지문으로는 447개가 서로 다른 문항이다(population 주석의 수).
+    assert len(records) == 448
+    assert len(judge_panel.unique_keys(records)) == 402
+    assert len(judge_panel.unique_keys(records, dedup="v15")) == 447
+    keys = {k["sample_id"]: k["key"] for k in lines("v15_i5_panel_key.jsonl")}
+    claude = {c["sample_id"]: float(c["correctness_score"]) for c in lines("v15_i5_claude_labels.jsonl")}
+    ids = sorted(claude)
+    groups = judge_panel.duplicate_groups(ids, keys, records)
+    assert [[keys[s] for s in group] for group in groups] == [
+        ["v13_adopt_g3_qa_test3b_ko.raw.gen.jsonl#n086", "v13b_b2_g3_b0.lg.gen.jsonl#n086"]
+    ]
+    labels = ["J1v15", "J2v15", "J3v15"]
+    scores = {label: judge_panel.scores_for(label) for label in labels}
+    kept = [s for s in ids if s != groups[0][1]]
+    full = judge_panel.judge_configs(labels, scores, keys, ids)
+    dedup = judge_panel.judge_configs(labels, scores, keys, kept)
+    assert set(full) == {
+        "J1v15",
+        "J2v15",
+        "J3v15",
+        "J1v15+J2v15",
+        "J1v15+J3v15",
+        "J2v15+J3v15",
+        "J1v15+J2v15+J3v15",
+    }
+    for name, values in full.items():
+        before = judge_panel.quadratic_kappa([claude[i] for i in ids], values)
+        after = judge_panel.quadratic_kappa([claude[i] for i in kept], dedup[name])
+        assert abs(after - before) <= 0.003, name

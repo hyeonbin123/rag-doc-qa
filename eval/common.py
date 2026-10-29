@@ -1,14 +1,22 @@
 # [파일 역할] 평가 스크립트들(eval/run_retrieval_eval.py, run_answer_eval.py, run_judge.py,
 # compare_judgments.py, generator_arms.py, embedding_latency.py, retrieval_runs.py)이 함께 쓰는 공통 도구.
 # 질문셋 형식과 로더, 키워드 커버리지 지표, 리포트·문항별 기록(JSON/JSONL) 읽기·쓰기, 실행 시점의 git 커밋
-# 기록을 모았다.
+# 기록, 실행 기록의 출처 정보(질문셋 파일 해시, DB 코퍼스 요약), 다시 생성할 문항 목록(--ids-file) 형식을
+# 모았다.
 # [왜 필요한가] 모든 평가가 같은 질문셋 형식과 같은 파일 위치·인코딩을 쓰게 해서, 실행마다
 # 리포트(eval/reports/)와 문항별 기록(eval/runs/)을 같은 방식으로 남기고 나중에 다시 판정·비교할 수 있게 한다.
+# 출처 정보는 2026-10-29부터 기록한다. 그 전 기록에는 코퍼스·질문셋에 관해 DB 이름과 질문셋 파일 이름만 있어,
+# 다른 원본 커밋으로 다시 적재한 DB나 고친 질문셋으로 잰 결과를 기록만으로 가려낼 수 없었다.
 
+import hashlib
 import json
 import subprocess
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
+
+# 코퍼스 요약 질의에 쓴다. 평가 스크립트가 넘기는 비동기 세션(AsyncSession)에 원시 SQL을 보낸다.
+from sqlalchemy import text
 
 # DATASET_PATH: --dataset을 주지 않을 때의 기본 질문셋(v1~v6의 30문항 테스트셋). REPORTS_DIR: 마크다운
 # 리포트를 남기는 곳.
@@ -103,3 +111,97 @@ def git_commit() -> str | None:
         return result.stdout.strip()
     except (OSError, subprocess.SubprocessError):
         return None
+
+
+# --- 실행 기록의 출처 정보 ---
+
+
+# 질문셋 파일의 sha256(16진 64자). 두 평가 스크립트가 meta에 파일마다 남겨, 이름이 같은 질문셋이 나중에
+# 고쳐졌는지를 기록만으로 가려낸다. 줄 끝은 LF로 맞춘 바이트로 센다: 이 저장소에는 .gitattributes가 없어
+# Windows에서 core.autocrlf=true로 체크아웃하면 같은 커밋의 같은 파일도 CRLF가 되는데, 그때도 Linux(CI)와 같은
+# 값이어야 기록끼리 비교할 수 있다(LF로 맞춘 바이트는 git이 저장한 내용과 같다). 질문 내용의 바뀜을 보려는
+# 값이라 그 밖의 정규화(공백, JSON 키 순서)는 하지 않는다.
+# 입력: 질문셋 경로. 출력: 소문자 16진 문자열. 파일이 없으면 OSError.
+def dataset_sha256(path: Path) -> str:
+    return hashlib.sha256(Path(path).read_bytes().replace(b"\r\n", b"\n")).hexdigest()
+
+
+# 평가 대상 DB의 코퍼스 요약: 문서의 원본 커밋(documents.source_commit_sha)별 문서 수, 마지막 적재 시각
+# (max(fetched_at), ISO 8601), 언어별 청크 수. 두 평가 스크립트가 meta의 corpus에 남긴다.
+# 왜: meta의 DB 이름과 vector_checks(저장 벡터가 지금 모델로 만든 것인지)만으로는 코퍼스가 같은지 알 수 없다.
+# README의 적재 단계는 원본 커밋을 고를 수 있어, 같은 DB 이름으로 다른 커밋의 문서를 잰 실행이 같은 조건처럼
+# 보일 수 있고, 일부만 다른 커밋으로 다시 적재한 DB는 여기서 커밋이 둘로 드러난다.
+# 문서가 없으면 빈 사전과 None.
+async def corpus_snapshot(db) -> dict:
+    documents = (
+        await db.execute(
+            text(
+                "SELECT source_commit_sha, count(*) AS documents, max(fetched_at) AS last_fetched_at "
+                "FROM documents GROUP BY source_commit_sha ORDER BY source_commit_sha"
+            )
+        )
+    ).all()
+    chunks = (
+        await db.execute(
+            text("SELECT language, count(*) AS chunks FROM chunks GROUP BY language ORDER BY language")
+        )
+    ).all()
+    last = max((row.last_fetched_at for row in documents), default=None)
+    return {
+        "documents_by_source_commit": {row.source_commit_sha: row.documents for row in documents},
+        "last_fetched_at": last.isoformat() if last is not None else None,
+        "chunks_by_language": {row.language: row.chunks for row in chunks},
+    }
+
+
+# 리포트 머리에 넣는 코퍼스 한 줄. 커밋은 앞 7자리로 줄이고 문서 수를 붙인다. 예:
+# "- corpus: source commit 50113da (1024 documents); last fetched 2026-10-04T...; chunks en 3000, ko 2500".
+# 리포트만 보고도 어느 원본 커밋의 코퍼스로 잰 결과인지 알 수 있게 한다. 입력은 corpus_snapshot의 결과.
+def corpus_line(corpus: dict) -> str:
+    commits = corpus.get("documents_by_source_commit") or {}
+    if not commits:
+        return "- corpus: no documents"
+    label = "source commit" if len(commits) == 1 else "source commits"
+    documents = ", ".join(
+        f"{sha[:7]} ({count} {'document' if count == 1 else 'documents'})" for sha, count in commits.items()
+    )
+    by_language = corpus.get("chunks_by_language") or {}
+    chunks = ", ".join(f"{language} {count}" for language, count in by_language.items()) or "-"
+    fetched = corpus.get("last_fetched_at") or "-"
+    return f"- corpus: {label} {documents}; last fetched {fetched}; chunks {chunks}"
+
+
+# --- 다시 생성할 문항 목록(--ids-file) ---
+
+# 한 줄에 '데이터셋 파일 이름<TAB>문항 id'. 데이터셋 이름은 검색·생성 기록의 dataset 필드와 같은 파일 이름(예:
+# qa_test3b_ko.jsonl)이다. eval/refusal.py changed가 쓰고 eval/run_answer_eval.py --ids-file이 읽는다.
+# 왜 데이터셋을 함께 적나: test3b 영어·한국어 셋처럼 서로 다른 셋이 같은 id를 쓰므로 id만으로는 어느 셋의
+# 문항인지 알 수 없다. v15 I4에서는 id만 적은 목록 때문에, 한쪽 셋에서만 문맥이 바뀐 id가 문맥이 그대로인 다른
+# 셋에서도 두 팔로 다시 생성됐다(docs/experiments.md v15 I4 test 결과).
+IDS_FILE_SEPARATOR = "\t"
+
+
+# (데이터셋 이름, id) 짝들을 ids 파일 내용(줄마다 LF)으로 만든다. 순서는 받은 순서 그대로다.
+def format_ids_lines(pairs: Iterable[tuple[str, str]]) -> str:
+    return "".join(f"{dataset}{IDS_FILE_SEPARATOR}{item_id}\n" for dataset, item_id in pairs)
+
+
+# ids 파일에서 이 데이터셋(파일 이름) 줄의 id만 모은다. 빈 줄과 줄 끝 공백(CRLF 포함)은 무시한다. 탭으로 나눈
+# 칸이 둘이 아니거나 빈 칸이 있는 줄은 ValueError: id만 적은 옛 형식(v15 I4 때의 파일)을 받으면 다른
+# 데이터셋의 같은 id까지 다시 생성하게 되므로, 조용히 받지 않고 eval.refusal changed로 다시 만들게 한다.
+def read_ids_file(path: Path, dataset: str) -> set[str]:
+    wanted: set[str] = set()
+    for number, raw in enumerate(Path(path).read_text(encoding="utf-8").splitlines(), start=1):
+        line = raw.strip()
+        if not line:
+            continue
+        parts = [part.strip() for part in line.split(IDS_FILE_SEPARATOR)]
+        if len(parts) != 2 or not all(parts):
+            raise ValueError(
+                f"{path}:{number}: expected '<dataset file name><TAB><question id>', got {raw!r}. "
+                "An ids file with bare ids (one per line) does not say which dataset an id belongs to; "
+                "write it again with `python -m eval.refusal changed`"
+            )
+        if parts[0] == dataset:
+            wanted.add(parts[1])
+    return wanted

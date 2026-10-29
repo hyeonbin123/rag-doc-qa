@@ -24,8 +24,8 @@ eval/retrieval_runs.py가 실행끼리, 그리고 점수 바닥값을 비교한�
 # [왜 필요한가] README '핵심 결과'의 v1~v13 검색 결정(청킹 정제, hybrid·rerank 채택 여부, 한국어 임베딩
 # 교체)은 모두 이 스크립트의 수치로 내렸다. 답변 생성 없이 몇 분 안에 돌아가므로 파라미터 튜닝은 튜닝용 셋에서
 # 이 스크립트로만 하고, 테스트셋에는 고른 설정 하나만 돌린다(docs/experiments.md '원칙').
-# [흐름] main: 설정 → (rerank) 재정렬 모델 미리 올림 → 저장 벡터 확인 → (--exact) 정확 탐색으로 전환 → 실행
-# 계획 기록 → 문항별 evaluate_question → aggregate → 리포트·기록·meta 저장.
+# [흐름] main: 설정 → (rerank) 재정렬 모델 미리 올림 → 코퍼스 요약과 저장 벡터 확인 → (--exact) 정확 탐색으로
+# 전환 → 실행 계획 기록 → 문항별 evaluate_question → aggregate → 리포트·기록·meta 저장.
 # [연결] 검색 로직은 app/services/retrieval.py, 측정 전 확인은 eval/retrieval_checks.py, 기록 분석은
 # eval/retrieval_runs.py. tests/test_retrieval_eval.py가 지표 함수와 교차언어 판정을 검증한다.
 
@@ -56,6 +56,9 @@ from eval.common import (
     DATASET_PATH,
     RUNS_DIR,
     EvalQuestion,
+    corpus_line,
+    corpus_snapshot,
+    dataset_sha256,
     git_commit,
     load_dataset,
     write_json,
@@ -208,6 +211,9 @@ async def main(args: argparse.Namespace) -> None:
     # --dataset에 여러 셋을 주면 함께 돌려 전체와 셋별 지표를 같이 낸다(v12 dev는 qa_dev_ko + qa_dev2_ko
     # 72문항을 한 번에 돌렸다).
     datasets = [(path, load_dataset(path)) for path in args.dataset]
+    # 읽은 질문셋 파일마다의 해시(줄 끝 LF 기준, eval/common.py). 이름이 같은 질문셋이 나중에 고쳐졌는지
+    # meta로 가려낸다.
+    dataset_hashes = {path.name: dataset_sha256(path) for path, _ in datasets}
     languages = sorted({detect_language(q.question) for _, qs in datasets for q in qs})
 
     reranker_for = None
@@ -222,6 +228,9 @@ async def main(args: argparse.Namespace) -> None:
     results = []
     vector_checks = []
     async with async_session_maker() as db:
+        # 이 DB의 코퍼스(문서의 원본 커밋별 수, 마지막 적재 시각, 언어별 청크 수). 다른 커밋으로 다시 적재한
+        # DB로 잰 실행을 기록만으로 구별하려는 것이다(DB 이름과 벡터 확인은 임베딩 모델만 본다).
+        corpus = await corpus_snapshot(db)
         if not args.no_vector_check:
             # 검색하는 모든 언어의 저장 벡터는 그 언어를 검색하는 질문을 임베딩하는 모델로 만든 것이어야 한다
             # (교차언어 한국어 질문은 한국어 모델로 영어 청크를 검색한다).
@@ -241,8 +250,8 @@ async def main(args: argparse.Namespace) -> None:
             for q in questions:
                 results.append(await evaluate_question(db, embedder, q, args, reranker_for, path.name))
 
-    # 리포트 머리에는 결과를 해석하는 데 필요한 조건(모델, DB 이름, 검색 모드, 정확/계획대로, 실행 계획,
-    # 바닥값, 벡터 확인, BM25 가중치, 재정렬 모델과 후보 수)을 모두 적는다.
+    # 리포트 머리에는 결과를 해석하는 데 필요한 조건(모델, DB 이름과 그 코퍼스, 검색 모드, 정확/계획대로, 실행
+    # 계획, 바닥값, 벡터 확인, BM25 가중치, 재정렬 모델과 후보 수)을 모두 적는다.
     agg = aggregate(results)
     floors = {lang: question_floor(args, embedder, lang) for lang in languages}
     lines = [
@@ -251,6 +260,7 @@ async def main(args: argparse.Namespace) -> None:
         f"- date: {started.isoformat()}",
         f"- embedding models: en {settings.embedding_model_name}, ko {settings.embedding_model_name_ko}",
         f"- database: {settings.database_url.rsplit('/', 1)[-1]}",
+        corpus_line(corpus),
         f"- top_k: {args.top_k}",
         f"- retrieval mode: {args.mode}"
         + (" (Korean questions search the Korean and English chunks, one translation per page)"
@@ -309,7 +319,8 @@ async def main(args: argparse.Namespace) -> None:
     print(report)
 
     # 문항별 기록에서는 retrieved_paths를 뺀다(results에 같은 경로가 이미 있다). meta에는 실행 조건과 전체
-    # 지표를 남긴다.
+    # 지표를 남긴다. 2026-10-29부터 출처 정보(질문셋 파일마다의 sha256, DB 코퍼스 요약)도 넣는다. 그 전
+    # 기록에는 이 필드가 없다(고쳐 넣지 않음).
     records_path = write_jsonl(
         RUNS_DIR / f"{args.tag}.retrieval.jsonl",
         [{k: v for k, v in r.items() if k != "retrieved_paths"} for r in results],
@@ -329,6 +340,8 @@ async def main(args: argparse.Namespace) -> None:
             "exact": bool(args.exact),
             "dense_plans": plans,
             "datasets": [path.name for path, _ in datasets],
+            "dataset_sha256": dataset_hashes,
+            "corpus": corpus,
             "vector_checks": vector_checks,
             "torch_threads": torch.get_num_threads(),
             "aggregate": agg,

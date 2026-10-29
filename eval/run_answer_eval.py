@@ -23,9 +23,9 @@ Ollama 기본 문맥에서 돌던 v11 이전 호출을 보낸다.
 # [왜 이렇게 나눴나] v11에서 '모든 답 생성 → 기록 저장 → 일괄 판정'으로 바꿨다. 답과 패시지를 저장해 두면
 # eval/run_judge.py로 생성 없이 다시 판정할 수 있고(판정 설정 비교, J0/J1), 생성과 판정을 번갈아 하면 Ollama가
 # 모델을 계속 바꿔 올려 생성 시간에 그 시간이 섞이기 때문이다(docs/experiments.md v11).
-# [흐름] main: 설정·생성기·토크나이저 준비 → 저장 벡터 확인(eval/retrieval_checks.py) → 문항별 generate_answer
-# → <tag>.gen.jsonl과 .meta.json 저장 → (선택) judge_and_save로 판정 → eval/answer_report.render_report로
-# 리포트.
+# [흐름] main: 설정·생성기·토크나이저 준비 → 코퍼스 요약(eval/common.py)과 저장 벡터 확인
+# (eval/retrieval_checks.py) → 문항별 generate_answer → <tag>.gen.jsonl과 .meta.json 저장 → (선택)
+# judge_and_save로 판정 → eval/answer_report.render_report로 리포트(머리에 코퍼스 줄을 더함).
 # [연결] 판정 로직은 eval/judge.py, 판정 실행·기록은 eval/run_judge.py, 토크나이저는 eval/tokens.py, 두 팔
 # 나누기는 eval/generator_arms.py가 이 파일의 기록을 읽는다. tests/test_answer_eval.py가
 # generate_answer·generation_order·build_generator를 검증한다.
@@ -66,9 +66,13 @@ from eval.common import (
     DATASET_PATH,
     RUNS_DIR,
     EvalQuestion,
+    corpus_line,
+    corpus_snapshot,
+    dataset_sha256,
     git_commit,
     keyword_coverage,
     load_dataset,
+    read_ids_file,
     write_json,
     write_jsonl,
     write_report,
@@ -276,6 +280,16 @@ async def generate_answer(
     }
 
 
+# 리포트 머리의 database 줄 바로 아래에 코퍼스 한 줄(eval/common.py의 corpus_line)을 넣는다. 머리 줄은
+# eval/answer_report.render_report가 만들고, 코퍼스 요약은 이 스크립트가 생성 전에 DB에서 읽어 meta에도 남기는
+# 값이다. database 줄이 없으면(머리 형식이 바뀐 경우) 제목과 빈 줄 바로 아래에 넣어, 줄을 잃지 않게 한다.
+def with_corpus_line(report: str, corpus: dict) -> str:
+    lines = report.split("\n")
+    at = next((i + 1 for i, line in enumerate(lines) if line.startswith("- database:")), min(2, len(lines)))
+    lines.insert(at, corpus_line(corpus))
+    return "\n".join(lines)
+
+
 # 평가 한 번을 실행한다. 반환값은 판정 오류가 있으면 1, 없으면 0(명령의 종료 코드).
 async def main(args: argparse.Namespace) -> int:
     settings = get_settings()
@@ -283,11 +297,24 @@ async def main(args: argparse.Namespace) -> int:
     embedder = get_embedding_service  # 언어별 조회 함수. 질문마다 그 질문의 언어로 부른다
     generator = build_generator(settings)
     questions = load_dataset(args.dataset)
-    # v15: --ids-file이 있으면 그 파일에 적힌 id(한 줄에 하나)의 문항만 생성한다. 바닥값 후보로 문맥이 바뀌는
-    # 문항만 다시 생성할 때 쓴다(eval/refusal.py changed). 순서는 데이터셋 순서 그대로이고, dataset_index는
-    # 걸러 낸 목록 안의 위치가 된다(두 팔의 문항은 id로 맞춘다).
+    # 읽은 질문셋 파일의 해시(줄 끝 LF 기준). 이름이 같은 질문셋이 나중에 고쳐졌는지 meta로 가려낸다.
+    dataset_hash = dataset_sha256(args.dataset)
+    # v15: --ids-file이 있으면 그 파일의 '데이터셋<TAB>id' 줄 중 이 데이터셋(파일 이름) 줄의 문항만 생성한다.
+    # 바닥값 후보로 문맥이 바뀌는 문항만 다시 생성할 때 쓴다(eval/refusal.py changed가 쓰는 형식). 다른 셋이
+    # 같은 id를 써도 그 셋 줄은 받지 않는다. id만 적은 옛 형식은 거부한다(eval/common.py read_ids_file). 이
+    # 데이터셋 줄인데 데이터셋에 없는 id는 목록과 질문셋이 어긋났다는 뜻이라 경고한다. 순서는 데이터셋 순서
+    # 그대로이고, dataset_index는 걸러 낸 목록 안의 위치가 된다(두 팔의 문항은 (데이터셋, id)로 맞춘다).
     if args.ids_file is not None:
-        wanted = set(args.ids_file.read_text(encoding="utf-8").split())
+        try:
+            wanted = read_ids_file(args.ids_file, args.dataset.name)
+        except ValueError as error:
+            raise SystemExit(str(error)) from error
+        missing = sorted(wanted - {q.id for q in questions})
+        if missing:
+            print(
+                f"warning: {args.ids_file} lists {len(missing)} ids of {args.dataset.name} "
+                f"that are not in it: {', '.join(missing)}"
+            )
         questions = [q for q in questions if q.id in wanted]
         if not questions:
             print(f"no questions of {args.dataset.name} are listed in {args.ids_file}; nothing to do")
@@ -312,6 +339,10 @@ async def main(args: argparse.Namespace) -> int:
     vector_checks: list[dict] = []
     languages = sorted({detect_language(q.question) for q in questions})
     async with async_session_maker() as db:
+        # 생성 전에 이 DB의 코퍼스(문서의 원본 커밋별 수, 마지막 적재 시각, 언어별 청크 수)를 읽어 meta와
+        # 리포트에 남긴다(eval/common.py). 다른 커밋으로 다시 적재한 DB로 잰 실행을 기록만으로 구별하려는
+        # 것이다.
+        corpus = await corpus_snapshot(db)
         # 측정 전에 이 DB의 저장 벡터가 지금 설정된 모델로 만든 것인지 확인한다. 교차언어면 영어 청크도 한국어
         # 모델로 만든 것이어야 한다.
         if not args.no_vector_check:  # eval/retrieval_checks.py 참고
@@ -357,7 +388,8 @@ async def main(args: argparse.Namespace) -> int:
     # 문항별 생성 기록을 쓰고, 실행 조건을 옆의 .meta.json에 남긴다. 같은 태그로 다시 돌리면 덮어쓴다.
     # meta에는 날짜, 커밋, DB 이름, 언어별 임베딩 모델 identity, 벡터 확인 결과, Ollama 버전, 실행 직후
     # /api/ps(모델이 GPU에 다 올라갔는지 확인용), 모델 digest(태그만으로는 모델이 고정되지 않음), think·언어
-    # 가드 설정이 들어간다.
+    # 가드 설정이 들어간다. 2026-10-29부터는 출처 정보도 넣는다: 질문셋 파일의 sha256, --ids-file로 일부만
+    # 생성했으면 그 파일, DB 코퍼스 요약(corpus). 그 전 기록에는 이 필드가 없다(고쳐 넣지 않음).
     gen_path = RUNS_DIR / f"{args.tag}.gen.jsonl"
     write_jsonl(gen_path, records)
     state = await ollama_state(settings.ollama_base_url) if ollama else {}
@@ -376,6 +408,9 @@ async def main(args: argparse.Namespace) -> int:
         "embedding_models": {lang: embedder(lang).identity for lang in languages},
         "vector_checks": vector_checks,
         "dataset": args.dataset.name,
+        "dataset_sha256": {args.dataset.name: dataset_hash},
+        "ids_file": display_path(args.ids_file) if args.ids_file is not None else None,
+        "corpus": corpus,
         "order": args.order,
         "seed": args.seed if args.order == "shuffle" else None,
         "git_commit": git_commit(),
@@ -416,7 +451,7 @@ async def main(args: argparse.Namespace) -> int:
             count_tokens=judge_counter,
         )
 
-    report = render_report(args.tag, gen_meta, records, judgments, judge_meta)
+    report = with_corpus_line(render_report(args.tag, gen_meta, records, judgments, judge_meta), corpus)
     timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
     path = write_report(f"answer_eval_{args.tag}_{timestamp}.md", report)  # 출력하기 전에 먼저 저장
     print(report)
@@ -465,7 +500,8 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--ids-file", type=Path, default=None,
-        help="이 파일에 적힌 문항 id(한 줄에 하나)만 생성한다(docs/experiments.md v15 I4)",
+        help="이 파일의 '데이터셋 파일 이름<TAB>문항 id' 줄 중 --dataset과 이름이 같은 줄의 문항만 생성한다"
+        "(eval.refusal changed가 쓰는 형식, docs/experiments.md v15 I4). id만 적은 옛 형식은 거부한다",
     )
     # 콘솔 코드 페이지에 답의 어떤 글자가 없더라도 오래 걸리는 실행이 그 때문에 끝나면 안 된다.
     sys.stdout.reconfigure(errors="backslashreplace")

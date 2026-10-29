@@ -5,7 +5,8 @@
     python -m eval.refusal floors --tag v15_i4_floors \
         --answerable <답 있는 dev 검색 기록 ...> --unanswerable <답 없는 dev 검색 기록 ...>
 
-    # 고른 바닥값으로 문맥(상위 5개)이 바뀌는 문항 id를 언어별 파일로 쓴다(다시 생성할 문항)
+    # 고른 바닥값으로 문맥(상위 5개)이 바뀌는 문항을 '데이터셋<TAB>id' 줄로 쓴다(다시 생성할 문항.
+    # eval/run_answer_eval.py --ids-file이 자기 데이터셋 줄만 읽는다)
     python -m eval.refusal changed --floors eval/runs/v15_i4_floors.json --out <ids.txt> \
         <retrieval.jsonl ...>
 
@@ -44,7 +45,7 @@ from pathlib import Path
 
 from app.services.generation import is_refusal_answer
 from app.services.retrieval import SCORE_FLOOR, page_key
-from eval.common import read_json, read_jsonl, write_json, write_report
+from eval.common import format_ids_lines, read_json, read_jsonl, write_json, write_report
 from eval.run_judge import judged_path
 
 # 앱이 답변에 쓰는 상위 개수(/query/ask 기본 top_k, 평가의 --top-k 5).
@@ -132,13 +133,23 @@ def floors_command(answerable: list[dict], unanswerable: list[dict]) -> dict:
     return out
 
 
-# 고른 바닥값으로 문맥이 바뀌는 문항 id(다시 생성할 문항). 후보 바닥값이 없는 언어의 문항은 바뀌지 않는다.
-def changed_ids(records: list[dict], floors: dict[str, float]) -> list[str]:
-    return [
-        r["id"]
-        for r in records
-        if r["language"] in floors and floor_effect(r, floors[r["language"]])["changed"]
-    ]
+# 고른 바닥값으로 문맥이 바뀌는 문항(다시 생성할 문항)을 (데이터셋 이름, id) 짝으로 돌려준다. 후보 바닥값이
+# 없는 언어의 문항은 바뀌지 않는다. 데이터셋 이름은 검색 기록의 dataset 필드(질문셋 파일 이름)다.
+# 왜 짝인가: test3b 영어·한국어처럼 다른 셋이 같은 id를 쓰므로, id만 돌려주면 한 셋에서만 문맥이 바뀐 문항이
+# 다른 셋에서도 다시 생성된다(v15 I4에서 8문항. 그 영향은 docs/experiments.md I4 test 결과에 적음). 문맥이
+# 바뀐 기록에 dataset 이름이 없으면 어느 셋의 문항인지 알 수 없으므로 ValueError(eval/run_retrieval_eval.py로
+# 다시 낸 기록에는 늘 있다).
+def changed_ids(records: list[dict], floors: dict[str, float]) -> list[tuple[str, str]]:
+    pairs = []
+    for r in records:
+        if r["language"] not in floors or not floor_effect(r, floors[r["language"]])["changed"]:
+            continue
+        if not r.get("dataset"):
+            raise ValueError(
+                f"retrieval record {r['id']!r} has no dataset name; rerun eval.run_retrieval_eval"
+            )
+        pairs.append((r["dataset"], r["id"]))
+    return pairs
 
 
 # 생성 기록 + 같은 라벨의 판정을 (데이터셋, id) → (기록, 판정) 사전으로 읽는다.
@@ -283,7 +294,10 @@ def main() -> int:
     fp.add_argument("--tag", required=True)
     fp.add_argument("--answerable", type=Path, nargs="+", required=True)
     fp.add_argument("--unanswerable", type=Path, nargs="+", required=True)
-    cp = sub.add_parser("changed", help="고른 바닥값으로 문맥이 바뀌는 문항 id를 쓴다")
+    cp = sub.add_parser(
+        "changed",
+        help="고른 바닥값으로 문맥이 바뀌는 문항을 '데이터셋<TAB>id' 줄로 쓴다(run_answer_eval --ids-file용)",
+    )
     cp.add_argument("--floors", type=Path, required=True)
     cp.add_argument("--out", type=Path, required=True)
     cp.add_argument("retrieval", type=Path, nargs="+")
@@ -314,11 +328,12 @@ def main() -> int:
         print(f"candidate floors: {result['candidate_floors']}")
         return 0
     if args.command == "changed":
+        # 줄 끝을 LF로 고정해(newline="\n") Windows에서 써도 커밋된 다른 기록처럼 같은 바이트가 된다.
         floors = read_json(args.floors)["candidate_floors"]
-        ids = [i for p in args.retrieval for i in changed_ids(read_jsonl(p), floors)]
+        pairs = [pair for p in args.retrieval for pair in changed_ids(read_jsonl(p), floors)]
         args.out.parent.mkdir(parents=True, exist_ok=True)
-        args.out.write_text("".join(f"{i}\n" for i in ids), encoding="utf-8")
-        print(f"{len(ids)} items change context -> {args.out}")
+        args.out.write_text(format_ids_lines(pairs), encoding="utf-8", newline="\n")
+        print(f"{len(pairs)} items change context -> {args.out}")
         return 0
     if args.command == "dev":
         result = dev_command(

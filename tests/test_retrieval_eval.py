@@ -5,17 +5,24 @@
 # 확인·실행 계획), 기록 분석(eval/retrieval_runs.py의 바닥값 규칙·두 실행 비교).
 # [왜 중요한가] 이 도구들의 숫자로 한국어 임베딩 교체를 결정했다(docs/experiments.md v12, v13 단계 B). Hit
 # 정의가 이전과 달라지거나, 다른 모델의 DB를 그대로 재거나, 바닥값 규칙이 틀리면 결정이 틀어진다.
-# [import] SQLAlchemy text는 세션 설정(SHOW enable_indexscan)을 직접 읽는 데 쓴다.
+# [import] SQLAlchemy text는 세션 설정(SHOW enable_indexscan)을 직접 읽는 데 쓴다. async_sessionmaker는 평가
+# main이 여는 DB 세션을 테스트 DB로 바꿔 끼울 때 쓴다.
+
+import argparse
+import hashlib
+from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import text
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
 # 테스트 데이터로 넣을 문서·청크 모델과 적재와 같은 임베딩 입력 함수, 테스트 대상 평가 모듈들, conftest의 가짜
 # 임베딩과 벡터 차원.
 from app.models.chunk import Chunk
 from app.models.document import Document
 from app.services.chunking import build_embedding_text
-from eval import retrieval_runs
+from eval import retrieval_runs, run_retrieval_eval
+from eval.common import corpus_line, corpus_snapshot, dataset_sha256, read_json, write_jsonl
 from eval.retrieval_checks import (
     VectorModelMismatch,
     check_stored_vectors,
@@ -198,3 +205,118 @@ async def test_dense_plan_names_the_scan_and_exact_search_avoids_the_index(db_se
     assert any(node.startswith("Seq Scan on chunks") for node in nodes)
     assert not any("hnsw" in node for node in nodes)
     assert await dense_search_plan(db_session, "en") == []  # 계획을 세울 영어 청크가 없다
+
+
+# 질문셋 해시는 줄 끝을 LF로 맞춘 바이트의 sha256이다. Windows에서 core.autocrlf로 CRLF 체크아웃을 해도 같은
+# 커밋의 같은 질문셋이면 같은 값이 나와야 기록끼리 비교할 수 있다.
+def test_dataset_sha256_ignores_crlf_checkouts(tmp_path):
+    content = '{"id": "a"}\n{"id": "b"}\n'
+    lf, crlf = tmp_path / "lf.jsonl", tmp_path / "crlf.jsonl"
+    lf.write_bytes(content.encode("utf-8"))
+    crlf.write_bytes(content.replace("\n", "\r\n").encode("utf-8"))
+    assert dataset_sha256(lf) == dataset_sha256(crlf) == hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+
+# 코퍼스 요약: 문서의 원본 커밋(source_commit_sha)별 문서 수, 마지막 적재 시각(max fetched_at), 언어별 청크
+# 수. 다른 커밋으로 일부만 다시 적재한 DB는 커밋이 둘로 보인다. 리포트 머리 한 줄은 커밋을 7자리로 줄여
+# 적는다.
+@pytest.mark.asyncio
+async def test_corpus_snapshot_counts_documents_per_source_commit_and_chunks_per_language(db_session):
+    embedder = FakeEmbeddingService()
+    seeds = (
+        ("docs/en/docs/a.md", "a" * 40, datetime(2026, 10, 1, tzinfo=UTC), ["en", "en"]),
+        ("docs/en/docs/b.md", "a" * 40, datetime(2026, 10, 2, tzinfo=UTC), []),
+        ("docs/ko/docs/a.md", "b" * 40, datetime(2026, 10, 3, 4, 5, tzinfo=UTC), ["ko"]),
+    )
+    for path, sha, fetched_at, languages in seeds:
+        document = Document(
+            source_path=path, title="A", source_commit_sha=sha, content_hash="h", fetched_at=fetched_at
+        )
+        db_session.add(document)
+        await db_session.flush()
+        for index, language in enumerate(languages):
+            db_session.add(
+                Chunk(
+                    document_id=document.id,
+                    chunk_index=index,
+                    heading_path="A",
+                    content=f"본문 {index}",
+                    token_count=3,
+                    embedding=embedder.embed_passages([f"본문 {index}"])[0],
+                    language=language,
+                )
+            )
+    await db_session.commit()
+
+    snapshot = await corpus_snapshot(db_session)
+
+    assert snapshot == {
+        "documents_by_source_commit": {"a" * 40: 2, "b" * 40: 1},
+        "last_fetched_at": "2026-10-03T04:05:00+00:00",
+        "chunks_by_language": {"en": 2, "ko": 1},
+    }
+    assert corpus_line(snapshot) == (
+        "- corpus: source commits aaaaaaa (2 documents), bbbbbbb (1 document); "
+        "last fetched 2026-10-03T04:05:00+00:00; chunks en 2, ko 1"
+    )
+    assert corpus_line(
+        {"documents_by_source_commit": {}, "last_fetched_at": None, "chunks_by_language": {}}
+    ) == ("- corpus: no documents")
+
+
+# 검색 평가 실행 한 번(main)을 테스트 DB와 가짜 임베딩으로 돌린다. meta에 질문셋 파일마다의 sha256과 DB 코퍼스
+# 요약이 남고, 리포트 머리의 database 줄 바로 아래에 코퍼스 줄이 있다.
+@pytest.mark.asyncio
+async def test_retrieval_eval_records_question_set_hashes_and_the_corpus(
+    db_engine, db_session, tmp_path, monkeypatch
+):
+    embedder = FakeEmbeddingService()
+    await _seed_embedded_chunk(db_session, embedder, language="en")
+    datasets = []
+    for name in ("qa_one.jsonl", "qa_two.jsonl"):
+        path = tmp_path / name
+        write_jsonl(
+            path,
+            [
+                {
+                    "id": f"{name[:6]}1",
+                    "question": f"Where are path parameters declared ({name})?",
+                    "expected_source_paths": ["docs/en/docs/a.md"],
+                    "reference_answer": "In the path string.",
+                }
+            ],
+        )
+        datasets.append(path)
+
+    def write_report_here(filename: str, content: str):
+        path = tmp_path / filename
+        path.write_text(content, encoding="utf-8")
+        return path
+
+    monkeypatch.setattr(run_retrieval_eval, "async_session_maker", async_sessionmaker(db_engine))
+    monkeypatch.setattr(run_retrieval_eval, "get_embedding_service", lambda language: embedder)
+    monkeypatch.setattr(run_retrieval_eval, "RUNS_DIR", tmp_path / "runs")
+    monkeypatch.setattr(run_retrieval_eval, "write_report", write_report_here)
+    args = argparse.Namespace(
+        top_k=10,
+        tag="prov",
+        mode="dense",
+        dataset=datasets,
+        lexical_weight=0.75,
+        rerank_pool=None,
+        reranker_model=None,
+        score_floor=None,
+        cross_lingual=False,
+        exact=False,
+        no_vector_check=False,
+    )
+
+    await run_retrieval_eval.main(args)
+
+    meta = read_json(tmp_path / "runs" / "prov.retrieval.meta.json")
+    assert meta["dataset_sha256"] == {path.name: dataset_sha256(path) for path in datasets}
+    assert meta["corpus"]["documents_by_source_commit"] == {"x": 1}
+    assert meta["corpus"]["chunks_by_language"] == {"en": 1}
+    report = next(tmp_path.glob("retrieval_eval_prov_*.md")).read_text(encoding="utf-8").splitlines()
+    at = next(i for i, line in enumerate(report) if line.startswith("- database:"))
+    assert report[at + 1].startswith("- corpus: source commit x (1 document); last fetched ")

@@ -3,8 +3,8 @@
 v10까지 Ollama 판정 호출은 temperature 0만 지정해서 Ollama 기본 문맥 4096토큰에서 돌았고, Ollama는 너무
 긴 프롬프트를 알리지 않고 잘라 낸다. 이 테스트들은 v11 판정(num_ctx 8192, truncate=false, 보내기 전 길이
 확인, 토크나이저 수와 나란히 남기는 prompt_eval_count), 비교용으로 남긴 legacy 판정, 그리고 답을 다시
-생성하지 않고 판정만 다시 돌릴 수 있게 하는 문항별 JSONL을 고정한다. Ollama, DB, 토크나이저 다운로드가
-필요 없다.
+생성하지 않고 판정만 다시 돌릴 수 있게 하는 문항별 JSONL을 고정한다. Ollama와 토크나이저 다운로드가 필요
+없다. 평가 실행 전체(main)를 가짜 모델로 한 번 돌리는 테스트 하나만 테스트 DB를 쓴다.
 """
 
 # [테스트 묶음] 답변 평가 하네스(eval/judge.py, eval/run_answer_eval.py, eval/run_judge.py,
@@ -16,18 +16,25 @@ v10까지 Ollama 판정 호출은 temperature 0만 지정해서 Ollama 기본 �
 # [방법] 실제 Ollama·DB·토크나이저 없이 돈다. Ollama는 httpx.MockTransport로, 검색은 monkeypatch로,
 # 토크나이저는 가짜 클래스로 바꾼다.
 
+import argparse
 import json
 import uuid
 
 # httpx: MockTransport로 Ollama HTTP 응답을 흉내 낸다. pytest: 예외 검사(raises)와 근사 비교(approx).
+# async_sessionmaker: 평가 main이 여는 DB 세션을 테스트 DB로 바꿔 끼울 때 쓴다.
 import httpx
 import pytest
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
-# 테스트 대상인 평가 모듈들과, 가짜 생성기·검색 결과를 만들 앱의 데이터 클래스를 가져온다.
+# 테스트 대상인 평가 모듈들과, 가짜 생성기·검색 결과를 만들 앱의 데이터 클래스를 가져온다. 문서·청크 모델과
+# 적재와 같은 임베딩 입력 함수, conftest의 가짜 임베딩·생성기는 main을 한 번 돌리는 테스트가 쓴다.
+from app.models.chunk import Chunk
+from app.models.document import Document
+from app.services.chunking import build_embedding_text
 from app.services.generation import GenerationResult
 from app.services.retrieval import RetrievedChunk
 from eval import compare_judgments, judge, run_answer_eval, run_judge
-from eval.common import EvalQuestion, read_jsonl, write_jsonl
+from eval.common import EvalQuestion, dataset_sha256, read_ids_file, read_jsonl, write_jsonl
 from eval.judge import (
     JUDGE_SCHEMA,
     JudgeConfig,
@@ -40,6 +47,7 @@ from eval.judge import (
     truncation_status,
 )
 from eval.tokens import ChatTokenCounter
+from tests.conftest import FakeEmbeddingService, FakeGenerationService
 
 # 판정 스키마에 맞는 정상 점수 한 벌. 여러 테스트가 가짜 판정 응답으로 쓴다.
 GOOD_SCORES = {"faithfulness_score": 4, "hallucinated": False, "correctness_score": 5}
@@ -665,3 +673,109 @@ def test_report_notes_the_generation_settings_and_diagnostics():
     assert "- think: False, language guard: on (regenerated 1/2)" in report
     assert "done_reason=length: 1/2" in report
     assert "citation replies breaking the schema: 1/2" in report
+
+
+# --ids-file은 '데이터셋<TAB>id' 줄 중 자기 데이터셋 줄만 받는다(eval/refusal.py changed가 쓰는 형식). 빈 줄과
+# Windows 줄 끝은 무시한다. id만 적은 옛 형식은 다른 데이터셋의 같은 id까지 다시 생성하게 하므로(v15 I4) 받지
+# 않고, 칸이 둘이 아닌 줄도 거부한다.
+def test_ids_file_keeps_only_its_dataset_lines_and_refuses_the_old_format(tmp_path):
+    path = tmp_path / "ids.txt"
+    path.write_bytes(b"qa_test3b_en.jsonl\tn010\nqa_test3b_ko.jsonl\tn010\r\n\nqa_test3b_ko.jsonl\tn034\n")
+    assert read_ids_file(path, "qa_test3b_ko.jsonl") == {"n010", "n034"}
+    assert read_ids_file(path, "qa_test3b_en.jsonl") == {"n010"}
+    assert read_ids_file(path, "qa_dev.jsonl") == set()
+    for bad in (b"n010\nn034\n", b"qa_test3b_ko.jsonl\tn010\textra\n", b"qa_test3b_ko.jsonl\t\n"):
+        path.write_bytes(bad)
+        with pytest.raises(ValueError, match="dataset"):
+            read_ids_file(path, "qa_test3b_ko.jsonl")
+
+
+# 평가 실행 한 번(main)을 테스트 DB와 가짜 임베딩·생성기로 돌린다(Ollama 상태 조회도 가짜). (1) --ids-file이
+# 이 데이터셋 줄의 문항만 생성하고, 이 데이터셋 줄인데 데이터셋에 없는 id는 경고한다. (2) meta에 질문셋 파일의
+# sha256, DB 코퍼스(문서의 원본 커밋별 수·마지막 적재 시각·언어별 청크 수), 쓴 ids 파일이 남는다. (3) 리포트
+# 머리의 database 줄 바로 아래에 코퍼스 줄이 있다.
+@pytest.mark.asyncio
+async def test_answer_eval_generates_only_its_listed_items_and_records_provenance(
+    db_engine, db_session, tmp_path, monkeypatch, capsys
+):
+    embedder = FakeEmbeddingService()
+    document = Document(
+        source_path="docs/en/docs/a.md", title="A", source_commit_sha="c" * 40, content_hash="h"
+    )
+    db_session.add(document)
+    await db_session.flush()
+    heading, content = "A", "Declare query parameters as function parameters."
+    db_session.add(
+        Chunk(
+            document_id=document.id,
+            chunk_index=0,
+            heading_path=heading,
+            content=content,
+            token_count=8,
+            embedding=embedder.embed_passages([build_embedding_text(heading, content)])[0],
+            language="en",
+        )
+    )
+    await db_session.commit()
+
+    dataset = tmp_path / "qa_test3b_en.jsonl"
+    write_jsonl(
+        dataset,
+        [
+            {
+                "id": item_id,
+                "question": f"How do I declare query parameters ({item_id})?",
+                "expected_source_paths": ["docs/en/docs/a.md"],
+                "reference_answer": "As function parameters.",
+            }
+            for item_id in ("n001", "n002")
+        ],
+    )
+    ids_file = tmp_path / "changed.txt"
+    ids_file.write_bytes(b"qa_test3b_ko.jsonl\tn001\nqa_test3b_en.jsonl\tn002\nqa_test3b_en.jsonl\tn999\n")
+
+    async def no_ollama(base_url: str) -> dict:
+        return {}
+
+    def write_report_here(filename: str, content: str):
+        path = tmp_path / filename
+        path.write_text(content, encoding="utf-8")
+        return path
+
+    monkeypatch.setattr(run_answer_eval, "async_session_maker", async_sessionmaker(db_engine))
+    monkeypatch.setattr(run_answer_eval, "get_embedding_service", lambda language: embedder)
+    monkeypatch.setattr(run_answer_eval, "build_generator", lambda settings: FakeGenerationService())
+    monkeypatch.setattr(run_answer_eval, "ollama_state", no_ollama)
+    monkeypatch.setattr(run_answer_eval, "RUNS_DIR", tmp_path / "runs")
+    monkeypatch.setattr(run_answer_eval, "write_report", write_report_here)
+    args = argparse.Namespace(
+        top_k=5,
+        tag="ids",
+        skip_judge=True,
+        mode="dense",
+        dataset=dataset,
+        judge_model=None,
+        judge_num_ctx=8192,
+        judge_label=None,
+        order="dataset",
+        seed=20261003,
+        no_token_count=True,
+        cross_lingual=False,
+        score_floor=None,
+        no_vector_check=False,
+        ids_file=ids_file,
+    )
+
+    assert await run_answer_eval.main(args) == 0
+
+    assert [r["id"] for r in read_jsonl(tmp_path / "runs" / "ids.gen.jsonl")] == ["n002"]
+    assert "n999" in capsys.readouterr().out
+    meta = json.loads((tmp_path / "runs" / "ids.gen.meta.json").read_text(encoding="utf-8"))
+    assert meta["dataset_sha256"] == {"qa_test3b_en.jsonl": dataset_sha256(dataset)}
+    assert meta["ids_file"] == run_answer_eval.display_path(ids_file)
+    assert meta["corpus"]["documents_by_source_commit"] == {"c" * 40: 1}
+    assert meta["corpus"]["chunks_by_language"] == {"en": 1}
+    assert meta["corpus"]["last_fetched_at"]
+    report = next(tmp_path.glob("answer_eval_ids_*.md")).read_text(encoding="utf-8").splitlines()
+    at = next(i for i, line in enumerate(report) if line.startswith("- database:"))
+    assert report[at + 1].startswith("- corpus: source commit ccccccc (1 document)")
