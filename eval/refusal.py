@@ -20,6 +20,13 @@
         --used-retrieval <retrieval.jsonl ...> --c-adopted true|false
 
     # dev·test 모두 --by-kind를 더하면 거절 수를 질문 유형(near_miss/adjacent)별로도 보고한다(질문 풀 5)
+
+    # v16-B(생성 쪽 거절 지시, docs/experiments.md v16-B): A(REFUSAL_STYLE=legacy)와 B(fixed)를 비교한다.
+    # dev 관문(test를 열지 정함, test 기록 없이)
+    python -m eval.refusal prompt-arms --tag v16b_dev --label J2v16b --report-label J1v16b \
+        --a-ans <답 있는 dev gen ...> --b-ans <...> --a-na <답 없는 dev gen ...> --b-na <...>
+    # test 결정(위와 같은 dev 기록 + 답 없는 test 기록)
+    python -m eval.refusal prompt-arms --tag v16b_test ... --a-test <gen ...> --b-test <gen ...>
 """
 
 # [파일 역할] v15 I4의 분석·결정기. 답 없는 질문(문서가 다루지 않는 질문)에서 시스템이 모른다고 하는지
@@ -42,21 +49,40 @@
 # 유형이 한 셋에 섞여서, 합계만 보면 비교적 쉬운 인접 주제의 거절이 near-miss에서 지어낸 답을 가리기
 # 때문이다. 기본은 끔: 커밋된 v15 I4 결정 기록(eval/runs/v15_i4_dev.json·v15_i4_test.json)은 이 열 없이
 # 쓰였고, 같은 기록을 다시 세면 그 파일과 완전히 같아야 하기 때문이다(tests/test_v15_eval.py의 재집계).
+# [v16-B] prompt-arms는 생성 쪽 거절 지시의 두 팔(A = 지금 프롬프트, B = 언어별 고정 거절문)을 측정 전에
+# 등록한 규칙(docs/experiments.md v16-B)대로 비교한다. test 기록 없이 부르면 dev 관문(답 없는 test를 열지)을,
+# test 기록과 함께 부르면 채택 여부를 낸다. 규칙의 문턱·셋·멈춤 조건은 아래 상수와 tests/test_v16_eval.py가
+# 고정한다.
 
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import re
+import statistics
 import sys
+from collections import Counter
 from collections.abc import Iterable
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
-from app.services.generation import is_refusal_answer
+from app.services.generation import FIXED_REFUSAL, is_refusal_answer
 from app.services.retrieval import SCORE_FLOOR, page_key
-from eval.common import format_ids_lines, read_json, read_jsonl, write_json, write_report
-from eval.run_judge import judged_path
+from eval.common import (
+    RUNS_DIR,
+    dataset_sha256,
+    format_ids_lines,
+    git_commit,
+    read_json,
+    read_jsonl,
+    write_json,
+    write_report,
+)
+from eval.compare_judgments import paired_bootstrap_ci
+from eval.judge import answer_sha1
+from eval.run_judge import judged_path, meta_path
 
 # 앱이 답변에 쓰는 상위 개수(/query/ask 기본 top_k, 평가의 --top-k 5).
 CONTEXT_K = 5
@@ -339,14 +365,563 @@ def test_command(
     return result
 
 
-def _render(title: str, data: dict) -> str:
-    import json
+# --- v16-B: 생성 쪽 거절 지시 두 팔 (prompt-arms) ---
+# 등록한 규칙(docs/experiments.md v16-B, 측정 전에 커밋)을 코드로 옮긴 것이다.
+# 팔 A = REFUSAL_STYLE=legacy(지금), B = fixed(언어별 1인칭 고정 거절문 + 한국어 규칙의 거절 문장). 나머지
+# 생성 조건은 두 팔이 같아야 하고(아래 멈춤 조건), 거절은 생성 기록의 refusal 필드가 아니라 지금
+# 분류기(refused)로 다시 센다.
 
+# 등록한 셋: 파일 이름 → (문항 수, 언어). 답 있는 dev 7개(193문항), 답 없는 dev 4개(40), 답 없는 test 2개(94).
+# 문항 id는 13개 셋 전체에서 겹치지 않아 보고의 문항 목록을 id만으로 적는다(tests/test_v16_eval.py가 확인).
+SET_SIZES: dict[str, tuple[int, str]] = {
+    "qa_dev.jsonl": (32, "en"),
+    "qa_pool4_dev_en.jsonl": (40, "en"),
+    "qa_pool5_ans_dev_en.jsonl": (3, "en"),
+    "qa_dev_ko.jsonl": (32, "ko"),
+    "qa_dev2_ko.jsonl": (40, "ko"),
+    "qa_pool4_dev_ko.jsonl": (40, "ko"),
+    "qa_pool5_ans_dev_ko.jsonl": (6, "ko"),
+    "qa_pool4_na_dev_en.jsonl": (10, "en"),
+    "qa_pool5_na_dev_en.jsonl": (10, "en"),
+    "qa_pool4_na_dev_ko.jsonl": (10, "ko"),
+    "qa_pool5_na_dev_ko.jsonl": (10, "ko"),
+    "qa_pool5_na_test_en.jsonl": (52, "en"),
+    "qa_pool5_na_test_ko.jsonl": (42, "ko"),
+}
+ANS_DEV_SETS = frozenset(n for n in SET_SIZES if "_na_" not in n)
+NA_DEV_SETS = frozenset(n for n in SET_SIZES if "_na_dev_" in n)
+TEST_SETS = frozenset(n for n in SET_SIZES if "_na_test_" in n)
+# 조건 3(정확도 합)에 넣는 답 있는 dev 184문항(영어 72, 한국어 112). 질문 풀 5의 답 있는 near-miss(한국어 6,
+# 영어 3)는 거절 과잉(조건 2)과 생성 시간(조건 6)에만 넣는다(정확도 합에서는 보고만).
+ACCURACY_SETS = frozenset(
+    {"qa_dev.jsonl", "qa_pool4_dev_en.jsonl", "qa_dev_ko.jsonl", "qa_dev2_ko.jsonl", "qa_pool4_dev_ko.jsonl"}
+)
+LANGUAGES = ("en", "ko")
+# 조건 1: 답 없는 test의 거절 수 B − A 하한. 계획의 '30문항 기준'(한국어 +5, 영어 −1)을 실제 test 크기(한국어
+# 42, 영어 52)에 같은 비율로 맞춰 올림한 값(5 × 42/30 = 7.0 → 7, −1 × 52/30 = −1.73 → −1)이다. 거절 수가
+# 정수라 영어는 비율로 맞춰도 −1 그대로다. 측정 전에 정한 값이라 test 크기가 다르면 결정하지 않는다(멈춤).
+MIN_TEST_GAIN = {"ko": 7, "en": -1}
+MAX_EXTRA_FALSE_REFUSALS = 1  # 조건 2: '판정 ≥ 4인데 거절' B ≤ A + 1 (v15 I4 (c)와 같은 크기)
+MAX_EXTRA_REFUSALS = 2  # 조건 2: 답 있는 dev에서 거절로 분류된 답 B ≤ A + 2
+ACCURACY_TOLERANCE = 2  # 조건 3: 언어별 정확도 합 B ≥ A − 2 (v14·v15 I3와 같은 폭)
+BOUNDARY_WIDTH = 1  # 판정 절차 규칙(v16부터)의 경계 규칙: 1회 판정 값이 한계와 1점 안이면 두 번 더 판정
+MAX_EXTRA_P50_MS = 500.0  # 조건 6: 답 있는 dev 생성 시간 중앙값 B ≤ A + 0.5초
+# 등록한 '나머지는 지금 기본값'(두 팔 모두). 생성 meta(eval/run_answer_eval.py)의 값과 같아야 한다.
+REGISTERED_META: dict = {
+    "provider": "ollama",
+    "model": "a.x-4.0-light:q4_k_m",
+    "database": "ragdb",
+    "top_k": 5,
+    "retrieval_mode": "dense",
+    "cross_lingual": False,
+    "score_floor": 0.3,
+    "ids_file": None,
+    "order": "dataset",
+    "think": None,
+    "language_guard": True,
+    "citation_mode": "separate",
+    "refuse_without_context": False,
+    "empty_citations_on_refusal": True,
+}
+# 같은 셋의 A·B 실행이 같아야 하는 meta 키(거절 지시 꼴 refusal_style만 팔마다 다름). 같은 세션에서 A → B로
+# 돌리므로 코드 커밋도 같아야 한다.
+SAME_META_KEYS = (
+    *REGISTERED_META,
+    "model_digest",
+    "embedding_models",
+    "dataset_sha256",
+    "corpus",
+    "ollama_version",
+    "git_commit",
+)
+# 한 단계(dev와 test)의 모든 실행이 같아야 하는 키: 본 DB 상태(코퍼스 요약)와 모델. 사이에 다시 적재했거나
+# 모델을 바꿨으면 dev와 test가 다른 시스템을 잰 것이다.
+STAGE_META_KEYS = ("database", "corpus", "embedding_models", "model_digest", "ollama_version")
+# 판정 → 종료 코드(명령행). 0 test 열기·채택, 2 관문 탈락·채택 안 함, 3 멈춤(결정 안 함), 4 경계 규칙 필요.
+VERDICT_EXIT = {"open_test": 0, "adopt": 0, "gate_failed": 2, "reject": 2, "stop": 3, "boundary": 4}
+
+# 시스템 프롬프트의 2인칭 지시('say you don't know')를 그대로 베낀 영어 답의 첫머리(조건 5). 둥근 따옴표도
+# 받는다.
+_YOU_DONT_KNOW_RE = re.compile(r"you (?:do not|don't|don’t) know", re.IGNORECASE)
+
+
+# 답이 (앞 공백을 떼고) "You don't know"로 시작하는지. "If you don't know …"처럼 중간에 있는 것은 세지 않는다.
+def starts_with_you_dont_know(answer: str) -> bool:
+    return bool(_YOU_DONT_KNOW_RE.match(answer.lstrip()))
+
+
+# 고정 거절문을 어떻게 썼는지(보고용): exact(앞뒤 공백을 뗀 답이 그 언어의 고정 문장과 같음), prefix(고정
+# 문장으로 시작하고 뒤에 더 씀), other_language(다른 언어의 고정 문장을 씀. 한국어 질문에 영어 문장을 쓰면
+# 한국어 분류기가 거절로 세지 않음), none(그 밖).
+def fixed_sentence_use(answer: str, language: str) -> str:
+    text = answer.strip()
+    own = FIXED_REFUSAL["ko" if language == "ko" else "en"]
+    other = FIXED_REFUSAL["en" if language == "ko" else "ko"]
+    if text == own:
+        return "exact"
+    if text.startswith(own):
+        return "prefix"
+    if other in text:
+        return "other_language"
+    return "none"
+
+
+# 한 팔의 생성 기록. 각 묶음은 (데이터셋 파일 이름, 문항 id) → (생성 기록, 결정 판정 또는 None).
+# ans: 답 있는 dev(결정 판정이 있어야 함), na: 답 없는 dev, test: 답 없는 test(dev 관문에서는 비어 있음),
+# report: 답 있는 dev의 보고용 판정(J1), metas: 데이터셋 파일 이름 → 생성 meta, files: 읽은 파일(출처 기록용).
+@dataclass
+class PromptArm:
+    ans: dict = field(default_factory=dict)
+    na: dict = field(default_factory=dict)
+    test: dict = field(default_factory=dict)
+    report: dict = field(default_factory=dict)
+    metas: dict = field(default_factory=dict)
+    files: list = field(default_factory=list)
+
+
+# 생성 기록 파일들과 그 옆의 meta(<기록>.meta.json), 판정(<기록>.<라벨>.judge.jsonl)을 읽어 한 팔을 만든다.
+# 같은 (데이터셋, id)가 두 번 나오면(같은 셋 파일을 두 번 넘김) ValueError.
+def load_prompt_arm(
+    ans: list[Path], na: list[Path], test: list[Path], label: str, report_label: str | None = None
+) -> PromptArm:
+    arm = PromptArm()
+    for group, paths in (("ans", ans), ("na", na), ("test", test)):
+        rows = getattr(arm, group)
+        for gen in paths:
+            arm.files.append(gen)
+            judged, reported = {}, {}
+            if judged_path(gen, label).exists():
+                judged = {j["id"]: j for j in read_jsonl(judged_path(gen, label))}
+                arm.files.append(judged_path(gen, label))
+            if report_label and judged_path(gen, report_label).exists():
+                reported = {j["id"]: j for j in read_jsonl(judged_path(gen, report_label))}
+                arm.files.append(judged_path(gen, report_label))
+            meta = read_json(meta_path(gen)) if meta_path(gen).exists() else {}
+            if meta:
+                arm.files.append(meta_path(gen))
+            for record in read_jsonl(gen):
+                key = (record["dataset"], record["id"])
+                if key in rows:
+                    raise ValueError(f"{gen.name}: {key} appears twice in one arm")
+                rows[key] = (record, judged.get(record["id"]))
+                if group == "ans":
+                    arm.report[key] = reported.get(record["id"])
+                arm.metas.setdefault(record["dataset"], meta)
+    return arm
+
+
+def _of(rows: dict, language: str) -> list[tuple[tuple[str, str], dict, dict | None]]:
+    return [(key, r, j) for key, (r, j) in sorted(rows.items()) if r.get("language") == language]
+
+
+def _score(judgment: dict | None) -> int | float:
+    return (judgment or {}).get("correctness_score") or UNJUDGED_SCORE
+
+
+def _p50(values: list) -> float | None:
+    known = [v for v in values if v is not None]
+    return statistics.median(known) if known else None
+
+
+def _all_rows(arm: PromptArm, groups: tuple[str, ...] = ("ans", "na", "test")) -> dict:
+    return {key: pair for group in groups for key, pair in getattr(arm, group).items()}
+
+
+# 멈춤 조건 1: 두 팔의 문항이 같고, 같은 문항은 같은 언어·같은 검색 청크(chunk_id 순서까지)를 받았는지. 같은
+# DB를 같은 질문으로 검색했으므로 달라지면 DB나 검색이 두 실행 사이에 바뀐 것이다(팔 차이에 검색 차이가 섞임).
+def _item_problems(a: PromptArm, b: PromptArm) -> list[str]:
+    problems = []
+    for group in ("ans", "na", "test"):
+        rows_a, rows_b = getattr(a, group), getattr(b, group)
+        only_a = sorted(k[1] for k in set(rows_a) - set(rows_b))
+        only_b = sorted(k[1] for k in set(rows_b) - set(rows_a))
+        if only_a or only_b:
+            problems.append(
+                f"{group}: items differ between the arms (only A {only_a[:10]}, only B {only_b[:10]})"
+            )
+        differ = [
+            key[1]
+            for key in sorted(set(rows_a) & set(rows_b))
+            if rows_a[key][0].get("language") != rows_b[key][0].get("language")
+            or [c.get("chunk_id") for c in rows_a[key][0].get("chunks") or []]
+            != [c.get("chunk_id") for c in rows_b[key][0].get("chunks") or []]
+        ]
+        if differ:
+            problems.append(f"{group}: {len(differ)} items got other chunks or language in B: {differ[:10]}")
+    return problems
+
+
+# 멈춤 조건 2: 생성 meta. A는 legacy, B는 fixed이고, 같은 셋의 두 실행은 SAME_META_KEYS가 같고, 둘 다 등록한
+# 기본값(REGISTERED_META)이며, 단계 안의 모든 실행이 같은 DB 상태·모델(STAGE_META_KEYS)이어야 한다.
+def _meta_problems(a: PromptArm, b: PromptArm) -> list[str]:
+    problems = []
+    for name, arm in (("A", a), ("B", b)):
+        for dataset in sorted({d for d, _ in _all_rows(arm)}):
+            if not arm.metas.get(dataset):
+                problems.append(f"{name} {dataset}: no generation meta")
+    for dataset in sorted(set(a.metas) & set(b.metas)):
+        ma, mb = a.metas[dataset], b.metas[dataset]
+        if not ma or not mb:
+            continue
+        for name, meta, style in (("A", ma, "legacy"), ("B", mb, "fixed")):
+            if meta.get("refusal_style") != style:
+                problems.append(
+                    f"{name} {dataset}: refusal_style {meta.get('refusal_style')!r}, expected {style!r}"
+                )
+            for key, value in REGISTERED_META.items():
+                if meta.get(key) != value:
+                    problems.append(f"{name} {dataset}: {key} is {meta.get(key)!r}, registered {value!r}")
+        problems += [
+            f"{dataset}: {key} differs between the arms"
+            for key in SAME_META_KEYS
+            if ma.get(key) != mb.get(key)
+        ]
+    metas = [meta for arm in (a, b) for meta in arm.metas.values() if meta]
+    for key in STAGE_META_KEYS:
+        if key == "embedding_models":
+            # 실행 meta의 embedding_models는 그 셋의 질문 언어만 담는다({"en": …} 또는 {"ko": …}).
+            # 그래서 언어별로 모아, 같은 언어에 다른 모델(이름·리비전·자르기 차원)이 섞였을 때만 멈춘다.
+            identities: dict[str, set] = {}
+            for meta in metas:
+                for language, identity in (meta.get(key) or {}).items():
+                    identities.setdefault(language, set()).add(identity)
+            differs = any(len(found) > 1 for found in identities.values())
+        else:
+            differs = (
+                len({json.dumps(meta.get(key), sort_keys=True, ensure_ascii=False) for meta in metas}) > 1
+            )
+        if differs:
+            problems.append(f"{key} differs between the runs of this stage")
+    return problems
+
+
+# 멈춤 조건 3: 답 있는 dev의 결정 판정. 두 팔의 모든 문항에 판정이 있고, 판정 오류·빈 점수·잘린 판정
+# 프롬프트가 없고, 판정한 답(answer_sha1)이 이 기록의 답과 같아야 한다.
+def _judge_problems(name: str, arm: PromptArm) -> list[str]:
+    missing, errors, other_answer, truncated = [], [], [], []
+    for key, (record, judgment) in sorted(arm.ans.items()):
+        if judgment is None:
+            missing.append(key[1])
+            continue
+        if judgment.get("error") or judgment.get("correctness_score") is None:
+            errors.append(key[1])
+        if judgment.get("answer_sha1") != answer_sha1(record["answer"]):
+            other_answer.append(key[1])
+        if judgment.get("truncation") == "truncated":
+            truncated.append(key[1])
+    labels = (
+        ("no decision judgment", missing),
+        ("judge error or no score", errors),
+        ("judgment of another answer", other_answer),
+        ("truncated judge prompt", truncated),
+    )
+    return [f"{name}: {what} for {len(ids)} items: {ids[:10]}" for what, ids in labels if ids]
+
+
+# 멈춤 조건 4(check_registered일 때): 셋 이름과 문항 수가 등록한 것과 같아야 한다.
+def _registered_problems(name: str, arm: PromptArm, has_test: bool) -> list[str]:
+    problems = []
+    for group, expected in (
+        ("ans", ANS_DEV_SETS),
+        ("na", NA_DEV_SETS),
+        ("test", TEST_SETS if has_test else frozenset()),
+    ):
+        counts = Counter(dataset for dataset, _ in getattr(arm, group))
+        if set(counts) != expected:
+            problems.append(
+                f"{name} {group}: sets {sorted(counts)} differ from the registered {sorted(expected)}"
+            )
+        for dataset, n in sorted(counts.items()):
+            if dataset in SET_SIZES and n != SET_SIZES[dataset][0]:
+                problems.append(f"{name} {dataset}: {n} items, registered {SET_SIZES[dataset][0]}")
+    return problems
+
+
+# 조건 2·3을 한 판정 라벨로 센다(결정 라벨, 또는 보고용 라벨). rows: (데이터셋, id) → (기록, 판정).
+def _judged_conditions(a_rows: dict, b_rows: dict) -> tuple[dict, dict]:
+    false_refusals: dict = {}
+    accuracy: dict = {}
+    for language in LANGUAGES:
+
+        def good_refused(rows: dict, lang: str = language) -> list[str]:
+            return [
+                key[1]
+                for key, r, j in _of(rows, lang)
+                if refused(r)
+                and (j or {}).get("correctness_score") is not None
+                and j["correctness_score"] >= GOOD_ANSWER_MIN
+            ]
+
+        fa, fb = good_refused(a_rows), good_refused(b_rows)
+        false_refusals[language] = {"a": fa, "b": fb, "pass": len(fb) <= len(fa) + MAX_EXTRA_FALSE_REFUSALS}
+        keys = [key for key, r, _ in _of(a_rows, language) if key[0] in ACCURACY_SETS and key in b_rows]
+        sum_a = sum(_score(a_rows[k][1]) for k in keys)
+        sum_b = sum(_score(b_rows[k][1]) for k in keys)
+        diff = sum_b - sum_a
+        accuracy[language] = {
+            "a": sum_a,
+            "b": sum_b,
+            "diff": diff,
+            "n": len(keys),
+            "pass": diff >= -ACCURACY_TOLERANCE,
+            "boundary": abs(diff + ACCURACY_TOLERANCE) <= BOUNDARY_WIDTH,
+        }
+        if keys:
+            mean, low, high = paired_bootstrap_ci([_score(b_rows[k][1]) - _score(a_rows[k][1]) for k in keys])
+            accuracy[language]["ci90_sum"] = [round(low * len(keys), 3), round(high * len(keys), 3)]
+            accuracy[language]["ci90_mean"] = [round(mean, 4), round(low, 4), round(high, 4)]
+    false_refusals["pass"] = all(false_refusals[lang]["pass"] for lang in LANGUAGES)
+    accuracy["pass"] = all(accuracy[lang]["pass"] for lang in LANGUAGES)
+    return false_refusals, accuracy
+
+
+def _refusal_counts(a_rows: dict, b_rows: dict) -> dict:
+    out = {}
+    for language in LANGUAGES:
+        ra, rb = _of(a_rows, language), _of(b_rows, language)
+        out[language] = {
+            "a": sum(refused(r) for _, r, _ in ra),
+            "b": sum(refused(r) for _, r, _ in rb),
+            "n": len(ra),
+            "a_by_kind": kind_breakdown(r for _, r, _ in ra),
+            "b_by_kind": kind_breakdown(r for _, r, _ in rb),
+        }
+    return out
+
+
+# 보고만(결정에 쓰지 않음): 등록한 '보고' 항목. 언어·유형별 거절 수, 고정 거절문을 쓴 방식, 답 길이·생성 시간
+# 중앙값, 비워진 인용 수, 출력 상한에서 잘린 답 수, 거절로 분류되지 않은 답 없는 답과 거절로 분류된 답 있는
+# 답의 목록, 정확도 합(질문 풀 5의 답 있는 셋 포함), 보고용 판정 라벨의 조건 2·3.
+def _prompt_arms_report(a: PromptArm, b: PromptArm, groups: tuple[str, ...]) -> dict:
+    arms = {"a": a, "b": b}
+
+    def per_group(fn) -> dict:
+        return {
+            name: {
+                group: {lang: fn(_of(getattr(arm, group), lang)) for lang in LANGUAGES} for group in groups
+            }
+            for name, arm in arms.items()
+        }
+
+    report: dict = {
+        "refusals": {group: _refusal_counts(getattr(a, group), getattr(b, group)) for group in groups},
+        "fixed_sentence_use": {
+            name: {
+                lang: dict(
+                    sorted(
+                        Counter(
+                            fixed_sentence_use(r["answer"], lang) for _, r, _ in _of(_all_rows(arm), lang)
+                        ).items()
+                    )
+                )
+                for lang in LANGUAGES
+            }
+            for name, arm in arms.items()
+        },
+        "answer_chars_p50": per_group(lambda rows: _p50([len(r["answer"]) for _, r, _ in rows])),
+        "generation_p50_ms": per_group(lambda rows: _p50([r.get("generation_ms") for _, r, _ in rows])),
+        "emptied_citations": {
+            name: {
+                g: sum(1 for r, _ in getattr(arm, g).values() if r.get("citation_skipped") == "refusal")
+                for g in groups
+            }
+            for name, arm in arms.items()
+        },
+        "length_stops": {
+            name: sum(
+                1
+                for r, _ in _all_rows(arm).values()
+                if (((r.get("generation_calls") or {}).get("answer") or [{}])[-1] or {}).get("done_reason")
+                == "length"
+            )
+            for name, arm in arms.items()
+        },
+        "unanswerable_not_refused": {
+            name: [key[1] for key, (r, _) in sorted(_all_rows(arm, ("na", "test")).items()) if not refused(r)]
+            for name, arm in arms.items()
+        },
+        "answerable_refused": {
+            name: [key[1] for key, (r, _) in sorted(arm.ans.items()) if refused(r)]
+            for name, arm in arms.items()
+        },
+        "accuracy_all_answerable": {
+            lang: {
+                "a": sum(_score(j) for _, _, j in _of(a.ans, lang)),
+                "b": sum(_score(j) for _, _, j in _of(b.ans, lang)),
+                "n": len(_of(a.ans, lang)),
+            }
+            for lang in LANGUAGES
+        },
+        "report_label": None,
+    }
+    if any(j is not None for j in a.report.values()) or any(j is not None for j in b.report.values()):
+        a_rows = {key: (r, a.report.get(key)) for key, (r, _) in a.ans.items()}
+        b_rows = {key: (r, b.report.get(key)) for key, (r, _) in b.ans.items()}
+        false_refusals, accuracy = _judged_conditions(a_rows, b_rows)
+        report["report_label"] = {
+            "C2_false_refusals": false_refusals,
+            "C3_accuracy": accuracy,
+            "unjudged": {
+                "a": sum(1 for j in a.report.values() if j is None),
+                "b": sum(1 for j in b.report.values() if j is None),
+            },
+        }
+    return report
+
+
+# prompt-arms의 본체. test가 비어 있으면 dev 관문, 있으면 test 결정이다.
+# - dev 관문(test를 열기 전): 계획의 관문(답 없는 dev의 한국어 거절 수 B > A)에, dev 기록만으로 이미
+#   정해지는 채택 조건(2, 3, 6과 dev 답의 5)을 더한다. 그 조건이 dev에서 떨어지면 test 결과와 상관없이
+#   채택될 수 없으므로, 한 번만 쓸 수 있는 답 없는 test 셋을 열지 않고 남긴다.
+# - test 결정: 관문을 통과한 dev 결과 + 조건 1(답 없는 test 거절 수), 조건 4(모든 한국어 답의 섞인 답), 조건
+#   5(모든 영어 답). 관문이 닫혀 있었는데 test 기록이 있으면 결정하지 않는다(멈춤).
+# - 경계 규칙: judged_with="once"(1회 판정 라벨)이고 조건 3의 값이 한계(−2)와 1점 안(−3~−1)이면, 판정과 무관한
+#   조건이 모두 통과할 때(=결과가 판정에 달렸을 때)만 결정하지 않고 'boundary'를 낸다. 그때는 판정 절차
+#   규칙대로 두 번 더 판정한 중앙값 라벨로 judged_with="median"을 주어 다시 부른다(조건 2의 판정 부분도 그
+#   라벨로 다시 셈).
+# - check_registered: 셋 이름·문항 수를 등록한 것과 맞춰 본다(명령행 기본 켬. 끄면 결과에 그 사실이 남음).
+def prompt_arms_command(
+    a: PromptArm, b: PromptArm, *, judged_with: str = "once", check_registered: bool = True
+) -> dict:
+    if judged_with not in ("once", "median"):
+        raise ValueError(f"judged_with must be 'once' or 'median', not {judged_with!r}")
+    has_test = bool(a.test or b.test)
+    groups = ("ans", "na", "test") if has_test else ("ans", "na")
+    stop = _item_problems(a, b) + _meta_problems(a, b) + _judge_problems("A", a) + _judge_problems("B", b)
+    if check_registered:
+        stop += _registered_problems("A", a, has_test) + _registered_problems("B", b, has_test)
+
+    ko_na = {
+        "a": sum(refused(r) for _, r, _ in _of(a.na, "ko")),
+        "b": sum(refused(r) for _, r, _ in _of(b.na, "ko")),
+    }
+    ko_na |= {"n": len(_of(a.na, "ko")), "pass": ko_na["b"] > ko_na["a"]}
+    false_refusals, accuracy = _judged_conditions(a.ans, b.ans)
+    refusals_ans = {}
+    for language in LANGUAGES:
+        ra = sum(refused(r) for _, r, _ in _of(a.ans, language))
+        rb = sum(refused(r) for _, r, _ in _of(b.ans, language))
+        refusals_ans[language] = {"a": ra, "b": rb, "pass": rb <= ra + MAX_EXTRA_REFUSALS}
+    refusals_ans["pass"] = all(refusals_ans[lang]["pass"] for lang in LANGUAGES)
+    p50_a = _p50([r.get("generation_ms") for r, _ in a.ans.values()])
+    p50_b = _p50([r.get("generation_ms") for r, _ in b.ans.values()])
+    p50 = {
+        "a_ms": p50_a,
+        "b_ms": p50_b,
+        "pass": p50_a is not None and p50_b is not None and p50_b <= p50_a + MAX_EXTRA_P50_MS,
+    }
+
+    def you(arm: PromptArm, scope: tuple[str, ...]) -> list[str]:
+        rows = _all_rows(arm, scope)
+        return [
+            key[1]
+            for key, (r, _) in sorted(rows.items())
+            if r.get("language") == "en" and starts_with_you_dont_know(r["answer"])
+        ]
+
+    def kana(arm: PromptArm) -> list[str]:
+        rows = _all_rows(arm, groups)
+        return [
+            key[1] for key, (r, _) in sorted(rows.items()) if r.get("language") == "ko" and r.get("kana_han")
+        ]
+
+    scope = "dev+test" if has_test else "dev"
+    you_a, you_b = you(a, groups), you(b, groups)
+    kana_a, kana_b = kana(a), kana(b)
+    conditions: dict = {
+        "C1_test_refusals": None,
+        "C2_false_refusals": false_refusals,
+        "C2_refusals": refusals_ans,
+        "C3_accuracy": accuracy,
+        "C4_mixed": {"a": kana_a, "b": kana_b, "scope": scope, "pass": len(kana_b) <= len(kana_a)},
+        "C5_you_dont_know": {"a": you_a, "b": you_b, "scope": scope, "pass": not you_b},
+        "C6_generation_p50": p50,
+    }
+    parts = {
+        "ko_unanswerable_dev_refusals": ko_na["pass"],
+        "C2_false_refusals": false_refusals["pass"],
+        "C2_refusals": refusals_ans["pass"],
+        "C3_accuracy": accuracy["pass"],
+        "C5_you_dont_know": not you(b, ("ans", "na")),
+        "C6_generation_p50": p50["pass"],
+    }
+    dev_gate = {"ko_unanswerable_dev_refusals": ko_na, "parts": parts, "open_test": all(parts.values())}
+    # 판정 점수와 무관한 조건: 이것이 하나라도 떨어지면 판정을 더 해도 결과가 같다.
+    judge_free = [
+        parts[k]
+        for k in ("ko_unanswerable_dev_refusals", "C2_refusals", "C5_you_dont_know", "C6_generation_p50")
+    ]
+    final_parts = None
+    if has_test:
+        c1: dict = {}
+        for language in LANGUAGES:
+            ra = sum(refused(r) for _, r, _ in _of(a.test, language))
+            rb = sum(refused(r) for _, r, _ in _of(b.test, language))
+            c1[language] = {
+                "a": ra,
+                "b": rb,
+                "n": len(_of(a.test, language)),
+                "min_gain": MIN_TEST_GAIN[language],
+                "pass": rb - ra >= MIN_TEST_GAIN[language],
+            }
+        c1["pass"] = all(c1[lang]["pass"] for lang in LANGUAGES)
+        conditions["C1_test_refusals"] = c1
+        final_parts = {
+            "dev_gate": dev_gate["open_test"],
+            "C1_test_refusals": c1["pass"],
+            "C4_mixed": conditions["C4_mixed"]["pass"],
+            "C5_you_dont_know": conditions["C5_you_dont_know"]["pass"],
+        }
+        judge_free += [
+            final_parts["C1_test_refusals"],
+            final_parts["C4_mixed"],
+            final_parts["C5_you_dont_know"],
+        ]
+    boundary_rule_needed = (
+        judged_with == "once" and any(accuracy[lang]["boundary"] for lang in LANGUAGES) and all(judge_free)
+    )
+
+    adopt = None
+    if stop:
+        verdict = "stop"
+    elif boundary_rule_needed:
+        verdict = "boundary"
+    elif not has_test:
+        verdict = "open_test" if dev_gate["open_test"] else "gate_failed"
+    elif not dev_gate["open_test"]:
+        stop.append(
+            "the dev gate did not pass with these dev records; the test set should not have been opened"
+        )
+        verdict = "stop"
+    else:
+        adopt = all(final_parts.values())
+        verdict = "adopt" if adopt else "reject"
+    return {
+        "mode": "test" if has_test else "dev",
+        "judged_with": judged_with,
+        "registered_check": check_registered,
+        "verdict": verdict,
+        "stop": stop,
+        "boundary_rule_needed": boundary_rule_needed,
+        "dev_gate": dev_gate,
+        "final_parts": final_parts,
+        "adopt": adopt,
+        "conditions": conditions,
+        "report": _prompt_arms_report(a, b, groups),
+    }
+
+
+def _render(title: str, data: dict) -> str:
     return f"# {title}\n\n```json\n{json.dumps(data, ensure_ascii=False, indent=2)}\n```\n"
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="v15 I4 답 없는 질문의 거절과 언어별 바닥값")
+    parser = argparse.ArgumentParser(
+        description=(
+            "답 없는 질문의 거절: v15 I4 언어별 바닥값(floors·changed·dev·test), "
+            "v16-B 거절 지시 두 팔(prompt-arms)"
+        )
+    )
     sub = parser.add_subparsers(dest="command", required=True)
     fp = sub.add_parser("floors", help="dev 검색 기록(바닥값 0)에서 언어별 바닥값 후보를 고른다")
     fp.add_argument("--tag", required=True)
@@ -381,8 +956,92 @@ def main() -> int:
     )
     dp.add_argument("--by-kind", action="store_true", help=by_kind_help)
     tp.add_argument("--by-kind", action="store_true", help=by_kind_help)
+    # v16-B prompt-arms: 팔 A(REFUSAL_STYLE=legacy)·B(fixed)의 생성 기록. 결과는 <RUNS_DIR>/<태그>.json과
+    # eval/reports/refusal_prompt_arms_<태그>_<시각>.md이고, 종료 코드가 판정이다(VERDICT_EXIT).
+    pp = sub.add_parser(
+        "prompt-arms",
+        help="v16-B 거절 지시 두 팔(A legacy, B fixed): test 기록 없이 dev 관문, 있으면 test 결정",
+        description=(
+            "docs/experiments.md v16-B에 측정 전에 등록한 규칙으로 두 팔을 비교한다. "
+            "--a-test/--b-test가 없으면 dev 관문(답 없는 test를 열지), 있으면 채택 여부를 낸다. "
+            "종료 코드: 0 test 열기·채택, 2 관문 탈락·채택 안 함, 3 멈춤(입력이 규칙과 어긋나 결정하지 "
+            "않음), 4 경계 규칙 필요(두 번 더 판정한 중앙값 라벨로 --judged-with median을 주어 다시 부름)"
+        ),
+    )
+    pp.add_argument("--tag", required=True, help="결과 파일 이름(<RUNS_DIR>/<태그>.json)")
+    pp.add_argument(
+        "--label",
+        required=True,
+        help="결정 판정 라벨(1회 판정 J2v16b, 경계 규칙을 썼으면 그 중앙값 라벨). 답 있는 dev 기록마다 "
+        "<기록>.<라벨>.judge.jsonl이 있어야 한다",
+    )
+    pp.add_argument("--report-label", default=None, help="보고용 판정 라벨(예: J1v16b). 결정에 쓰지 않는다")
+    pp.add_argument(
+        "--judged-with",
+        choices=["once", "median"],
+        default="once",
+        help="--label이 1회 판정이면 once(기본, 조건 3이 경계 안이면 결정하지 않고 종료 코드 4), 경계 규칙의 "
+        "중앙값이면 median",
+    )
+    for arm in ("a", "b"):
+        pp.add_argument(
+            f"--{arm}-ans",
+            type=Path,
+            nargs="+",
+            required=True,
+            help=f"팔 {arm.upper()}의 답 있는 dev 생성 기록",
+        )
+        pp.add_argument(
+            f"--{arm}-na",
+            type=Path,
+            nargs="+",
+            required=True,
+            help=f"팔 {arm.upper()}의 답 없는 dev 생성 기록",
+        )
+        pp.add_argument(
+            f"--{arm}-test",
+            type=Path,
+            nargs="*",
+            default=[],
+            help=f"팔 {arm.upper()}의 답 없는 test 생성 기록(결정 때만)",
+        )
+    pp.add_argument(
+        "--no-registered-check",
+        action="store_true",
+        help="셋 이름·문항 수를 등록한 v16-B 셋과 맞춰 보지 않는다(다른 셋에 도구를 쓸 때·테스트용). "
+        "결정 실행에는 쓰지 않으며, 쓰면 결과의 registered_check가 false로 남는다",
+    )
     args = parser.parse_args()
     stamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
+
+    if args.command == "prompt-arms":
+        a = load_prompt_arm(args.a_ans, args.a_na, args.a_test, args.label, args.report_label)
+        b = load_prompt_arm(args.b_ans, args.b_na, args.b_test, args.label, args.report_label)
+        result = prompt_arms_command(
+            a, b, judged_with=args.judged_with, check_registered=not args.no_registered_check
+        )
+        # 출처: 이 결과를 낸 코드 커밋과 읽은 파일(이름과 LF로 맞춘 sha256). 로컬 절대 경로는 남기지 않는다.
+        result = {
+            "tag": args.tag,
+            "label": args.label,
+            "report_label": args.report_label,
+            **result,
+            "provenance": {
+                "git_commit": git_commit(),
+                "files": {path.name: dataset_sha256(path) for path in [*a.files, *b.files]},
+            },
+        }
+        write_json(RUNS_DIR / f"{args.tag}.json", result)
+        title = f"v16-B 거절 지시 두 팔 {args.tag}: {result['verdict']}"
+        write_report(f"refusal_prompt_arms_{args.tag}_{stamp}.md", _render(title, result))
+        print(f"verdict: {result['verdict']}")
+        for problem in result["stop"]:
+            print(f"stop: {problem}")
+        if result["boundary_rule_needed"]:
+            print(
+                "condition 3 is within 1 point of its limit: run the boundary rule, then --judged-with median"
+            )
+        return VERDICT_EXIT[result["verdict"]]
 
     if args.command == "floors":
         answerable = [r for p in args.answerable for r in read_jsonl(p)]
