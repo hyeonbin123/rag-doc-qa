@@ -412,3 +412,34 @@ def test_committed_v16_labels_cover_the_sample_in_order():
     pair_keys = judge_panel.pair_record_keys()
     assert len(pair_keys) == 160
     assert all(judge_panel.fingerprint(records[key]) in labelled for key in pair_keys)
+
+
+# 커밋된 v16-L 보고(eval/runs/v16_panel.pairs.json)가 커밋된 라벨·판정으로 다시 센 값과 같다. kappa 차이
+# 구간은 질문 단위 bootstrap이 오래 걸려(약 4분) 빼고, 합·차이·짝 구간(10,000회)·kappa 점추정·재라벨 일치·길이
+# 상관을 비교한다. 기록한 핵심 수치(docs/experiments.md v16-L 결과): Claude 라벨 G3 − G0 = −3(284 → 281),
+# J1v15 +25, J2+J3 − J2 kappa +0.063, 재라벨 58개 중 완전 일치 40개.
+def test_committed_v16_report_matches_a_recount(monkeypatch):
+    runs = judge_panel.RUNS
+    committed = json.loads((runs / "v16_panel.pairs.json").read_text(encoding="utf-8"))
+    monkeypatch.setattr(judge_panel, "kappa_diff_ci", lambda *args, **kwargs: (0.0, 0.0))
+    result = judge_panel.report_pairs(
+        ["J1v15", "J2v15", "J3v15"],
+        runs / "v16_claude_labels.jsonl",
+        runs / "v16_panel_key.jsonl",
+        runs / "v15_i5_claude_labels.jsonl",
+        runs / "v15_i5_panel_key.jsonl",
+        focus=("J2v15", "J2v15+J3v15"),
+    )
+    fields = ("labels", "claude", "pairs", "relabel", "reference_length_spearman", "residual_length_spearman")
+    for field in fields:
+        assert result[field] == committed[field], field
+    for name, entry in committed["kappa"]["configs"].items():
+        assert result["kappa"]["configs"][name]["kappa"] == entry["kappa"], name
+    assert result["kappa"]["by_stratum"] == committed["kappa"]["by_stratum"]
+    assert result["kappa"]["focus"]["diff"] == pytest.approx(0.063, abs=5e-4)
+    claude = committed["pairs"]["claude"]["all"]
+    assert (claude["G0"], claude["G3"], claude["diff"]) == (284, 281, -3)
+    assert committed["pairs"]["judges"]["J1v15"]["all"]["diff"] == 25
+    assert committed["relabel"]["n"] == 58 and round(committed["relabel"]["exact"] * 58) == 40
+    low, high = committed["kappa"]["focus"]["ci90"]
+    assert 0 < low < high and committed["kappa"]["focus"]["width_below_target"]
