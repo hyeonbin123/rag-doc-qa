@@ -32,6 +32,7 @@ import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from functools import cache, lru_cache
+from typing import Literal
 
 # httpx: Ollama REST API(/api/chat)를 비동기로 부른다. AsyncAnthropic: Claude Messages API 비동기 클라이언트.
 # API*Error: Claude SDK 예외(연결 실패·시간 초과·HTTP 상태 오류)를 생성기 장애로 바꿀 때 가른다.
@@ -46,24 +47,32 @@ from app.services.retrieval import RetrievedChunk
 # 두 제공자가 공유하는 기본 지시: 주어진 번호 붙은 문맥만 근거로 답하고, 근거가 부족하면 추측하지 말고
 # 모른다고 하라. 환각을 줄이려는 RAG의 기본 규칙이다. 영어 프롬프트 문장은 테스트로 고정돼 있다(v8에서
 # 프롬프트 한 줄 때문에 영어 정확도가 떨어진 일이 있었다).
-BASE_RULES = (
+# 2026-10-30: 규칙 2(거절 지시)만 다른 꼴로 바꿔 끼울 수 있게(아래 'v16-B 후보') 머리(소개 + 규칙 1)와
+# 규칙 2를 나눠 이어 붙였다. 이어 붙인 BASE_RULES는 예전과 글자 하나까지 같다(tests/test_generation.py가
+# 원문으로 고정).
+_RULES_HEAD = (
     "You are a documentation assistant answering questions about FastAPI using ONLY the "
     "numbered context passages provided below. Rules:\n"
     "1. Answer only using information present in the context passages.\n"
+)
+# v1부터 쓴 거절 지시(설정 REFUSAL_STYLE=legacy, 기본). 2인칭이라 A.X·Qwen이 "You don't know."처럼 이 말을
+# 그대로 베낀 답을 낸 적이 있다(docs/experiments.md v16-B).
+_LEGACY_REFUSAL_RULE = (
     "2. If the passages do not contain enough information to answer, say you don't know "
     "instead of guessing.\n"
 )
+BASE_RULES = _RULES_HEAD + _LEGACY_REFUSAL_RULE
 
 # Claude용: cite_answer 도구를 반드시 호출하고 citations에 실제로 쓴 청크 번호를 넣으라는 규칙을 더한다.
-ANTHROPIC_SYSTEM_PROMPT = BASE_RULES + (
+_ANTHROPIC_RULE_3 = (
     "3. Always call the cite_answer tool. In `citations`, list the chunk_number of every "
     "passage you actually relied on to construct the answer.\n"
 )
+ANTHROPIC_SYSTEM_PROMPT = BASE_RULES + _ANTHROPIC_RULE_3
 
 # Ollama 답변 호출용: JSON이나 머리말 없이 답 글만 쓰라는 규칙을 더한다(인용은 다음 호출에서 따로 받는다).
-OLLAMA_ANSWER_PROMPT = BASE_RULES + (
-    "3. Reply with the answer text only — no JSON, no preamble.\n"
-)
+_OLLAMA_RULE_3 = "3. Reply with the answer text only — no JSON, no preamble.\n"
+OLLAMA_ANSWER_PROMPT = BASE_RULES + _OLLAMA_RULE_3
 
 # 한국어 질문에만 붙이는 규칙. 처음에는 "질문과 같은 언어로 답하라"는 일반 규칙(예시로 한국어를 들었음)을
 # 썼는데, 로컬 7B 모델이 영어 질문에도 한국어로 답해 영어 답변 정확도가 4.60에서 4.19로 떨어졌다.
@@ -87,6 +96,79 @@ KOREAN_RETRY_RULE = (
     "or Japanese: no Chinese characters and no Japanese kana outside code. Keep code, API "
     "names and identifiers exactly as they appear in the passages.\n"
 )
+
+
+# --- v16-B 후보: 거절 지시 꼴 (설정 REFUSAL_STYLE, docs/experiments.md v16-B) ---
+# 왜: 지금 거절 지시(규칙 2 'say you don't know')는 영어로만 있고 2인칭이다. 저장된 답을 보면 한국어 답 없는
+# 질문의 상당수(v15 I4 test 20문항 중 13)를 문서 밖 일반 지식으로 지어냈고, 영어 거절은 시스템 프롬프트를 베낀
+# "You don't know …"로 나간 답이 있었다(사용자에게 그대로 보이는 문장). fixed는 규칙 2를 1인칭 고정 문장으로
+# 바꾸고, 한국어 규칙 끝에 같은 뜻의 한국어 고정 문장을 더한다. legacy(기본)는 위 상수 그대로다.
+# 채택 여부는 측정 전에 등록한 규칙(docs/experiments.md v16-B)으로 정하고, 그 전에는 기본값을 바꾸지 않는다.
+# 두 제공자(Ollama, Claude)가 같은 규칙을 쓴다. Claude 경로는 단위 테스트만 있고 실제로 돌려 보지 않았다.
+
+# 사용자에게 보이는 고정 거절문(질문 언어별). 거절 분류기(is_refusal_answer)가 거절로 잡는지 테스트로
+# 고정한다. 청크 0개일 때의 NO_CONTEXT_REFUSAL('찾은 문서 구절')과 달리 모델이 받은 구절('제공된 문서 구절')을
+# 가리킨다.
+FIXED_REFUSAL: dict[str, str] = {
+    "en": "I don't know: the provided documentation passages do not cover this question.",
+    "ko": "모르겠습니다. 제공된 문서 구절에는 이 질문에 대한 내용이 없습니다.",
+}
+# fixed의 규칙 2: 근거가 모자라면 위 영어 문장 하나만 그대로 쓰라고 한다(모델에게 가는 원문이라 영어 유지).
+_FIXED_REFUSAL_RULE = (
+    "2. If the passages do not contain enough information to answer, reply with exactly this "
+    "sentence and nothing else: " + FIXED_REFUSAL["en"] + "\n"
+)
+# fixed가 한국어 규칙(KOREAN_ANSWER_RULE, 가드 재시도의 KOREAN_RETRY_RULE) 끝에 더하는 문장: 한국어 질문이면
+# 규칙 2의 영어 문장 대신 한국어 고정 문장을 쓰라고 한다. 재시도 규칙에도 붙이는 이유: 가드가 다시 만들 때는
+# 한국어 규칙을 재시도 규칙으로 갈아 끼우므로, 붙이지 않으면 재시도한 답에서만 한국어 거절 지시가 사라진다.
+_KOREAN_REFUSAL_INSTRUCTION = (
+    " If the passages do not contain enough information to answer, reply with exactly this "
+    "Korean text instead of the sentence in rule 2, and nothing else: " + FIXED_REFUSAL["ko"]
+)
+FIXED_ANTHROPIC_SYSTEM_PROMPT = _RULES_HEAD + _FIXED_REFUSAL_RULE + _ANTHROPIC_RULE_3
+FIXED_OLLAMA_ANSWER_PROMPT = _RULES_HEAD + _FIXED_REFUSAL_RULE + _OLLAMA_RULE_3
+FIXED_KOREAN_ANSWER_RULE = KOREAN_ANSWER_RULE.removesuffix("\n") + _KOREAN_REFUSAL_INSTRUCTION + "\n"
+FIXED_KOREAN_RETRY_RULE = KOREAN_RETRY_RULE.removesuffix("\n") + _KOREAN_REFUSAL_INSTRUCTION + "\n"
+
+# 거절 지시 꼴 이름. 설정(app/config.py의 refusal_style)과 같은 목록이다.
+RefusalStyle = Literal["legacy", "fixed"]
+REFUSAL_STYLES: tuple[str, ...] = ("legacy", "fixed")
+_ANSWER_PROMPTS: dict[str, dict[str, str]] = {
+    "legacy": {"anthropic": ANTHROPIC_SYSTEM_PROMPT, "ollama": OLLAMA_ANSWER_PROMPT},
+    "fixed": {"anthropic": FIXED_ANTHROPIC_SYSTEM_PROMPT, "ollama": FIXED_OLLAMA_ANSWER_PROMPT},
+}
+# 꼴 → (한국어 규칙, 언어 가드 재시도 때의 한국어 규칙)
+_KOREAN_RULES: dict[str, tuple[str, str]] = {
+    "legacy": (KOREAN_ANSWER_RULE, KOREAN_RETRY_RULE),
+    "fixed": (FIXED_KOREAN_ANSWER_RULE, FIXED_KOREAN_RETRY_RULE),
+}
+
+
+# 답변 호출의 system 프롬프트 = 제공자 규칙(1~3) + 한국어 질문이면 한국어 규칙(4). korean_retry면 언어 가드
+# 재시도의 한국어 규칙을 쓴다(영어 질문에는 가드가 걸리지 않으므로 영어면 규칙 1~3 그대로). legacy(기본)의
+# 값은 예전 식(system_prompt_for(OLLAMA_ANSWER_PROMPT, language), OLLAMA_ANSWER_PROMPT + KOREAN_RETRY_RULE)과
+# 같다. 모르는 꼴·제공자 이름이면 KeyError다(생성기는 만들 때 _checked_refusal_style로 먼저 거른다).
+def answer_system_prompt(
+    provider: Literal["anthropic", "ollama"],
+    language: Language,
+    style: RefusalStyle = "legacy",
+    *,
+    korean_retry: bool = False,
+) -> str:
+    prompt = _ANSWER_PROMPTS[style][provider]
+    if language != "ko":
+        return prompt
+    rule, retry_rule = _KOREAN_RULES[style]
+    return prompt + (retry_rule if korean_retry else rule)
+
+
+# 생성기 인자의 거절 지시 꼴을 확인한다. 설정은 Literal로 먼저 거부하지만, 평가 스크립트처럼 생성기를 직접
+# 만드는 곳에서 오타가 조용히 다른 프롬프트로 돌지 않게 여기서도 막는다.
+def _checked_refusal_style(style: str) -> str:
+    if style not in REFUSAL_STYLES:
+        raise ValueError(f"unknown refusal_style {style!r}; expected one of {REFUSAL_STYLES}")
+    return style
+
 
 # 가나(U+3040~U+30FF)와 한자(U+4E00~U+9FFF) 범위. 평가 스크립트(eval/run_answer_eval.py,
 # eval/generator_arms.py)도 섞인 답을 셀 때 이 정규식을 가져다 쓴다.
@@ -493,7 +575,8 @@ class GenerationService(ABC):
 # API로는 돌려 보지 않았다(크레딧 없음).
 class AnthropicGenerationService(GenerationService):
     # refuse_without_context·empty_citations_on_refusal은 Ollama 생성기와 같은 v15 설정이다(기본 꺼짐). 이
-    # 경로는 인용을 답과 한 번에 받으므로, 거절 답이면 받은 인용을 비우기만 한다.
+    # 경로는 인용을 답과 한 번에 받으므로, 거절 답이면 받은 인용을 비우기만 한다. refusal_style은 v16-B 후보의
+    # 거절 지시 꼴(legacy 기본, fixed는 언어별 고정 거절문)로, Ollama와 같은 규칙을 system으로 보낸다.
     def __init__(
         self,
         api_key: str,
@@ -501,7 +584,9 @@ class AnthropicGenerationService(GenerationService):
         *,
         refuse_without_context: bool = False,
         empty_citations_on_refusal: bool = False,
+        refusal_style: str = "legacy",
     ) -> None:
+        self._refusal_style = _checked_refusal_style(refusal_style)
         self._client = AsyncAnthropic(api_key=api_key)
         self._model_name = model_name
         self._refuse_without_context = refuse_without_context
@@ -526,7 +611,7 @@ class AnthropicGenerationService(GenerationService):
             response = await self._client.messages.create(
                 model=self._model_name,
                 max_tokens=1024,
-                system=system_prompt_for(ANTHROPIC_SYSTEM_PROMPT, language),
+                system=answer_system_prompt("anthropic", language, self._refusal_style),
                 tools=[CITE_ANSWER_TOOL],
                 tool_choice={"type": "tool", "name": "cite_answer"},
                 messages=[{"role": "user", "content": _build_user_message(question, chunks)}],
@@ -573,6 +658,10 @@ class OllamaGenerationService(GenerationService):
       예전처럼 다른 system 프롬프트로 따로 부른다).
     - `refuse_without_context=True`: 검색된 청크가 0개면 LLM을 부르지 않고 NO_CONTEXT_REFUSAL을 돌려준다.
     - `empty_citations_on_refusal=True`: 거절로 분류된 답(is_refusal_answer)은 인용 호출 없이 인용을 비운다.
+
+    v16-B 후보(docs/experiments.md v16-B). 기본값은 지금 동작이다:
+    - `refusal_style="fixed"`: 답변 호출(과 언어 가드 재시도)의 system 규칙에서 거절 지시를 언어별 1인칭 고정
+      거절문(FIXED_REFUSAL)으로 바꾼다. 요청의 나머지(문단·질문·options·인용 호출)는 legacy와 같다.
     """
 
     # CONTEXT_TOKENS: 요청마다 num_ctx로 문맥 크기를 8192로 지정한다. MAX_OUTPUT_TOKENS: 답 길이
@@ -582,8 +671,8 @@ class OllamaGenerationService(GenerationService):
     MAX_OUTPUT_TOKENS = 1024
 
     # base_url: Ollama 서버 주소, model_name: Ollama 모델 태그, timeout: 한 호출의 제한 시간(초, 기본 180).
-    # 나머지 세 옵션은 위 docstring 참고. 앱은 설정의 think·language_guard를 넘기고, 평가는
-    # strict_citations=False를 더한다.
+    # 나머지 옵션은 위 docstring 참고. 앱은 설정의 think·language_guard 등을 넘기고, 평가는
+    # strict_citations=False를 더한다. 모르는 citation_mode·refusal_style 이름은 ValueError다.
     def __init__(
         self,
         base_url: str,
@@ -596,9 +685,11 @@ class OllamaGenerationService(GenerationService):
         citation_mode: str = "separate",
         refuse_without_context: bool = False,
         empty_citations_on_refusal: bool = False,
+        refusal_style: str = "legacy",
     ) -> None:
         if citation_mode not in ("separate", "followup"):
             raise ValueError(f"unknown citation_mode {citation_mode!r}")
+        self._refusal_style = _checked_refusal_style(refusal_style)
         self._base_url = base_url.rstrip("/")
         self._model_name = model_name
         self._timeout = timeout
@@ -695,8 +786,9 @@ class OllamaGenerationService(GenerationService):
 
         # 1) 답변 호출: 스키마 없이 자유 텍스트로 받는다. 그래서 코드 속 따옴표가 있어도 잘리지 않는다.
         # final_messages·final_raw는 최종 답을 만든 요청과 모델이 보낸 원문으로, 이어 붙이기 인용 호출이 쓴다.
+        # system 규칙은 거절 지시 꼴(refusal_style)을 따른다(legacy면 예전과 같은 글).
         final_messages = self._answer_messages(
-            question, chunks, system_prompt_for(OLLAMA_ANSWER_PROMPT, language)
+            question, chunks, answer_system_prompt("ollama", language, self._refusal_style)
         )
         answer_data, answer_stats = await self._timed_chat(final_messages, response_schema=None)
         final_raw = answer_data["message"]["content"]
@@ -712,10 +804,13 @@ class OllamaGenerationService(GenerationService):
         # 2) 언어 가드(설정 LANGUAGE_GUARD, v13 채택 뒤 기본 켬): 한국어 답의 설명 글에 한자·가나가 있으면
         #    한국어 규칙을 더 강하게 쓴 KOREAN_RETRY_RULE로 한 번만 다시 만든다. 다시 만든 답을 최종 답으로
         #    쓰고, 가드 전 답과 재시도 시간은 진단에 남긴다. v13 채택 측정에서 A.X-4.0-Light는 한국어 155문항
-        #    동안 가드가 한 번도 걸리지 않았다(docs/experiments.md v13).
+        #    동안 가드가 한 번도 걸리지 않았다(docs/experiments.md v13). 재시도 규칙도 거절 지시 꼴을 따른다
+        #    (fixed면 한국어 고정 거절문 지시가 재시도 규칙에도 붙음).
         if self._language_guard and needs_language_retry(answer_text, language):
             final_messages = self._answer_messages(
-                question, chunks, OLLAMA_ANSWER_PROMPT + KOREAN_RETRY_RULE
+                question,
+                chunks,
+                answer_system_prompt("ollama", language, self._refusal_style, korean_retry=True),
             )
             retry_data, retry_stats = await self._timed_chat(final_messages, response_schema=None)
             diagnostics.update(
@@ -805,8 +900,8 @@ class OllamaGenerationService(GenerationService):
 
 
 # 설정에 맞는 생성기를 프로세스당 하나 만든다. GENERATION_PROVIDER=ollama(기본)면 Ollama 생성기에
-# 모델·think·언어 가드 설정을 넘기고, 아니면 Claude 생성기를 만든다. app/dependencies.py의 get_generator가
-# 이것을 돌려준다.
+# 모델·think·언어 가드 설정을 넘기고, 아니면 Claude 생성기를 만든다. 거절 지시 꼴(REFUSAL_STYLE)은 두 제공자에
+# 똑같이 넘긴다. app/dependencies.py의 get_generator가 이것을 돌려준다.
 @lru_cache
 def get_generation_service() -> GenerationService:
     settings = get_settings()
@@ -819,10 +914,12 @@ def get_generation_service() -> GenerationService:
             citation_mode=settings.citation_mode,
             refuse_without_context=settings.refuse_without_context,
             empty_citations_on_refusal=settings.empty_citations_on_refusal,
+            refusal_style=settings.refusal_style,
         )
     return AnthropicGenerationService(
         settings.anthropic_api_key,
         settings.claude_model_name,
         refuse_without_context=settings.refuse_without_context,
         empty_citations_on_refusal=settings.empty_citations_on_refusal,
+        refusal_style=settings.refusal_style,
     )

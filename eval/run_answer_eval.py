@@ -42,7 +42,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 # 앱 모듈(app.*)을 그대로 가져와 평가가 실제 서비스와 같은 설정·임베딩·검색·프롬프트를 쓰게 한다.
-# _build_user_message와 system_prompt_for는 생성 프롬프트의 토큰 수를 앱과 같은 문장으로 세려고 가져온다.
+# _build_user_message와 answer_system_prompt는 생성 프롬프트의 토큰 수를 앱과 같은 문장(설정의 거절 지시 꼴
+# 포함)으로 세려고 가져온다.
 # 평가 하네스 내부 모듈(eval.*): 리포트 렌더링, 데이터셋·기록 입출력, 판정 설정과 스키마, 저장 벡터 확인, 판정
 # 실행·Ollama 상태 기록, 모델별 토크나이저.
 from app.config import Settings, get_settings
@@ -50,13 +51,12 @@ from app.db.session import async_session_maker
 from app.services.embedding import get_embedding_service
 from app.services.generation import (
     KANA_HAN_RE,
-    OLLAMA_ANSWER_PROMPT,
     GenerationService,
     OllamaGenerationService,
     _build_user_message,
+    answer_system_prompt,
     get_generation_service,
     is_refusal_answer,
-    system_prompt_for,
 )
 from app.services.language import Language, detect_language
 from app.services.reranking import RerankerService, get_reranker_service
@@ -104,9 +104,10 @@ GenerationPromptCounter = Callable[[str, list[RetrievedChunk], Language], int]
 
 
 # 평가용 생성기를 만든다. Ollama가 아니면(예: Claude) 앱의 생성기를 그대로 쓴다.
-# Ollama일 때는 앱과 같은 모델·think·언어 가드 설정으로 만들되 strict_citations=False를 준다. 앱은 인용 응답이
-# JSON이 아니면 실패하지만, 평가는 그 문항을 기록하고 계속 가야 v13처럼 인용 스키마 오류 수를 셀 수 있기
-# 때문이다.
+# Ollama일 때는 앱과 같은 모델·think·언어 가드·v15 설정·거절 지시 꼴(REFUSAL_STYLE, v16-B)로 만들되
+# strict_citations=False를 준다. 앱은 인용 응답이 JSON이 아니면 실패하지만, 평가는 그 문항을 기록하고 계속
+# 가야 v13처럼 인용 스키마 오류 수를 셀 수 있기 때문이다. 설정을 하나라도 빠뜨리면 그 설정의 팔이 조용히
+# 기본값으로 돈다(tests/test_answer_eval.py가 거절 지시 꼴을 확인함).
 def build_generator(settings: Settings) -> GenerationService:
     """설정된 생성기. Ollama면 잘못된 인용 응답을 기록하는 생성기를 만든다.
 
@@ -124,6 +125,7 @@ def build_generator(settings: Settings) -> GenerationService:
         citation_mode=settings.citation_mode,
         refuse_without_context=settings.refuse_without_context,
         empty_citations_on_refusal=settings.empty_citations_on_refusal,
+        refusal_style=settings.refusal_style,
     )
 
 
@@ -142,13 +144,17 @@ def generation_order(n: int, order: str, seed: int) -> list[int]:
 # 프롬프트·사용자 메시지를 만들어 채팅 템플릿째 센다.
 # 왜 세나: 생성 호출은 num_ctx 8192에서 truncate를 보내지 않으므로, 넘쳤다면 조용히 잘렸을 것이다. 문항마다
 # 토큰 수를 남겨 그런 일이 없었는지 기록으로 확인한다(docs/experiments.md v11·v13 CPU 확인).
-def ollama_answer_prompt_counter(count_tokens: TokenCounter) -> GenerationPromptCounter:
+# refusal_style: 생성기와 같은 거절 지시 꼴(v16-B). fixed의 system 규칙이 legacy보다 길어서, 꼴을 맞춰야
+# 실제로 보낸 프롬프트를 센다. 기본값 legacy는 예전에 세던 문장과 같다.
+def ollama_answer_prompt_counter(
+    count_tokens: TokenCounter, refusal_style: str = "legacy"
+) -> GenerationPromptCounter:
     """Ollama 답변 호출의 프롬프트(시스템 규칙 + 문단 + 질문)를 센다."""
 
     def count(question: str, chunks: list[RetrievedChunk], language: Language) -> int:
         return count_tokens(
             [
-                {"role": "system", "content": system_prompt_for(OLLAMA_ANSWER_PROMPT, language)},
+                {"role": "system", "content": answer_system_prompt("ollama", language, refusal_style)},
                 {"role": "user", "content": _build_user_message(question, chunks)},
             ]
         )
@@ -365,7 +371,7 @@ async def main(args: argparse.Namespace) -> int:
                 args.top_k,
                 mode,
                 reranker,
-                ollama_answer_prompt_counter(gen_counter) if gen_counter else None,
+                ollama_answer_prompt_counter(gen_counter, settings.refusal_style) if gen_counter else None,
                 cross_lingual=args.cross_lingual,
                 score_floor=args.score_floor,
             )
@@ -423,6 +429,9 @@ async def main(args: argparse.Namespace) -> int:
         "citation_mode": settings.citation_mode if ollama else None,
         "refuse_without_context": settings.refuse_without_context,
         "empty_citations_on_refusal": settings.empty_citations_on_refusal,
+        # v16-B: 거절 지시 꼴(legacy/fixed). 두 제공자에 같이 쓰이므로 제공자와 상관없이 남긴다. 2026-10-30 전
+        # 기록에는 이 필드가 없다(그때는 늘 legacy).
+        "refusal_style": settings.refusal_style,
         "records_path": display_path(gen_path),
     }
     write_json(meta_path(gen_path), gen_meta)

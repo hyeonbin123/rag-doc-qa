@@ -19,14 +19,17 @@ v13(docs/experiments.md)은 기본으로 추론하는 모델을 위한 선택적
 import json
 import ssl
 import uuid
+from types import SimpleNamespace
 
 # anthropic: Claude 경로의 SDK 예외 클래스(장애 코드 변환 테스트). httpx2: anthropic SDK가 쓰는 HTTP
 # 라이브러리로, SDK 예외를 만들 때 필요한 Request·Response 객체를 만든다. httpx: MockTransport로 Ollama
-# 응답을 메모리에서 돌려준다. pytest: 픽스처와 parametrize.
+# 응답을 메모리에서 돌려준다. pytest: 픽스처와 parametrize. ValidationError: 설정이 허용 목록 밖의 값을
+# 거부하는지 볼 때 쓴다.
 import anthropic
 import httpx
 import httpx2
 import pytest
+from pydantic import ValidationError
 
 # 설정 기본값·캐시, 생성 모듈(httpx를 바꿔 끼울 대상과 규칙 문자열), 인용 스키마, 생성기, 검색 결과 데이터
 # 클래스, 판정 호출(eval/judge.py)과 Ollama 상태 읽기(eval/run_judge.py)를 가져온다.
@@ -1035,3 +1038,199 @@ async def test_claude_outages_become_unavailable_errors_with_a_code(exc, code):
 async def test_claude_request_errors_are_not_reported_as_outages(exc):
     with pytest.raises(type(exc)):
         await claude_service_raising(exc).answer("Q?", [make_chunk(1)], "en")
+
+
+# --- v16-B 후보: 거절 지시 꼴(REFUSAL_STYLE, docs/experiments.md v16-B) ---
+# legacy(기본)는 v1부터 모든 답변 수치를 낸 프롬프트와 바이트 단위로 같아야 한다. fixed는 규칙 2(거절 지시)만
+# 1인칭 고정 거절문으로 바꾸고, 한국어 규칙(4) 끝에 같은 뜻의 한국어 고정 거절문을 더한다. 두 제공자(Ollama
+# 답변 호출, Claude)가 같은 규칙을 쓰고, 언어 가드의 재시도 규칙에도 같은 한국어 문장이 붙는다. 기대값은
+# 모델에게 가는 원문을 그대로 적은 것이다(코드의 상수에서 다시 만들면 상수가 바뀌어도 테스트가 따라 바뀌어
+# 고정이 안 된다).
+LEGACY_RULES = (
+    "You are a documentation assistant answering questions about FastAPI using ONLY the "
+    "numbered context passages provided below. Rules:\n"
+    "1. Answer only using information present in the context passages.\n"
+    "2. If the passages do not contain enough information to answer, say you don't know "
+    "instead of guessing.\n"
+)
+FIXED_RULES = (
+    "You are a documentation assistant answering questions about FastAPI using ONLY the "
+    "numbered context passages provided below. Rules:\n"
+    "1. Answer only using information present in the context passages.\n"
+    "2. If the passages do not contain enough information to answer, reply with exactly this "
+    "sentence and nothing else: I don't know: the provided documentation passages do not cover "
+    "this question.\n"
+)
+RULE_3 = {
+    "ollama": "3. Reply with the answer text only — no JSON, no preamble.\n",
+    "anthropic": (
+        "3. Always call the cite_answer tool. In `citations`, list the chunk_number of every "
+        "passage you actually relied on to construct the answer.\n"
+    ),
+}
+KOREAN_RULE = (
+    "4. Write the answer in Korean. Keep code, API names and identifiers exactly as they "
+    "appear in the passages.\n"
+)
+KOREAN_RETRY = (
+    "4. Write the entire answer in Korean only (한국어로만 답하세요). Do not switch to Chinese "
+    "or Japanese: no Chinese characters and no Japanese kana outside code. Keep code, API "
+    "names and identifiers exactly as they appear in the passages.\n"
+)
+# fixed가 한국어 규칙 끝(마지막 줄바꿈 앞)에 더하는 문장.
+KOREAN_REFUSAL = (
+    " If the passages do not contain enough information to answer, reply with exactly this "
+    "Korean text instead of the sentence in rule 2, and nothing else: 모르겠습니다. 제공된 문서 "
+    "구절에는 이 질문에 대한 내용이 없습니다.\n"
+)
+
+
+# (제공자, 언어, 꼴, 가드 재시도) → 기대하는 시스템 프롬프트 원문.
+def expected_system_prompt(provider: str, language: str, style: str, korean_retry: bool = False) -> str:
+    rules = (LEGACY_RULES if style == "legacy" else FIXED_RULES) + RULE_3[provider]
+    if language != "ko":
+        return rules
+    korean = KOREAN_RETRY if korean_retry else KOREAN_RULE
+    return rules + (korean if style == "legacy" else korean.removesuffix("\n") + KOREAN_REFUSAL)
+
+
+# legacy 프롬프트는 지금(측정된) 문장 그대로다: 예전 상수·system_prompt_for와도, 새 선택 함수의 기본값과도
+# 같다.
+@pytest.mark.parametrize("provider", ["ollama", "anthropic"])
+def test_the_legacy_prompts_stay_the_measured_ones(provider):
+    legacy = {"ollama": generation.OLLAMA_ANSWER_PROMPT, "anthropic": generation.ANTHROPIC_SYSTEM_PROMPT}
+    assert legacy[provider] == LEGACY_RULES + RULE_3[provider]
+    assert generation.BASE_RULES == LEGACY_RULES
+    korean = generation.system_prompt_for(legacy[provider], "ko")
+    assert korean == LEGACY_RULES + RULE_3[provider] + KOREAN_RULE
+    assert generation.KOREAN_RETRY_RULE == KOREAN_RETRY
+    for language in ("en", "ko"):
+        expected = expected_system_prompt(provider, language, "legacy")
+        assert generation.answer_system_prompt(provider, language) == expected
+        assert generation.answer_system_prompt(provider, language, "legacy") == expected
+    assert generation.answer_system_prompt(provider, "ko", korean_retry=True) == expected_system_prompt(
+        provider, "ko", "legacy", korean_retry=True
+    )
+
+
+# fixed는 규칙 2와 한국어 규칙의 거절 문장만 다르다. 2인칭 지시("say you don't know")는 남지 않는다.
+@pytest.mark.parametrize("provider", ["ollama", "anthropic"])
+@pytest.mark.parametrize("language", ["en", "ko"])
+def test_the_fixed_prompts_change_only_the_refusal_rules(provider, language):
+    for retry in (False, True):
+        prompt = generation.answer_system_prompt(provider, language, "fixed", korean_retry=retry)
+        assert prompt == expected_system_prompt(provider, language, "fixed", korean_retry=retry)
+        assert "say you don't know" not in prompt
+    assert generation.REFUSAL_STYLES == ("legacy", "fixed")
+
+
+# 두 고정 거절문은 거절 분류기(is_refusal_answer)에서 거절이고, 그 언어의 fixed 프롬프트에 글자 그대로 들어
+# 있다. 사용자에게 그대로 보이는 문장이라 2인칭("You don't know")으로 시작하지 않는다.
+@pytest.mark.parametrize("language", ["en", "ko"])
+def test_the_fixed_refusal_sentences_are_refusals_and_appear_in_the_prompt(language):
+    sentence = generation.FIXED_REFUSAL[language]
+    assert generation.is_refusal_answer(sentence, language) is True
+    assert sentence in generation.answer_system_prompt("ollama", language, "fixed")
+    assert not sentence.lower().startswith("you ")
+    assert generation.FIXED_REFUSAL == {
+        "en": "I don't know: the provided documentation passages do not cover this question.",
+        "ko": "모르겠습니다. 제공된 문서 구절에는 이 질문에 대한 내용이 없습니다.",
+    }
+
+
+# Ollama: fixed로 바뀌는 것은 답변 호출의 system 메시지뿐이다(문단·질문·options·인용 호출은 legacy와 같음).
+@pytest.mark.asyncio
+async def test_the_fixed_style_changes_only_the_answer_system_message(scripted_ollama):
+    payloads, script = scripted_ollama
+    script += [(CLEAN_KO, {}), CITE_2, (CLEAN_KO, {}), CITE_2]
+    chunks = [make_chunk(1), make_chunk(2)]
+
+    for style in ("legacy", "fixed"):
+        service = OllamaGenerationService("http://ollama.test", "m", refusal_style=style)
+        await service.answer(KOREAN_Q, chunks, "ko")
+
+    legacy_answer, legacy_cite, fixed_answer, fixed_cite = payloads
+    assert legacy_answer["messages"][0]["content"] == expected_system_prompt("ollama", "ko", "legacy")
+    assert fixed_answer["messages"][0]["content"] == expected_system_prompt("ollama", "ko", "fixed")
+    assert fixed_answer["messages"][1:] == legacy_answer["messages"][1:]
+    assert {k: v for k, v in fixed_answer.items() if k != "messages"} == {
+        k: v for k, v in legacy_answer.items() if k != "messages"
+    }
+    assert fixed_cite == legacy_cite
+
+
+# 언어 가드의 재시도도 fixed의 한국어 거절 문장을 지닌다(재시도 규칙이 한국어 규칙을 갈아 끼우므로, 붙이지
+# 않으면 재시도한 답에서만 한국어 거절 지시가 사라진다).
+@pytest.mark.asyncio
+async def test_the_guard_retry_keeps_the_fixed_korean_refusal(scripted_ollama):
+    payloads, script = scripted_ollama
+    script += [(MIXED_KO, {}), (CLEAN_KO, {}), CITE_2]
+
+    service = OllamaGenerationService("http://ollama.test", "m", language_guard=True, refusal_style="fixed")
+    await service.answer(KOREAN_Q, [make_chunk(1)], "ko")
+
+    first, retry, _ = payloads
+    assert first["messages"][0]["content"] == expected_system_prompt("ollama", "ko", "fixed")
+    expected_retry = expected_system_prompt("ollama", "ko", "fixed", korean_retry=True)
+    assert retry["messages"][0]["content"] == expected_retry
+
+
+# Claude 경로도 같은 규칙을 system으로 보낸다(실제 API는 부르지 않음). 고정 거절문은 거절로 분류돼, 인용
+# 비우기를 켜면 받은 인용이 비워진다.
+class CapturingMessages:
+    def __init__(self, answer: str) -> None:
+        self.answer = answer
+        self.calls: list[dict] = []
+
+    async def create(self, **kwargs):
+        self.calls.append(kwargs)
+        tool_input = {"answer": self.answer, "citations": [{"chunk_number": 1}]}
+        block = SimpleNamespace(type="tool_use", input=tool_input)
+        return SimpleNamespace(content=[block], usage=SimpleNamespace(input_tokens=10, output_tokens=5))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("style", ["legacy", "fixed"])
+@pytest.mark.parametrize("language", ["en", "ko"])
+async def test_claude_sends_the_same_refusal_rules(style, language):
+    service = generation.AnthropicGenerationService(
+        "test-key", "claude-test", refusal_style=style, empty_citations_on_refusal=True
+    )
+    messages = CapturingMessages(generation.FIXED_REFUSAL[language])
+    service._client = SimpleNamespace(messages=messages)
+
+    result = await service.answer("Q?", [make_chunk(1)], language)
+
+    assert messages.calls[0]["system"] == expected_system_prompt("anthropic", language, style)
+    assert result.cited_chunk_numbers == []
+
+
+# 생성기는 모르는 꼴 이름을 받지 않는다(설정은 Literal로 먼저 거부하지만, 평가 스크립트처럼 생성기를 직접
+# 만드는 곳에서 오타가 legacy로 조용히 돌지 않게).
+def test_an_unknown_refusal_style_is_refused():
+    with pytest.raises(ValueError, match="refusal_style"):
+        OllamaGenerationService("http://ollama.test", "m", refusal_style="strict")
+    with pytest.raises(ValueError, match="refusal_style"):
+        generation.AnthropicGenerationService("test-key", "m", refusal_style="strict")
+
+
+# 설정 REFUSAL_STYLE의 기본값은 legacy(측정으로 채택되기 전)이고, 허용 목록 밖의 값이면 시작하지 않는다.
+# 환경 변수 → 설정 → 두 제공자의 생성기로 넘어간다. Claude 클라이언트는 만들기만 하고 부르지 않는다(키는
+# 테스트 값으로 덮어써 로컬 .env의 값을 쓰지 않음).
+def test_the_refusal_style_defaults_to_legacy_and_reaches_both_providers(monkeypatch):
+    monkeypatch.delenv("REFUSAL_STYLE", raising=False)
+    assert Settings(database_url="x", jwt_secret_key="y", _env_file=None).refusal_style == "legacy"
+    with pytest.raises(ValidationError):
+        Settings(database_url="x", jwt_secret_key="y", _env_file=None, refusal_style="strict")
+
+    monkeypatch.setenv("REFUSAL_STYLE", "fixed")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    for provider in ("ollama", "anthropic"):
+        monkeypatch.setenv("GENERATION_PROVIDER", provider)
+        get_settings.cache_clear()
+        generation.get_generation_service.cache_clear()
+        try:
+            assert generation.get_generation_service()._refusal_style == "fixed"
+        finally:
+            get_settings.cache_clear()
+            generation.get_generation_service.cache_clear()

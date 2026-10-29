@@ -605,6 +605,28 @@ def test_the_eval_generator_records_bad_citation_replies_instead_of_failing(monk
     assert generator._think is False and generator._language_guard is True
 
 
+# v16-B: 평가용 생성기와 프롬프트 토큰 세기가 설정의 거절 지시 꼴(REFUSAL_STYLE)을 따른다. 평가 스크립트는
+# 생성기를 직접 만들므로, 설정을 넘기지 않으면 fixed 팔이 조용히 legacy 프롬프트로 돈다. 세기의 기본값은
+# legacy.
+def test_the_eval_generator_and_prompt_counter_follow_the_refusal_style():
+    from app.config import Settings
+    from app.services.generation import OLLAMA_ANSWER_PROMPT, answer_system_prompt
+
+    settings = Settings(database_url="x", jwt_secret_key="y", _env_file=None, refusal_style="fixed")
+    assert run_answer_eval.build_generator(settings)._refusal_style == "fixed"
+
+    seen: list[list[dict]] = []
+
+    def count(messages: list[dict]) -> int:
+        seen.append(messages)
+        return 7
+
+    assert run_answer_eval.ollama_answer_prompt_counter(count, "fixed")("질문?", [], "ko") == 7
+    assert seen[0][0]["content"] == answer_system_prompt("ollama", "ko", "fixed")
+    run_answer_eval.ollama_answer_prompt_counter(count)("Q?", [], "en")
+    assert seen[1][0]["content"] == OLLAMA_ANSWER_PROMPT
+
+
 # 모델 digest를 /api/tags 목록에서 찾고, 없거나 상태를 못 읽었으면 None을 돌려주는지 확인한다.
 def test_model_digest_comes_from_ollama_tags():
     models = [{"name": "a:1", "digest": "aaa"}, {"name": "qwen3.5:9b", "digest": "6488c96f"}]
@@ -692,7 +714,8 @@ def test_ids_file_keeps_only_its_dataset_lines_and_refuses_the_old_format(tmp_pa
 
 # 평가 실행 한 번(main)을 테스트 DB와 가짜 임베딩·생성기로 돌린다(Ollama 상태 조회도 가짜). (1) --ids-file이
 # 이 데이터셋 줄의 문항만 생성하고, 이 데이터셋 줄인데 데이터셋에 없는 id는 경고한다. (2) meta에 질문셋 파일의
-# sha256, DB 코퍼스(문서의 원본 커밋별 수·마지막 적재 시각·언어별 청크 수), 쓴 ids 파일이 남는다. (3) 리포트
+# sha256, DB 코퍼스(문서의 원본 커밋별 수·마지막 적재 시각·언어별 청크 수), 쓴 ids 파일, 거절 지시 꼴
+# (REFUSAL_STYLE, v16-B 두 팔을 가름)이 남는다. (3) 리포트
 # 머리의 database 줄 바로 아래에 코퍼스 줄이 있다.
 @pytest.mark.asyncio
 async def test_answer_eval_generates_only_its_listed_items_and_records_provenance(
@@ -742,6 +765,9 @@ async def test_answer_eval_generates_only_its_listed_items_and_records_provenanc
         path.write_text(content, encoding="utf-8")
         return path
 
+    # v16-B: 실행 조건에 거절 지시 꼴이 남는지 보려고 기본값이 아닌 값을 준다(설정 캐시는 앞뒤로 비움).
+    monkeypatch.setenv("REFUSAL_STYLE", "fixed")
+    run_answer_eval.get_settings.cache_clear()
     monkeypatch.setattr(run_answer_eval, "async_session_maker", async_sessionmaker(db_engine))
     monkeypatch.setattr(run_answer_eval, "get_embedding_service", lambda language: embedder)
     monkeypatch.setattr(run_answer_eval, "build_generator", lambda settings: FakeGenerationService())
@@ -766,7 +792,10 @@ async def test_answer_eval_generates_only_its_listed_items_and_records_provenanc
         ids_file=ids_file,
     )
 
-    assert await run_answer_eval.main(args) == 0
+    try:
+        assert await run_answer_eval.main(args) == 0
+    finally:
+        run_answer_eval.get_settings.cache_clear()
 
     assert [r["id"] for r in read_jsonl(tmp_path / "runs" / "ids.gen.jsonl")] == ["n002"]
     assert "n999" in capsys.readouterr().out
@@ -776,6 +805,7 @@ async def test_answer_eval_generates_only_its_listed_items_and_records_provenanc
     assert meta["corpus"]["documents_by_source_commit"] == {"c" * 40: 1}
     assert meta["corpus"]["chunks_by_language"] == {"en": 1}
     assert meta["corpus"]["last_fetched_at"]
+    assert meta["refusal_style"] == "fixed"
     report = next(tmp_path.glob("answer_eval_ids_*.md")).read_text(encoding="utf-8").splitlines()
     at = next(i for i, line in enumerate(report) if line.startswith("- database:"))
     assert report[at + 1].startswith("- corpus: source commit ccccccc (1 document)")

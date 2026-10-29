@@ -115,6 +115,12 @@ class Settings(BaseSettings):
     citation_mode: Literal["separate", "followup"] = "separate"
     refuse_without_context: bool = False
     empty_citations_on_refusal: bool = True
+    # v16-B 후보(docs/experiments.md v16-B): 답할 근거가 없을 때의 거절 지시 꼴. legacy(기본)는 v1부터 쓴
+    # 2인칭 지시("say you don't know instead of guessing")이고, fixed는 언어별 1인칭 고정 거절문을 그대로 쓰게
+    # 하고 한국어 규칙에도 한국어 거절문을 더한다(app/services/generation.py의 FIXED_REFUSAL). 두 제공자가
+    # 같은 규칙을 쓴다. 측정 전에 등록한 규칙으로 채택이 정해지기 전에는 legacy 그대로 둔다. 다른 값이면
+    # 시작하지 않는다.
+    refusal_style: Literal["legacy", "fixed"] = "legacy"
     # 영어 문서·질문 임베딩 모델. v8에서 다국어 모델 하나로 통일하면 영어 테스트셋 MRR이 0.933 → 0.638로
     # 떨어져 영어는 이 모델을 유지했다(docs/experiments.md v8).
     embedding_model_name: str = "BAAI/bge-small-en-v1.5"
