@@ -8,6 +8,7 @@
 # - 보안 헤더: 모든 응답에 CSP·클릭재킹 방지·nosniff 헤더를 붙인다(미들웨어, 그리고 미들웨어를 지나지 않는
 #   예기치 않은 500은 500 처리기가 직접).
 # - 라우터 5개(health, auth, documents, query, logs)와 채팅 화면(/, /static).
+# - 문서 페이지: APP_ENV=production이면 FastAPI의 /docs·/redoc을 끈다(/openapi.json은 남김, docs_page_urls).
 # [배경] 422 처리기와 보안 헤더는 OWASP ZAP 1차 스캔 지적(NUL 문자 500, CSP·클릭재킹·nosniff 헤더 없음)을
 # 고치면서 들어왔다(docs/security-scan.md).
 
@@ -58,8 +59,24 @@ async def lifespan(app: FastAPI):
     yield
 
 
-# 앱 객체. title은 /docs(Swagger UI)와 OpenAPI 문서에 표시된다.
-app = FastAPI(title="RAG Doc QA API", lifespan=lifespan)
+# 실행 환경에 따라 FastAPI의 문서 페이지 주소를 정한다. 결과는 FastAPI(...)의 키워드 인자로 그대로 넘긴다.
+# - development(기본): /docs(Swagger UI)와 /redoc(ReDoc)을 켠다. README의 Swagger UI 사용법이 이 모드
+#   기준이다.
+# - production: 둘 다 None으로 꺼서 경로 자체를 만들지 않는다(404). 이 페이지들은 CDN(jsDelivr)의 부동 메이저
+#   판 스크립트와 인라인 코드를 허용해야 뜨는데(아래 DOCS_CSP), 채팅 화면과 같은 출처라 그 스크립트가
+#   화면이 sessionStorage에 둔 접근 토큰을 읽을 수 있다. 바깥에 여는 배포에서는 그 위험을 아예 없앤다.
+# - /openapi.json(openapi_url)은 두 모드 모두 남긴다. API 목록을 기계가 읽는 주소이고, ZAP 스캔
+#   (zap/automation.yaml)도 이것으로 요청 목록을 만든다.
+def docs_page_urls(app_env: str) -> dict[str, str | None]:
+    if app_env == "production":
+        return {"docs_url": None, "redoc_url": None}
+    return {"docs_url": "/docs", "redoc_url": "/redoc"}
+
+
+# 앱 객체. title은 /docs(Swagger UI)와 OpenAPI 문서에 표시된다. 문서 페이지를 켤지 정하려고 여기서 설정을
+# 읽는다. app.db.session·app.services.security도 import 때 설정을 읽으므로 import 시점에 필요한 설정이 새로
+# 늘지는 않는다(APP_ENV=production에서 약한 비밀키면 예전처럼 이 import 단계에서 시작이 멈춘다).
+app = FastAPI(title="RAG Doc QA API", lifespan=lifespan, **docs_page_urls(get_settings().app_env))
 
 
 # 422 본문에서 빼는 pydantic 오류 항목의 키. input은 제출한 값 그대로라 규칙에 걸린 비밀번호 원문, 필드가
@@ -135,11 +152,14 @@ APP_CSP = (
 # jsDelivr CDN의 스크립트·스타일과 Google Fonts, 인라인 시작 코드를 쓰므로 APP_CSP로는 화면이 깨진다. 그래도
 # frame-ancestors 'none'은 유지한다.
 # DOCS_PATHS: FastAPI 객체가 실제로 쓰는 문서 경로를 그대로 읽어 와, 경로 설정이 바뀌어도 목록이 어긋나지 않게
-# 한다.
+# 한다. 꺼진 페이지(None)는 넣지 않는다. FastAPI는 docs_url이 None이면 /docs/oauth2-redirect도 만들지 않으므로
+# (fastapi/applications.py의 setup), 그때는 리다이렉트 경로도 뺀다. 그래서 production에서는 빈 집합이고, 그
+# 주소의 404에도 엄격한 APP_CSP가 붙는다.
 # FastAPI 자체 문서 페이지는 Swagger UI와 ReDoc(그리고 ReDoc의 글꼴)을 CDN에서 불러와 인라인 코드로 시작한다.
 # 인라인 코드를 해시로 하나씩 허용하는 방법도 있지만, jsDelivr를 허용한 시점에 이미 그곳의 어떤 패키지든
 # 실행될 수 있으므로 정책이 크게 엄격해지지 않는다. 또 이 페이지들에는 사용자 데이터가 없어 'unsafe-inline'을
-# 둔다.
+# 둔다. 다만 채팅 화면과 같은 출처라, 채팅 화면이 sessionStorage에 둔 접근 토큰은 이 페이지의 스크립트도 읽을
+# 수 있다. 그래서 바깥에 여는 production에서는 이 페이지들을 아예 끈다(위 docs_page_urls).
 DOCS_CSP = (
     "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
     "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://fonts.googleapis.com; "
@@ -148,7 +168,15 @@ DOCS_CSP = (
     "worker-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'self'; "
     "frame-ancestors 'none'"
 )
-DOCS_PATHS = {app.docs_url, app.swagger_ui_oauth2_redirect_url, app.redoc_url}
+DOCS_PATHS = frozenset(
+    path
+    for path in (
+        app.docs_url,
+        app.swagger_ui_oauth2_redirect_url if app.docs_url else None,
+        app.redoc_url,
+    )
+    if path
+)
 
 
 # 응답에 붙일 보안 헤더 세 개(아래 미들웨어와 500 처리기가 함께 쓴다).

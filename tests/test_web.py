@@ -4,12 +4,18 @@
 # 없다는 Low가 나왔고, 고친 뒤 2차 스캔에서 사라졌다(docs/security-scan.md, 커밋 ce7a847). 헤더와 '인라인 코드
 # 없는 페이지'가 다시 깨지지 않게 고정한다.
 # [import] re는 HTML에서 스크립트·스타일·이벤트 속성과 외부 파일 주소를 찾는 데 쓴다. generation은 생성기 장애
-# code 목록(503 응답의 detail.code)을 가져오는 데 쓴다.
+# code 목록(503 응답의 detail.code)을 가져오는 데 쓴다. importlib·config·main_module·Settings·httpx는
+# APP_ENV=production으로 만든 앱(문서 페이지를 끈 앱)을 따로 세워 볼 때 쓴다.
 
+import importlib
 import re
 
 import pytest
+from httpx import ASGITransport, AsyncClient
 
+import app.config as config
+import app.main as main_module
+from app.config import Settings
 from app.services import generation
 
 
@@ -101,6 +107,54 @@ async def test_the_docs_pages_may_load_their_cdn_files_but_not_be_framed(client,
     assert all(host in csp for host in hosts), hosts
     assert "frame-ancestors 'none'" in csp
     assert resp.headers["x-frame-options"] == "DENY"
+
+
+# 기본(APP_ENV=development) 앱에서는 문서 페이지 세 경로(Swagger UI, 그 OAuth2 리다이렉트, ReDoc)가 느슨한
+# 문서용 정책을 받는다. 꺼진 경로를 뜻하는 None이 목록에 섞이지 않는다.
+def test_development_mode_keeps_the_docs_pages_under_the_docs_policy():
+    assert main_module.DOCS_PATHS == {"/docs", "/docs/oauth2-redirect", "/redoc"}
+    assert None not in main_module.DOCS_PATHS
+
+
+# APP_ENV=production으로 만든 앱. app.main은 import할 때 설정을 읽어 앱을 만들므로, 설정 조회 함수를
+# production 설정을 돌려주는 함수로 잠시 바꾸고 모듈을 다시 실행(importlib.reload)한다. 끝나면 모듈의 이름
+# 공간을 다시 실행하기 전 그대로 되돌려, 다른 테스트가 쓰는 원래 앱 객체(conftest의 app)와 모듈 전역
+# (DOCS_PATHS 등)이 처음 상태로 돌아가게 한다. get_settings의 캐시와 다른 모듈이 읽어 둔 설정은 건드리지
+# 않는다.
+@pytest.fixture
+def production_app():
+    namespace = vars(main_module)
+    saved = dict(namespace)
+    production = Settings(database_url="x", jwt_secret_key="k" * 64, app_env="production", _env_file=None)
+    try:
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(config, "get_settings", lambda: production)
+            importlib.reload(main_module)
+        yield main_module.app
+    finally:
+        namespace.clear()
+        namespace.update(saved)
+
+
+# production에서는 /docs·/docs/oauth2-redirect·/redoc을 아예 만들지 않아 404이고, 그 404에도 엄격한 앱 정책
+# (APP_CSP)이 붙는다. 문서 페이지는 CDN 스크립트와 인라인 코드를 허용해야 하는데, 채팅 화면과 같은 출처라 그
+# 스크립트가 sessionStorage의 접근 토큰을 읽을 수 있기 때문이다. /openapi.json은 남긴다(ZAP 스캔
+# zap/automation.yaml이 이 주소로 API 목록을 읽는다).
+@pytest.mark.asyncio
+async def test_production_mode_turns_off_the_docs_pages_but_keeps_the_openapi_schema(production_app):
+    assert production_app.docs_url is None and production_app.redoc_url is None
+    assert main_module.DOCS_PATHS == frozenset()
+
+    transport = ASGITransport(app=production_app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        for path in ("/docs", "/docs/oauth2-redirect", "/redoc"):
+            resp = await client.get(path)
+            assert resp.status_code == 404, path
+            assert resp.headers["content-security-policy"] == main_module.APP_CSP, path
+        spec = await client.get("/openapi.json")
+
+    assert spec.status_code == 200
+    assert "/query/ask" in spec.json()["paths"]
 
 
 # /query/ask의 503(생성기 장애)은 detail.code로 원인을 알리고, 채팅 화면(app/web/static/chat.js)이 code마다

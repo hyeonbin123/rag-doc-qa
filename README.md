@@ -150,7 +150,9 @@ cp .env.example .env
 ```bash
 docker compose up --build
 ```
-DB 헬스체크 통과 후 API가 마이그레이션(`alembic upgrade head`)을 자동 적용하고 `http://localhost:8000`에서 뜬다. 이 주소를 브라우저로 열면 채팅 화면이 나오고, `http://localhost:8000/docs`를 열면 Swagger UI가 나온다. compose는 API와 DB 포트를 호스트의 `127.0.0.1`에만 연다(DB 기본 비밀번호가 공개 값이라서). 같은 네트워크의 다른 기기에서 열어야 하면 `.env`에 `HOST_BIND_ADDRESS=0.0.0.0`을 두되, 그 전에 `JWT_SECRET_KEY`와 DB 비밀번호를 바꾼다.
+DB 헬스체크 통과 후 API가 마이그레이션(`alembic upgrade head`)을 자동 적용하고 `http://localhost:8000`에서 뜬다. 이 주소를 브라우저로 열면 채팅 화면이 나오고, `http://localhost:8000/docs`를 열면 Swagger UI가 나온다(기본 `APP_ENV=development`일 때). compose는 API와 DB 포트를 호스트의 `127.0.0.1`에만 연다(DB 기본 비밀번호가 공개 값이라서). 같은 네트워크의 다른 기기에서 열어야 하면 `.env`에 `HOST_BIND_ADDRESS=0.0.0.0`을 두되, 그 전에 `JWT_SECRET_KEY`를 무작위 값으로 바꾸고 `APP_ENV=production`을 둔다. production이면 약한 비밀키로는 시작하지 않고 `/docs`·`/redoc` 화면을 끈다(`/openapi.json`은 남음).
+
+이렇게 API를 열어도 DB 포트는 `127.0.0.1`에 남는다. DB 게시 주소는 따로 `DB_BIND_ADDRESS`(기본 `127.0.0.1`)가 정하기 때문이다(2026-10-29부터. 그 전에는 `HOST_BIND_ADDRESS` 하나가 API와 DB를 함께 열었으므로, 그렇게 다른 기기에서 DB에 붙던 경우에는 `DB_BIND_ADDRESS`도 둔다). DB까지 열어야 할 때는 그 전에 DB 비밀번호를 바꾼다. 이미 만든 볼륨에서는 `.env`의 `POSTGRES_PASSWORD`만 바꿔서는 비밀번호가 바뀌지 않으므로(Postgres 이미지는 빈 데이터 디렉터리를 처음 초기화할 때만 이 값을 쓴다), DB 안에서 `ALTER USER`로 바꾸고 `.env`의 `POSTGRES_PASSWORD`와 `DATABASE_URL`도 같은 값으로 맞춘다.
 
 `.env`는 호스트에서 실행하는 기준(`localhost`)으로 그대로 두면 된다. compose가 API 컨테이너의 `DATABASE_URL`은 `db` 서비스로, `OLLAMA_BASE_URL`은 `host.docker.internal:11434`(호스트에서 실행 중인 Ollama)로 덮어쓴다. 임베딩 모델(영어 1개, 한국어 2개)과 재정렬 모델(`rerank` 모드용, 언어별 2개)은 빌드할 때 이미지에 넣어 두므로 실행 중에는 HuggingFace에 접속하지 않는다. 한국어 임베딩은 기본값 Granite R2 311M(측정한 리비전으로 고정) 말고 v13 단계 B 전의 e5-small도 들어 있어서, `EMBEDDING_MODEL_NAME_KO`만 바꾸고 한국어를 다시 적재하면 이미지를 다시 빌드하지 않고 되돌릴 수 있다. torch는 CPU 빌드를 쓰고, 모델 다섯 개가 들어 있어 이미지 크기는 `docker image ls` 기준 약 5.2GB다 (v13 단계 B 전 4.0GB. Granite 층은 658MB인데, 이 표시는 압축한 크기와 풀어 놓은 크기를 함께 세어 더 많이 늘어남).
 
@@ -181,9 +183,9 @@ curl -X POST localhost:8000/query/ask \
   - 단계별로 걸린 시간
 - 로그인하면 최근 질문 10개를 불러온다.
 - 화면은 정적 HTML 한 장(`app/web/index.html`)과 그 스크립트·스타일 파일(`app/web/static/`)이고, 아래 API를 그대로 호출한다.
-- 모든 응답에 Content-Security-Policy(같은 출처의 파일만 실행, 인라인 코드 없음), 다른 사이트의 프레임 안에 넣지 못하게 하는 `frame-ancestors 'none'`·`X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`가 붙는다. FastAPI가 만드는 `/docs`·`/redoc` 화면만 CDN 파일과 인라인 코드를 허용한다.
+- 모든 응답에 Content-Security-Policy(같은 출처의 파일만 실행, 인라인 코드 없음), 다른 사이트의 프레임 안에 넣지 못하게 하는 `frame-ancestors 'none'`·`X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`가 붙는다. FastAPI가 만드는 `/docs`·`/redoc` 화면만 CDN 파일과 인라인 코드를 허용한다. 이 두 화면은 채팅 화면과 같은 출처라 그 CDN 스크립트가 채팅 화면의 접근 토큰(`sessionStorage`)을 읽을 수 있으므로, `APP_ENV=production`이면 아예 끈다(404, `/openapi.json`은 남김).
 
-API를 직접 호출해 보려면 Swagger UI를 쓴다.
+API를 직접 호출해 보려면 Swagger UI를 쓴다(기본 `development` 모드).
 1. `http://localhost:8000/docs`를 연다.
 2. `POST /auth/register` → **Try it out** → 이메일과 비밀번호를 넣고 **Execute**. 응답 코드가 201이면 가입 완료.
 3. 오른쪽 위 **Authorize** 버튼을 누르고, `username`에 이메일, `password`에 비밀번호를 넣어 로그인한다. 그다음 요청부터는 토큰이 자동으로 붙는다.
