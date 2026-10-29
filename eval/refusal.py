@@ -18,6 +18,8 @@
     python -m eval.refusal test --tag v15_i4_test --label J1 --floors eval/runs/v15_i4_floors.json \
         --base-na <gen ...> --cand-na <gen ...> --base-ans <gen ...> --cand-ans <gen ...> \
         --used-retrieval <retrieval.jsonl ...> --c-adopted true|false
+
+    # dev·test 모두 --by-kind를 더하면 거절 수를 질문 유형(near_miss/adjacent)별로도 보고한다(질문 풀 5)
 """
 
 # [파일 역할] v15 I4의 분석·결정기. 답 없는 질문(문서가 다루지 않는 질문)에서 시스템이 모른다고 하는지
@@ -34,12 +36,20 @@
 # - 거절은 is_refusal_answer(첫 문장 정규식)로 센다. 생성 기록의 refusal 필드가 그 값이다.
 # [연결] 검색 기록은 eval/run_retrieval_eval.py, 생성 기록은 eval/run_answer_eval.py, 판정은
 # eval/run_judge.py가 쓴다.
+# [유형 열] --by-kind를 주면 dev·test 보고가 거절 수를 언어별 합계와 함께 질문 유형별로도 낸다
+# (*_by_kind). 유형은 near_miss(문서가 주제는 다루지만 묻는 핵심이 없는 질문)와 adjacent(문서가 아예
+# 다루지 않는 인접 주제)이고 문항 id로 정한다(question_kind). 질문 풀 5(eval/pool5_provenance.md)부터 두
+# 유형이 한 셋에 섞여서, 합계만 보면 비교적 쉬운 인접 주제의 거절이 near-miss에서 지어낸 답을 가리기
+# 때문이다. 기본은 끔: 커밋된 v15 I4 결정 기록(eval/runs/v15_i4_dev.json·v15_i4_test.json)은 이 열 없이
+# 쓰였고, 같은 기록을 다시 세면 그 파일과 완전히 같아야 하기 때문이다(tests/test_v15_eval.py의 재집계).
 
 from __future__ import annotations
 
 import argparse
 import math
+import re
 import sys
+from collections.abc import Iterable
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -171,10 +181,37 @@ def refused(record: dict) -> bool:
     return is_refusal_answer(record["answer"], record.get("language", "en"))
 
 
+# 질문 유형을 정하는 문항 id 모양: 언어 글자(k/e) + 풀 번호 + 유형 글자 + 번호. 유형 글자 n은 near-miss
+# (질문 풀 5의 k5n01·e5n01), a는 인접 주제(질문 풀 4의 k4a01·e4a01, 질문 풀 5의 k5a01·e5a01)다.
+_KIND_ID = re.compile(r"[ke]\d+(?P<letter>[na])\d+")
+
+
+# 문항 id → 질문 유형('near_miss' / 'adjacent'). 위 모양이 아닌 id(질문 풀 4 본 파일의 k4001, 이전 셋의
+# id 등)는 'other'로 둔다. 생성 기록에는 유형 필드가 없고(질문셋 형식 eval/common.EvalQuestion에도 없음)
+# 질문을 쓸 때 정한 id가 그 유형을 담고 있어서, 기록 형식을 바꾸지 않고 id로 가른다. 유형은 질문을 쓴 쪽의
+# 의도이고, 답이 있는지는 라벨(셋의 종류)이 정한다.
+def question_kind(item_id: str) -> str:
+    match = _KIND_ID.fullmatch(item_id)
+    if match is None:
+        return "other"
+    return "near_miss" if match["letter"] == "n" else "adjacent"
+
+
+# 생성 기록들의 유형별 문항 수와 거절 수({유형: {"n": 문항 수, "refusals": 거절 수}}, 유형 이름순).
+def kind_breakdown(records: Iterable[dict]) -> dict[str, dict[str, int]]:
+    counts: dict[str, dict[str, int]] = {}
+    for r in records:
+        entry = counts.setdefault(question_kind(r["id"]), {"n": 0, "refusals": 0})
+        entry["n"] += 1
+        entry["refusals"] += int(refused(r))
+    return dict(sorted(counts.items()))
+
+
 # dev 명령: (c) 거절 답의 인용 비우기를 고르는 조건. 답 있는 dev 답 중 '판정 정확도 ≥ 4인데 거절로 분류된'
 # 답이 언어별 MAX_FALSE_REFUSALS 이하이면 (c)를 test 후보에 넣는다. 답 없는 dev 질문의 거절 수와 거절인데
-# 인용이 붙은 답 수는 보고한다.
-def dev_command(answerable: dict, unanswerable: dict) -> dict:
+# 인용이 붙은 답 수는 보고한다. by_kind이면 답 있는·없는 질문의 거절 수를 유형별로도 보고한다
+# (answerable_by_kind, unanswerable_by_kind. 답 있는 쪽은 거절 과잉을 유형별로 보려는 것).
+def dev_command(answerable: dict, unanswerable: dict, by_kind: bool = False) -> dict:
     out: dict = {"languages": {}}
     for language in sorted(
         {r["language"] for r, _ in list(answerable.values()) + list(unanswerable.values())}
@@ -196,6 +233,9 @@ def dev_command(answerable: dict, unanswerable: dict) -> dict:
                 1 for r, _ in na + ans if refused(r) and r.get("cited_chunk_numbers")
             ),
         }
+        if by_kind:
+            out["languages"][language]["answerable_by_kind"] = kind_breakdown(r for r, _ in ans)
+            out["languages"][language]["unanswerable_by_kind"] = kind_breakdown(r for r, _ in na)
     out["c_adopted_for_test"] = all(
         len(e["false_refusals"]) <= MAX_FALSE_REFUSALS for e in out["languages"].values()
     )
@@ -212,6 +252,8 @@ def merge_candidate(base: dict, cand: dict) -> dict:
 # - F2: 이미 쓴 답 있는 test 셋들의 검색 기록에서, 고른 바닥값의 정답 손실 ≤ MAX_LOST (언어별)
 # - F3: 문맥이 바뀌어 두 팔 모두 새로 생성한 답 있는 문항의 판정 정확도 합 후보 ≥ 기준 − JUDGE_TOLERANCE
 # - F4: 생성한 한국어 문항(답 있는·없는 모두)의 섞인 답 수 후보 ≤ 기준
+# 답 없는 질문의 거절 수는 언어별(refusals_by_language)로, by_kind이면 언어·유형별(refusals_by_kind)로도
+# 보고한다. 유형 열은 보고용이고 F1~F4 판정에는 쓰지 않는다(v15 I4 규칙은 합계 기준).
 def test_command(
     floors: dict[str, float],
     base_na: dict,
@@ -220,6 +262,7 @@ def test_command(
     cand_ans: dict,
     used_retrieval: list[dict],
     c_adopted: bool,
+    by_kind: bool = False,
 ) -> dict:
     cand_na_merged = merge_candidate(base_na, cand_na)
     refusals_base = sum(refused(r) for r, _ in base_na.values())
@@ -257,7 +300,7 @@ def test_command(
         "base": sum(1 for _, j in base_na.values() if j and j.get("hallucinated")),
         "cand": sum(1 for _, j in cand_na_merged.values() if j and j.get("hallucinated")),
     }
-    return {
+    result = {
         "floors": floors,
         "unanswerable_n": len(base_na),
         "refusals": {"base": refusals_base, "cand": refusals_cand},
@@ -279,6 +322,21 @@ def test_command(
         "adopt_floor_and_refusal": bool(floors) and all(conditions.values()),
         "adopt_empty_citations": c_adopted,
     }
+    if by_kind:
+        # 언어 → 유형 → 기준·후보 거절 수와 문항 수. 후보 쪽은 다시 생성하지 않은 문항에 기준 답을 쓴 병합
+        # 결과(cand_na_merged, 키가 base_na와 같음)로 센다.
+        kinds: dict[str, dict[str, dict[str, int]]] = {}
+        for key, (r, _) in base_na.items():
+            entry = kinds.setdefault(r["language"], {}).setdefault(
+                question_kind(r["id"]), {"base": 0, "cand": 0, "n": 0}
+            )
+            entry["n"] += 1
+            entry["base"] += int(refused(r))
+            entry["cand"] += int(refused(cand_na_merged[key][0]))
+        result["refusals_by_kind"] = {
+            lang: dict(sorted(per_kind.items())) for lang, per_kind in sorted(kinds.items())
+        }
+    return result
 
 
 def _render(title: str, data: dict) -> str:
@@ -316,6 +374,13 @@ def main() -> int:
     tp.add_argument("--cand-ans", type=Path, nargs="*", default=[])
     tp.add_argument("--used-retrieval", type=Path, nargs="+", required=True)
     tp.add_argument("--c-adopted", type=lambda v: v.lower() == "true", required=True)
+    # 유형 열(near_miss / adjacent / other별 거절 수). 끄면 v15 I4 결정 기록과 같은 모양의 보고가 나온다.
+    by_kind_help = (
+        "거절 수를 질문 유형(near_miss/adjacent/other, 문항 id로 정함)별로도 보고한다. 두 유형이 섞인 "
+        "질문 풀 5 셋에 쓴다. 기본은 끔(v15 I4 결정 기록이 이 열 없이 쓰였음)"
+    )
+    dp.add_argument("--by-kind", action="store_true", help=by_kind_help)
+    tp.add_argument("--by-kind", action="store_true", help=by_kind_help)
     args = parser.parse_args()
     stamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
 
@@ -337,7 +402,9 @@ def main() -> int:
         return 0
     if args.command == "dev":
         result = dev_command(
-            load_answers(args.answerable, args.label), load_answers(args.unanswerable, args.label)
+            load_answers(args.answerable, args.label),
+            load_answers(args.unanswerable, args.label),
+            by_kind=args.by_kind,
         )
         write_json(Path("eval/runs") / f"{args.tag}.json", result)
         write_report(f"refusal_dev_{args.tag}_{stamp}.md", _render(f"거절 dev {args.tag}", result))
@@ -353,6 +420,7 @@ def main() -> int:
         load_answers(args.cand_ans, args.label),
         [r for p in args.used_retrieval for r in read_jsonl(p)],
         args.c_adopted,
+        by_kind=args.by_kind,
     )
     write_json(Path("eval/runs") / f"{args.tag}.json", result)
     write_report(f"refusal_test_{args.tag}_{stamp}.md", _render(f"거절 test {args.tag}", result))
