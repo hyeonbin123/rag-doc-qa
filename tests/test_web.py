@@ -168,3 +168,36 @@ async def test_the_chat_page_explains_every_generator_error_code(client):
     assert generation.GENERATOR_ERROR_MESSAGES
     for code in generation.GENERATOR_ERROR_MESSAGES:
         assert f"'{code}'" in script, code
+
+
+# 로그인 뒤 최근 질문은 상세까지 담은 목록 한 번(/logs?limit=10&detail=true)으로 불러온다. 예전 화면은
+# 요약 목록 뒤 항목마다 /logs/{id}를 따로 불러 로그인마다 11번 요청했다. 화면 스크립트에 항목별 상세
+# 요청이 다시 생기지 않는지 본다(브라우저 없이 스크립트 글자만 보는 정적 검사).
+@pytest.mark.asyncio
+async def test_the_chat_page_loads_its_history_in_one_request(client):
+    script = (await client.get("/static/chat.js")).text
+
+    assert "api('/logs?limit=10&detail=true')" in script
+    assert "api('/logs/'" not in script
+
+
+# 답변을 기다리는 동안 0.5초마다 바뀌는 경과 초가 화면 읽기 프로그램에 되풀이해 읽히지 않아야 한다. 대화
+# 영역(#log)은 aria-live="polite"라 그 안의 글이 바뀔 때마다 알림 대상이 되므로, 타이머(addPending의 tick)가
+# 글을 바꾸는 요소는 모두 aria-hidden이어야 하고, 고정 문구는 타이머가 다시 쓰지 않아 붙을 때 한 번만 읽힌다.
+# 스크립트 글자만 보는 정적 검사라 addPending·tick의 모양(함수 선언과 화살표 함수)에 기댄다.
+@pytest.mark.asyncio
+async def test_the_waiting_counter_is_not_announced_again_and_again(client):
+    script = (await client.get("/static/chat.js")).text
+    html = (await client.get("/")).text
+
+    pending = re.search(r"function addPending\(\) \{\n(.*?)\n  \}\n", script, re.S)
+    assert pending, "addPending을 찾지 못함"
+    body = pending.group(1)
+    tick = re.search(r"const tick = \(\) => \{(.*?)\};", body, re.S)
+    assert tick, "addPending 안의 tick을 찾지 못함"
+    updated = re.findall(r"(\w+)\.textContent\s*=", tick.group(1))
+    assert updated, "tick이 글을 바꾸는 요소를 찾지 못함"
+    for name in updated:
+        assert f"{name}.setAttribute('aria-hidden', 'true')" in body, name
+    assert "중이에요" not in tick.group(1)
+    assert 'id="log" aria-live="polite"' in html

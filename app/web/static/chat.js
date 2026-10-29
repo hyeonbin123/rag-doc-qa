@@ -302,19 +302,18 @@
     log.appendChild(el('div', 'msg-user', text));
   }
 
-  // 불러온 이전 질문 하나를 날짜, 질문, 답변 노드로 되살린다. 인용은 상세 기록의 retrieved_chunks 중 cited인
-  // 것으로 만든다(이 기록에는 헤딩 경로가 없어 제목은 파일 경로로 나온다). 상세를 못 받았거나 지연 기록이
-  // 없으면 그 부분은 빼고 그린다.
+  // 불러온 이전 질문 하나(/logs?detail=true 목록의 항목)를 날짜, 질문, 답변 노드로 되살린다. 인용은 그 항목의
+  // retrieved_chunks 중 cited인 것으로 만든다(이 기록에는 헤딩 경로가 없어 제목은 파일 경로로 나온다). 상세
+  // 필드가 없는 항목(요약만 담긴 응답)이거나 지연 기록이 없으면 그 부분은 빼고 그린다.
   function historyNodes(item) {
     const bot = el('div', 'msg-bot');
-    const d = item.detail;
     renderResult(bot, {
       answer: item.answer,
-      citations: d ? d.retrieved_chunks.filter((c) => c.cited) : [],
-      latency_ms: d && d.generation_latency_ms != null ? {
-        embedding: d.embedding_latency_ms || 0,
-        retrieval: d.retrieval_latency_ms || 0,
-        generation: d.generation_latency_ms || 0,
+      citations: (item.retrieved_chunks || []).filter((c) => c.cited),
+      latency_ms: item.generation_latency_ms != null ? {
+        embedding: item.embedding_latency_ms || 0,
+        retrieval: item.retrieval_latency_ms || 0,
+        generation: item.generation_latency_ms || 0,
         total: item.total_latency_ms || 0,
       } : null,
     });
@@ -353,20 +352,28 @@
     log.appendChild(wrap);
   }
 
-  // 답변을 기다리는 동안 깜빡이는 점과 경과 초를 보여 준다. 0.5초마다 글을 갱신하고, 돌려준 stop으로 타이머를
-  // 멈춘다. wrap은 나중에 답변으로 바뀔 자리다.
+  // 답변을 기다리는 동안 깜빡이는 점과 고정 문구, 경과 초를 보여 준다. 0.5초마다 경과 초만 갱신하고, 돌려준
+  // stop으로 타이머를 멈춘다. wrap은 나중에 답변으로 바뀔 자리다.
+  // 대화 영역(#log)은 aria-live="polite"라 그 안의 글이 바뀔 때마다 화면 읽기 프로그램이 읽는다. 그래서 고정
+  // 문구는 행을 붙이기 전에 채워 붙을 때 한 번만 읽히게 하고, 계속 바뀌는 경과 초는 aria-hidden으로 숨긴다(눈에는
+  // 그대로 보인다). 예전에는 문구와 초를 한 글로 묶어 0.5초마다 다시 써서, 기다리는 동안 같은 문장이 되풀이해
+  // 읽혔다. 경과 초 span은 고정 문구 span 안에 넣는다: .pending(chat.css)은 자식 사이에 flex gap을 두므로 따로
+  // 두면 간격이 넓어지고, 안에 넣으면 예전처럼 띄어쓰기 한 칸('…중이에요 3초')으로 이어진다.
   function addPending() {
     const wrap = el('div', 'msg-bot');
     const row = el('div', 'pending');
-    const label = el('span');
+    const label = el('span', null, '문서를 찾고 답변을 쓰는 중이에요 ');
+    const elapsed = el('span');
+    elapsed.setAttribute('aria-hidden', 'true');
+    label.appendChild(elapsed);
     row.append(el('span', 'pulse'), label);
-    wrap.appendChild(row);
-    log.appendChild(wrap);
     const started = performance.now();
     const tick = () => {
-      label.textContent = '문서를 찾고 답변을 쓰는 중이에요 ' + Math.floor((performance.now() - started) / 1000) + '초';
+      elapsed.textContent = Math.floor((performance.now() - started) / 1000) + '초';
     };
     tick();
+    wrap.appendChild(row);
+    log.appendChild(wrap);
     const timer = setInterval(tick, 500);
     scrollToEnd();
     return { wrap, stop: () => clearInterval(timer) };
@@ -414,13 +421,14 @@
     }
   }
 
-  // 로그인 뒤 내 최근 질문 10개를 불러온다. 목록(/logs?limit=10)은 요약만 주므로 각 항목의 상세(/logs/{id})를
-  // 동시에 받아 인용과 걸린 시간을 채운다. 상세 하나가 실패해도 나머지는 그린다. 기록이 없고 화면이 비어
-  // 있으면 환영 화면을 보인다. 목록은 최신순이라 뒤집어서 오래된 것이 위에 오게 한다.
+  // 로그인 뒤 내 최근 질문 10개를 요청 한 번으로 불러온다. detail=true라 목록 항목마다 인용에 쓸
+  // retrieved_chunks와 단계별 걸린 시간이 함께 온다(app/routers/logs.py). 예전에는 요약 목록 뒤 항목마다
+  // /logs/{id}를 따로 불러 로그인마다 11번 요청했다. 불러오기에 실패하면 기록 없이 시작한다. 기록이 없고 화면이
+  // 비어 있으면 환영 화면을 보인다. 목록은 최신순이라 뒤집어서 오래된 것이 위에 오게 한다.
   async function loadHistory() {
     let items;
     try {
-      items = await api('/logs?limit=10');
+      items = await api('/logs?limit=10&detail=true');
     } catch (err) {
       items = [];
     }
@@ -428,8 +436,6 @@
       if (!log.children.length) renderWelcome();
       return;
     }
-    const details = await Promise.all(items.map((item) => api('/logs/' + item.id).catch(() => null)));
-    items.forEach((item, i) => { item.detail = details[i]; });
     // 바꿔 넣지 않고 앞에 붙인다: 기록을 불러오는 동안 보낸 질문은 이미 화면에 있고, 그 질문은 기록 아래에
     // 남아 있어야 한다.
     log.prepend(...items.reverse().flatMap(historyNodes));

@@ -2,12 +2,13 @@
 # 단계별 지연을 한 행으로 남긴다.
 # [왜 필요한가] README '한눈에 보기'에 적힌 대로 질문마다 검색 결과와 단계별 지연을 기록해, 나중에 /logs API와
 # 채팅 화면의 '최근 질문'으로 다시 보거나 어느 단계가 느렸는지 확인할 수 있게 한다.
-# [연결] app/routers/query.py가 쓰고, app/routers/logs.py가 본인 기록만 읽는다.
+# [연결] app/routers/query.py가 쓰고, app/routers/logs.py가 본인 기록만 읽는다. 스키마는 alembic/versions의
+# 0001(테이블)·0005(아래 인덱스)와 같아야 한다(스키마를 바꿀 때는 모델과 마이그레이션을 함께 고친다).
 
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -44,3 +45,16 @@ class QueryLog(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+
+
+# '내 최근 기록' 인덱스: (user_id, created_at DESC).
+# - GET /logs의 질의(WHERE user_id = 나 ORDER BY created_at DESC LIMIT n, app/routers/logs.py)가 이
+#   인덱스를 앞에서부터 n개만 읽으면 되어, query_logs 전체를 훑고 정렬하지 않는다. 채팅 화면이 로그인할
+#   때마다 이 질의를 부르고, 질문마다 한 행씩 늘어난다.
+# - 앞 열이 user_id라 사용자를 지울 때 DB가 그 사용자의 기록을 찾아 user_id를 NULL로 바꾸는 일
+#   (ON DELETE SET NULL)도 이 인덱스로 할 수 있다. PostgreSQL은 외래 키 열에 인덱스를 저절로 만들지 않는다.
+# - 마이그레이션 0005와 같은 이름·정의다. 테스트 DB는 이 모델로 만들므로(create_all) 이 선언이 테스트
+#   스키마의 인덱스가 된다.
+# - created_at의 DESC를 문자열 SQL(text)이 아니라 열 객체로 나타내려고, 클래스를 만든 뒤 매핑된 열
+#   (QueryLog.created_at.desc())로 선언한다. SQLAlchemy가 이 인덱스를 그 열의 테이블에 붙인다.
+Index("ix_query_logs_user_id_created_at", QueryLog.user_id, QueryLog.created_at.desc())

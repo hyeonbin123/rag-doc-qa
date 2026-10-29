@@ -30,7 +30,8 @@
 </header>
 
 <!-- 대화 영역. chat.js가 질문 말풍선, 답변, 근거 문서, 걸린 시간을 #log에 붙인다. 이 영역만 스크롤된다. -->
-<!-- aria-live="polite"라 새 답변이 붙으면 화면 읽기 프로그램이 읽어 준다. -->
+<!-- aria-live="polite"라 새 답변이 붙으면 화면 읽기 프로그램이 읽어 준다. 이 안의 글은 바뀔 때마다 다시 -->
+<!-- 읽히므로, 답변을 기다리는 동안 계속 바뀌는 경과 초는 chat.js(addPending)가 aria-hidden으로 숨긴다. -->
 <main id="scroller">
   <div class="log" id="log" aria-live="polite"></div>
 </main>
