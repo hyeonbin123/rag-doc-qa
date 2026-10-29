@@ -1,0 +1,140 @@
+{"id": "k5n01", "language": "ko", "kind": "near_miss", "question": "UploadFile로 받은 파일이 메모리에 있다가 디스크 임시 파일로 넘어가는 기준 크기가 정확히 몇 바이트인가요?"}
+{"id": "k5n02", "language": "ko", "kind": "near_miss", "question": "BackgroundTasks에 add_task로 작업 세 개를 넣었는데, 두 번째 작업에서 예외가 나면 세 번째 작업은 그래도 실행되나요?"}
+{"id": "k5n03", "language": "ko", "kind": "near_miss", "question": "WebSocket 엔드포인트에 Depends로 넣은 의존성이 HTTPException을 던지면 클라이언트는 어떤 close code를 받나요?"}
+{"id": "k5n04", "language": "ko", "kind": "near_miss", "question": "response_model_exclude_unset=True를 켰을 때 default_factory로 채워진 필드는 응답에 들어가나요, 빠지나요?"}
+{"id": "k5n05", "language": "ko", "kind": "near_miss", "question": "동기 def로 만든 경로 함수가 도는 스레드풀은 기본 최대 스레드 수가 몇 개인가요? FastAPI 설정만으로 늘릴 수 있나요?"}
+{"id": "k5n06", "language": "ko", "kind": "near_miss", "question": "하위 앱을 app.mount로 붙이고 그 앱에 lifespan을 넣었는데 실행이 안 되는 것 같아요. 마운트된 앱의 lifespan은 원래 안 도는 건가요?"}
+{"id": "k5n07", "language": "ko", "kind": "near_miss", "question": "CORSMiddleware에 allow_origins와 allow_origin_regex를 같이 넣으면 둘 중 어느 쪽을 먼저 검사하나요?"}
+{"id": "k5n08", "language": "ko", "kind": "near_miss", "question": "폼 요청에 필드가 수천 개 들어오면 FastAPI가 기본으로 막는 multipart 필드 수나 파일 수 한도가 있나요?"}
+{"id": "k5n09", "language": "ko", "kind": "near_miss", "question": "status_code=204로 선언한 경로에 response_model까지 지정했더니 `AssertionError: Status code 204 must not have a response body`가 납니다. 이 검사는 정확히 어느 시점에 이뤄지나요?"}
+{"id": "k5n10", "language": "ko", "kind": "near_miss", "question": "GET 경로만 정의해 뒀는데 HEAD 요청이 오면 FastAPI가 자동으로 처리해 주나요, 405를 돌려주나요?"}
+{"id": "k5n11", "language": "ko", "kind": "near_miss", "question": "APIRouter prefix가 \"/items\"이고 경로를 \"/\"로 등록했을 때 \"/items\"로 POST하면 307로 리다이렉트되면서 본문도 그대로 유지되나요?"}
+{"id": "k5n12", "language": "ko", "kind": "near_miss", "question": "app.openapi_schema가 한 번 생성된 뒤 런타임에 include_router로 라우트를 더 추가하면 /openapi.json에 반영되나요?"}
+{"id": "k5n13", "language": "ko", "kind": "near_miss", "question": "FastAPI가 기본으로 불러오는 Swagger UI CDN은 정확히 몇 버전이고, 메이저 버전이 고정돼 있나요?"}
+{"id": "k5n14", "language": "ko", "kind": "near_miss", "question": "openapi_url=None으로 꺼 두면 /docs에 접속했을 때 404가 나나요, 아니면 빈 페이지가 뜨나요?"}
+{"id": "k5n15", "language": "ko", "kind": "near_miss", "question": "Enum으로 선언한 쿼리 매개변수가 \"ADMIN\"도 \"admin\"으로 받아들이게 대소문자를 무시하는 내장 옵션이 있나요?"}
+{"id": "k5n16", "language": "ko", "kind": "near_miss", "question": "bool 쿼리 매개변수가 \"on\"이나 \"yes\"는 true로 인식한다던데, \"Y\"나 \"t\" 같은 값이 오면 어떻게 처리되나요?"}
+{"id": "k5n17", "language": "ko", "kind": "near_miss", "question": "int 경로 매개변수에 \"/items/007\"처럼 앞에 0이 붙은 값이 오면 7로 받아주나요, 422가 나나요?"}
+{"id": "k5n18", "language": "ko", "kind": "near_miss", "question": "422 검증 오류 응답의 \"input\" 필드에 요청 본문이 통째로 들어가던데, 본문이 크면 잘리거나 크기 제한이 있나요?"}
+{"id": "k5n19", "language": "ko", "kind": "near_miss", "question": "HTTPBearer(auto_error=False)로 설정했는데 Authorization 헤더가 \"Basic xxx\"로 오면 None이 반환되나요, 403이 나나요?"}
+{"id": "k5n20", "language": "ko", "kind": "near_miss", "question": "HTTPBasic을 쓸 때 401 응답의 WWW-Authenticate 헤더에 realm 값이 기본으로 어떻게 들어가나요?"}
+{"id": "k5n21", "language": "ko", "kind": "near_miss", "question": "같은 의존성을 Security로 scopes만 다르게 해서 두 번 쓰면 의존성 캐시를 공유하나요, 따로 호출되나요?"}
+{"id": "k5n22", "language": "ko", "kind": "near_miss", "question": "SecurityScopes.scope_str을 만들 때 상위 의존성과 하위 의존성의 scope는 어떤 순서로 합쳐지고, 중복은 제거되나요?"}
+{"id": "k5n23", "language": "ko", "kind": "near_miss", "question": "OAuth2PasswordRequestForm에 scope를 \"read,write\"처럼 쉼표로 구분해서 보내면 scopes 리스트는 어떻게 파싱되나요?"}
+{"id": "k5n24", "language": "ko", "kind": "near_miss", "question": "OAuth2PasswordBearer(tokenUrl=\"token\")처럼 상대 경로를 주고 root_path도 설정하면, Swagger UI가 토큰 요청 URL에 root_path를 붙여 보내나요?"}
+{"id": "k5n25", "language": "ko", "kind": "near_miss", "question": "@app.middleware(\"http\") 안에서 await request.body()로 본문을 읽은 뒤 경로 함수에서 다시 읽을 수 있나요? 버전마다 달랐던 걸로 아는데 언제부터 되나요?"}
+{"id": "k5n26", "language": "ko", "kind": "near_miss", "question": "미들웨어 안에서 난 예외도 app.exception_handler(Exception)로 등록한 핸들러가 잡아 주나요?"}
+{"id": "k5n27", "language": "ko", "kind": "near_miss", "question": "GZipMiddleware를 켠 상태로 StreamingResponse를 보내면 청크마다 바로 압축해서 흘려보내나요, 아니면 다 모은 뒤에 압축하나요?"}
+{"id": "k5n28", "language": "ko", "kind": "near_miss", "question": "StreamingResponse를 보내는 도중 클라이언트가 연결을 끊으면 async 제너레이터는 정확히 언제 취소되고, finally 블록은 실행되나요?"}
+{"id": "k5n29", "language": "ko", "kind": "near_miss", "question": "StreamingResponse에 async가 아닌 일반 제너레이터를 넘기면 그 제너레이터는 이벤트 루프에서 도나요, 스레드풀에서 도나요?"}
+{"id": "k5n30", "language": "ko", "kind": "near_miss", "question": "lifespan에서 yield로 dict를 넘기면 request.state에는 요청마다 복사본이 들어가나요? 한 요청에서 값을 바꾸면 다른 요청에도 보이나요?"}
+{"id": "k5n31", "language": "ko", "kind": "near_miss", "question": "lifespan의 yield 전 시작 코드에서 예외가 나면 uvicorn이 바로 종료되나요, 로그만 남기고 요청은 계속 받나요?"}
+{"id": "k5n32", "language": "ko", "kind": "near_miss", "question": "fastapi run에서 --workers를 안 주면 기본 워커 수는 몇 개이고, 여러 개를 주면 내부적으로 무엇으로 프로세스를 띄우나요?"}
+{"id": "k5n33", "language": "ko", "kind": "near_miss", "question": "fastapi dev의 자동 리로드는 .py 파일만 감시하나요, 아니면 .env나 템플릿 파일이 바뀌어도 재시작하나요?"}
+{"id": "k5n34", "language": "ko", "kind": "near_miss", "question": "fastapi run에서 프록시 헤더 처리가 켜져 있을 때 X-Forwarded-For를 신뢰하는 IP 목록의 기본값은 뭔가요?"}
+{"id": "k5n35", "language": "ko", "kind": "near_miss", "question": "리버스 프록시가 X-Forwarded-Prefix 헤더를 보내면 FastAPI가 그걸 읽어서 root_path를 자동으로 맞춰 주나요?"}
+{"id": "k5n36", "language": "ko", "kind": "near_miss", "question": "같은 프로세스 안에서 스레드로 테스트를 병렬 실행하면서 각 테스트가 app.dependency_overrides를 바꾸면 오버라이드가 서로 섞이나요?"}
+{"id": "k5n37", "language": "ko", "kind": "near_miss", "question": "TestClient 요청의 기본 타임아웃은 얼마인가요? 서버 쪽이 무한 대기하면 테스트도 영원히 멈추나요?"}
+{"id": "k5n38", "language": "ko", "kind": "near_miss", "question": "TestClient로 WebSocket을 테스트할 때 메시지가 안 오면 websocket.receive_json()은 기본으로 얼마나 기다리나요?"}
+{"id": "k5n39", "language": "ko", "kind": "near_miss", "question": "설정 문서 예제처럼 @lru_cache로 감싼 get_settings를 테스트에서 dependency_overrides로 바꿨는데, 테스트 사이마다 get_settings.cache_clear()를 따로 불러야 하나요?"}
+{"id": "k5n40", "language": "ko", "kind": "near_miss", "question": "Pydantic 모델을 Form으로 받는 폼 모델에서 중첩 모델이나 list[str] 필드도 지원되나요?"}
+{"id": "k5n41", "language": "ko", "kind": "near_miss", "question": "list[UploadFile] | None = None으로 선언했는데 브라우저가 파일을 선택하지 않은 채 빈 파일 필드를 보내면 None이 되나요, 422가 나나요?"}
+{"id": "k5n42", "language": "ko", "kind": "near_miss", "question": "File()로 bytes를 받을 때 기본 업로드 크기 제한이 있나요? 몇 GB짜리 파일이 오면 그대로 메모리에 올라가나요?"}
+{"id": "k5n43", "language": "ko", "kind": "near_miss", "question": "UploadFile.size가 None으로 나오는 경우가 있던데, 어떤 조건에서 size 값이 안 채워지나요?"}
+{"id": "k5n44", "language": "ko", "kind": "near_miss", "question": "FastAPI 앱 수준에서 요청 본문 전체 크기(max body size)를 제한하는 내장 설정이 있나요?"}
+{"id": "k5n45", "language": "ko", "kind": "near_miss", "question": "response_model을 Union[Cat, Dog]로 지정했는데 반환값이 두 모델 모두에 맞으면 직렬화는 어느 모델 기준으로 되나요?"}
+{"id": "k5n46", "language": "ko", "kind": "near_miss", "question": "Decimal 필드가 있는 모델을 반환하면 JSON 응답에 숫자로 나가나요, 문자열로 나가나요? Pydantic v1 시절이랑 달라졌나요?"}
+{"id": "k5n47", "language": "ko", "kind": "near_miss", "question": "타임존 없는 datetime을 jsonable_encoder에 넣으면 어떤 ISO 형식 문자열이 나오나요? 마이크로초가 0이어도 항상 붙나요?"}
+{"id": "k5n48", "language": "ko", "kind": "near_miss", "question": "openapi_extra로 requestBody 스키마를 직접 덮어쓰면 FastAPI의 자동 본문 검증도 같이 꺼지나요, 원래 Pydantic 모델 검증은 그대로 도나요?"}
+{"id": "k5n49", "language": "ko", "kind": "near_miss", "question": "generate_unique_id_function으로 만든 operation_id가 두 경로에서 겹치면 FastAPI가 경고를 내나요, 아니면 중복된 채로 스키마가 조용히 만들어지나요?"}
+{"id": "k5n50", "language": "ko", "kind": "near_miss", "question": "경로 매개변수에 :path 변환기를 쓰면 OpenAPI 문서에 경로가 어떻게 표시되나요? Swagger UI에서 슬래시가 들어간 값을 넣으면 %2F로 인코딩되나요?"}
+{"id": "k5n51", "language": "ko", "kind": "near_miss", "question": "Header 매개변수를 list[str]로 선언했을 때 클라이언트가 같은 헤더를 \"a, b\"처럼 쉼표로 묶어 한 줄로 보내면 리스트로 쪼개 주나요?"}
+{"id": "k5n52", "language": "ko", "kind": "near_miss", "question": "Annotated 안에 Depends를 두 개 넣으면 둘 다 실행되나요, 하나만 쓰이나요?"}
+{"id": "k5n53", "language": "ko", "kind": "near_miss", "question": "Depends(use_cache=False)로 쓴 yield 의존성을 한 요청에서 두 번 쓰면 종료 코드도 두 번 실행되나요? 실행 순서는 역순인가요?"}
+{"id": "k5n54", "language": "ko", "kind": "near_miss", "question": "WebSocket으로 받을 수 있는 메시지의 기본 최대 크기는 몇 MB이고, 그걸 넘기면 어떤 close code로 끊기나요?"}
+{"id": "k5n55", "language": "ko", "kind": "near_miss", "question": "WebSocket 루프에서 `RuntimeError: Cannot call \"receive\" once a disconnect message has been received.`가 뜹니다. WebSocketDisconnect가 한 번 난 뒤에 receive를 다시 부르면 항상 이 오류로 바뀌나요?"}
+{"id": "k5n56", "language": "ko", "kind": "near_miss", "question": "HTTPSRedirectMiddleware를 쓰면 ws:// 연결도 wss://로 리다이렉트되나요?"}
+{"id": "k5n57", "language": "ko", "kind": "near_miss", "question": "TrustedHostMiddleware의 www_redirect 기본값은 뭔가요? 켜져 있으면 example.com 요청이 www.example.com으로 넘어가나요?"}
+{"id": "k5n58", "language": "ko", "kind": "near_miss", "question": "response.set_cookie에서 samesite를 안 주면 기본값 \"lax\"가 들어가나요, 속성 자체가 빠지나요?"}
+{"id": "k5n59", "language": "ko", "kind": "near_miss", "question": "app.mount로 붙인 하위 앱과 부모 앱이 같은 예외 타입에 각자 exception_handler를 등록했으면 어느 쪽이 우선하나요?"}
+{"id": "k5n60", "language": "ko", "kind": "near_miss", "question": "Content-Type 헤더 없이 JSON 본문을 POST했더니 422에 `{\"type\": \"missing\", \"loc\": [\"body\"]}`가 나옵니다. 이 경우 FastAPI는 본문을 JSON으로 파싱해 보기라도 하나요?"}
+{"id": "k5a01", "language": "ko", "kind": "adjacent", "question": "Django REST Framework에서 ViewSet마다 throttle_classes를 다르게 거는 방법이 뭔가요?"}
+{"id": "k5a02", "language": "ko", "kind": "adjacent", "question": "Mangum으로 FastAPI를 Lambda에 올렸는데 콜드 스타트가 길어요. AWS 콘솔에서 프로비저닝된 동시성은 어느 메뉴에서 설정하나요?"}
+{"id": "k5a03", "language": "ko", "kind": "adjacent", "question": "SQLAlchemy 2.0 AsyncSession에서 expire_on_commit=True일 때 commit 후 속성에 접근하면 MissingGreenlet 오류가 나는데, 내부적으로 왜 그런 건가요?"}
+{"id": "k5a04", "language": "ko", "kind": "adjacent", "question": "PgBouncer transaction 모드에서 asyncpg를 쓰는데 \"prepared statement already exists\" 오류를 없애려면 statement_cache_size를 0으로 줘야 하나요?"}
+{"id": "k5a05", "language": "ko", "kind": "adjacent", "question": "Nginx 뒤에서 SSE 응답이 버퍼링돼서 늦게 오는데, proxy_buffering off 대신 X-Accel-Buffering 헤더만 보내도 해결되나요?"}
+{"id": "k5a06", "language": "ko", "kind": "adjacent", "question": "Celery 태스크에 autoretry_for와 retry_backoff_max를 같이 쓰면 retry_jitter는 어떤 식으로 계산되나요?"}
+{"id": "k5a07", "language": "ko", "kind": "adjacent", "question": "PostgreSQL ENUM 타입에 값을 추가했는데 Alembic autogenerate가 감지를 못 해요. 마이그레이션은 어떻게 짜야 하나요?"}
+{"id": "k5a08", "language": "ko", "kind": "adjacent", "question": "Google Cloud Run 콘솔에서 최소 인스턴스 수와 CPU 항상 할당 옵션은 어디서 켜나요?"}
+{"id": "k5a09", "language": "ko", "kind": "adjacent", "question": "Kubernetes HPA를 CPU 대신 초당 요청 수 같은 커스텀 메트릭으로 스케일하려면 Prometheus Adapter 설정을 어떻게 해야 하나요?"}
+{"id": "k5a10", "language": "ko", "kind": "adjacent", "question": "redis-py asyncio 클라이언트를 Sentinel로 쓰는데, 마스터 장애 조치가 일어나면 커넥션 풀이 새 마스터에 자동으로 다시 붙나요?"}
+{"id": "e5n01", "language": "en", "kind": "near_miss", "question": "How much of an UploadFile does FastAPI keep in memory before it spills over to a temporary file on disk, and can I change that size threshold?"}
+{"id": "e5n02", "language": "en", "kind": "near_miss", "question": "If an exception is raised in my @app.middleware(\"http\") function after await call_next(request), does the exception handler I registered with @app.exception_handler for that exception type still run?"}
+{"id": "e5n03", "language": "en", "kind": "near_miss", "question": "For a query parameter declared as ids: list[int] = Query(), will FastAPI accept ?ids=1,2,3 and split it on commas, or do clients have to send ?ids=1&ids=2&ids=3?"}
+{"id": "e5n04", "language": "en", "kind": "near_miss", "question": "When one of several BackgroundTasks attached to the same response raises an exception, do the tasks queued after it still run?"}
+{"id": "e5n05", "language": "en", "kind": "near_miss", "question": "What is the default maximum WebSocket message size a FastAPI endpoint will accept when served by uvicorn, and where do I raise it?"}
+{"id": "e5n06", "language": "en", "kind": "near_miss", "question": "Is there a limit on how long a path parameter value can be in FastAPI, and what happens when a client sends a URL path that is several kilobytes long?"}
+{"id": "e5n07", "language": "en", "kind": "near_miss", "question": "My endpoint takes files: list[UploadFile], and when the client sends the form with no files I get {\"detail\":[{\"type\":\"missing\",\"loc\":[\"body\",\"files\"]}]} instead of an empty list. Is that intended behavior?"}
+{"id": "e5n08", "language": "en", "kind": "near_miss", "question": "Does OAuth2PasswordBearer check the token format at all, or will it pass along any string after \"Bearer \", including one that contains spaces?"}
+{"id": "e5n09", "language": "en", "kind": "near_miss", "question": "When I run with --workers 4 and one worker process crashes, how does the parent process notice, and how long does it take before a replacement worker is started?"}
+{"id": "e5n10", "language": "en", "kind": "near_miss", "question": "If a class-based dependency is listed in APIRouter(dependencies=[...]) and also declared as a parameter of the path operation, is the class instantiated once or twice per request?"}
+{"id": "e5n11", "language": "en", "kind": "near_miss", "question": "With a bool query parameter, what does FastAPI do when the client sends just ?flag with no value: does it treat it as True, False, or return a validation error?"}
+{"id": "e5n12", "language": "en", "kind": "near_miss", "question": "With CORSMiddleware configured as allow_origins=[\"*\"] and allow_credentials=True, what does the Access-Control-Allow-Origin header actually contain in the response to a credentialed request?"}
+{"id": "e5n13", "language": "en", "kind": "near_miss", "question": "When a client disconnects in the middle of a StreamingResponse, does FastAPI stop pulling from my async generator, and does the generator's finally block get executed?"}
+{"id": "e5n14", "language": "en", "kind": "near_miss", "question": "What is the default size of the threadpool FastAPI uses to run plain def path operations and dependencies, and how do I increase it?"}
+{"id": "e5n15", "language": "en", "kind": "near_miss", "question": "If I set status_code=204 on a path operation but the function returns a dict, does FastAPI drop the body or send it anyway?"}
+{"id": "e5n16", "language": "en", "kind": "near_miss", "question": "For a Pydantic model field with a mutable default like tags: list[str] = [], does FastAPI give each request a fresh copy of the default, or can requests end up sharing the same list?"}
+{"id": "e5n17", "language": "en", "kind": "near_miss", "question": "Do dependencies with yield used on a WebSocket endpoint run their teardown code when the connection is closed, or right after the handshake completes?"}
+{"id": "e5n18", "language": "en", "kind": "near_miss", "question": "Does TestClient follow redirects by default, and if it does, how many redirects will it follow before giving up?"}
+{"id": "e5n19", "language": "en", "kind": "near_miss", "question": "When a header is sent twice in the same request and I declare it as x_token: str = Header() rather than list[str], which value does FastAPI give me, the first or the last?"}
+{"id": "e5n20", "language": "en", "kind": "near_miss", "question": "My lifespan function raises during startup and uvicorn prints \"ERROR: Application startup failed. Exiting.\" What exit code does the process return, and is the original traceback always logged?"}
+{"id": "e5n21", "language": "en", "kind": "near_miss", "question": "If a response_model declares a field as int and my function returns the string \"123\" for it, does FastAPI quietly coerce it or raise a ResponseValidationError?"}
+{"id": "e5n22", "language": "en", "kind": "near_miss", "question": "Does GZipMiddleware compress a StreamingResponse chunk by chunk as it is produced, and does it skip responses that already have a Content-Encoding header?"}
+{"id": "e5n23", "language": "en", "kind": "near_miss", "question": "Is the temporary file behind an UploadFile deleted automatically after the request finishes, and why do I get \"ValueError: I/O operation on closed file\" when I read it inside a background task?"}
+{"id": "e5n24", "language": "en", "kind": "near_miss", "question": "If two functions in different APIRouters have the same name, how does FastAPI produce their operationIds, and does it warn me about the duplicates?"}
+{"id": "e5n25", "language": "en", "kind": "near_miss", "question": "When I use HTTPBasic(auto_error=False) and the Authorization header contains malformed base64, does the dependency return None or still raise a 401?"}
+{"id": "e5n26", "language": "en", "kind": "near_miss", "question": "In what order are dependencies executed when they are declared in FastAPI(dependencies=[...]), in APIRouter(dependencies=[...]), and in the path operation decorator all at once?"}
+{"id": "e5n27", "language": "en", "kind": "near_miss", "question": "Will a request with Content-Type: text/plain whose body is valid JSON still be parsed into my Pydantic body model, or is it rejected?"}
+{"id": "e5n28", "language": "en", "kind": "near_miss", "question": "Does a sub-application mounted with app.mount() inherit the parent app's exception handlers, or does it need to register its own?"}
+{"id": "e5n29", "language": "en", "kind": "near_miss", "question": "Is there a timeout on the lifespan shutdown phase, after which the server kills the process even if my cleanup code after yield is still running?"}
+{"id": "e5n30", "language": "en", "kind": "near_miss", "question": "Does the Swagger UI \"Try it out\" button actually send the cookie for an endpoint protected by APIKeyCookie, or is the cookie silently dropped?"}
+{"id": "e5n31", "language": "en", "kind": "near_miss", "question": "When a path parameter uses the {file_path:path} converter and the URL contains an encoded slash (%2F), is it decoded before route matching or passed through unchanged?"}
+{"id": "e5n32", "language": "en", "kind": "near_miss", "question": "Does FastAPI automatically answer HEAD requests for routes defined with @app.get, or does it return 405 Method Not Allowed?"}
+{"id": "e5n33", "language": "en", "kind": "near_miss", "question": "If I declare a Pydantic body parameter and also call await request.body() in the same endpoint, do I get the cached bytes back, or does it hang or come back empty?"}
+{"id": "e5n34", "language": "en", "kind": "near_miss", "question": "If an HTTPException is raised in a WebSocket endpoint before websocket.accept() is called, what close code or HTTP status does the client actually see?"}
+{"id": "e5n35", "language": "en", "kind": "near_miss", "question": "With a lifespan that yields a state dict, is that state shallow-copied for each request so that reassigning request.state.x in one request doesn't affect others, or is it shared?"}
+{"id": "e5n36", "language": "en", "kind": "near_miss", "question": "When a datetime field with UTC tzinfo is serialized in a response model, does FastAPI output it with a trailing \"Z\" or with \"+00:00\"?"}
+{"id": "e5n37", "language": "en", "kind": "near_miss", "question": "What is the maximum number of files and form fields FastAPI will accept in a single multipart/form-data request before it rejects the request?"}
+{"id": "e5n38", "language": "en", "kind": "near_miss", "question": "If my custom exception handler for RequestValidationError itself raises an exception, what response does the client get, a 500 or the default 422?"}
+{"id": "e5n39", "language": "en", "kind": "near_miss", "question": "Are sync def path operations called through TestClient executed in a real worker thread or in the test thread, and can that break thread-local state in my tests?"}
+{"id": "e5n40", "language": "en", "kind": "near_miss", "question": "Does FastAPI's JSONResponse escape non-ASCII characters as \\uXXXX, and what charset does it put in the Content-Type header?"}
+{"id": "e5n41", "language": "en", "kind": "near_miss", "question": "When a client disconnects in the middle of a slow request, does the code after yield in my dependency still run, and which exception, if any, is raised at the yield point?"}
+{"id": "e5n42", "language": "en", "kind": "near_miss", "question": "Which exact version of Swagger UI does FastAPI load from the CDN by default for /docs, and is it pinned to a specific release or does it float to the latest 5.x?"}
+{"id": "e5n43", "language": "en", "kind": "near_miss", "question": "When redirect_slashes redirects a POST from /items/ to /items, does it use 307 or 308, and is the request body preserved?"}
+{"id": "e5n44", "language": "en", "kind": "near_miss", "question": "Does TrustedHostMiddleware include the port when it checks the Host header, for example, will a request with Host: example.com:8000 match allowed_hosts=[\"example.com\"]?"}
+{"id": "e5n45", "language": "en", "kind": "near_miss", "question": "If I modify app.dependency_overrides while the app is serving concurrent requests, do the changes take effect immediately, or is the mapping read only once?"}
+{"id": "e5n46", "language": "en", "kind": "near_miss", "question": "Does FileResponse support HTTP Range requests and return 206 Partial Content for video seeking, or do I have to implement that myself?"}
+{"id": "e5n47", "language": "en", "kind": "near_miss", "question": "How does FastAPI handle a float path parameter when the client sends values like \"nan\", \"inf\", or \"-infinity\"?"}
+{"id": "e5n48", "language": "en", "kind": "near_miss", "question": "With a Query(alias=\"item-query\") parameter, will FastAPI also accept the Python name item_query if a client sends that instead?"}
+{"id": "e5n49", "language": "en", "kind": "near_miss", "question": "If a sync def dependency with yield blocks in its teardown code, does it keep holding a threadpool thread, and could that eventually starve other requests?"}
+{"id": "e5n50", "language": "en", "kind": "near_miss", "question": "Does SecurityScopes in a dependency include the scopes declared on an APIRouter's dependencies, or only the ones from the path operation's own dependency chain?"}
+{"id": "e5n51", "language": "en", "kind": "near_miss", "question": "If I set model_config = {\"extra\": \"forbid\"} on a request body model, does the generated OpenAPI schema include additionalProperties: false?"}
+{"id": "e5n52", "language": "en", "kind": "near_miss", "question": "When the server receives SIGTERM during a graceful shutdown, are BackgroundTasks that haven't finished yet awaited, or are they dropped?"}
+{"id": "e5n53", "language": "en", "kind": "near_miss", "question": "Does fastapi dev watch files outside my Python package for reload, such as .env files or Jinja templates, and how do I add extra paths to watch?"}
+{"id": "e5n54", "language": "en", "kind": "near_miss", "question": "Is there a maximum nesting depth for JSON request bodies, beyond which FastAPI or Pydantic refuses to parse deeply nested payloads?"}
+{"id": "e5n55", "language": "en", "kind": "near_miss", "question": "When a WebSocket client vanishes without sending a close frame, how long does it take before await websocket.receive_text() raises WebSocketDisconnect, and what is the default ping interval?"}
+{"id": "e5n56", "language": "en", "kind": "near_miss", "question": "If a variable is set both as a real environment variable and in the .env file, which value does a pydantic-settings BaseSettings class used in FastAPI pick?"}
+{"id": "e5n57", "language": "en", "kind": "near_miss", "question": "Does Starlette/FastAPI sanitize UploadFile.filename when a client sends something like \"..\\\\..\\\\Windows\\\\evil.txt\", or do I get the raw string?"}
+{"id": "e5n58", "language": "en", "kind": "near_miss", "question": "Can I start reading an UploadFile while the client is still uploading it, or does FastAPI parse the whole multipart body before my endpoint runs?"}
+{"id": "e5n59", "language": "en", "kind": "near_miss", "question": "How can I make request.client.host return something other than \"testclient\" when testing IP-based logic with TestClient?"}
+{"id": "e5n60", "language": "en", "kind": "near_miss", "question": "Does pydantic-settings reread the .env file from disk every time I call Settings(), and how much does that actually cost per request if I don't wrap it in lru_cache?"}
+{"id": "e5a01", "language": "en", "kind": "adjacent", "question": "Nginx returns \"413 Request Entity Too Large\" for uploads over 1MB in front of my FastAPI app. Which nginx directive do I change, and should it go in the http, server, or location block?"}
+{"id": "e5a02", "language": "en", "kind": "adjacent", "question": "In Django REST Framework, how do I write a custom throttle class that rate-limits requests per API key instead of per user?"}
+{"id": "e5a03", "language": "en", "kind": "adjacent", "question": "How do I set the health check path, interval, and healthy threshold for a target group in the AWS EC2 console when using an Application Load Balancer?"}
+{"id": "e5a04", "language": "en", "kind": "adjacent", "question": "In SQLAlchemy 2.0, what is the difference between pool_pre_ping and pool_recycle, and what pool_recycle value makes sense when MySQL's wait_timeout is 28800?"}
+{"id": "e5a05", "language": "en", "kind": "adjacent", "question": "I'm getting \"asyncpg.exceptions.TooManyConnectionsError: sorry, too many clients already\". How do I raise max_connections in postgresql.conf, and does that require a full restart?"}
+{"id": "e5a06", "language": "en", "kind": "adjacent", "question": "With Celery using a Redis broker, how do acks_late and visibility_timeout interact when a task runs longer than an hour?"}
+{"id": "e5a07", "language": "en", "kind": "adjacent", "question": "In Flask, how does the g object differ from session, and how long does data stored in g live?"}
+{"id": "e5a08", "language": "en", "kind": "adjacent", "question": "Which gcloud run deploy flags set the minimum number of instances and CPU always-allocated for a Cloud Run service?"}
+{"id": "e5a09", "language": "en", "kind": "adjacent", "question": "In a systemd unit file, how do Restart=on-failure, StartLimitIntervalSec, and StartLimitBurst work together to stop a crash-looping service?"}
+{"id": "e5a10", "language": "en", "kind": "adjacent", "question": "Why doesn't Alembic autogenerate detect changes to a column's server_default, and which env.py option turns that on?"}
