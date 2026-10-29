@@ -4,6 +4,16 @@ on:
   push:
     branches: [master]
   pull_request:
+  # 수동 실행(Actions 화면의 Run workflow 또는 `gh workflow run ci.yml`). 코드가 바뀌지 않았어도 새로 공개된
+  # 취약점 권고를 확인하고 싶을 때 push 없이 test·audit를 다시 돌린다. 주기 실행(schedule)은 공개 저장소에
+  # 정기 실행과 실패 알림을 만드는 지속 설정이라 넣지 않았다.
+  workflow_dispatch:
+
+# GITHUB_TOKEN에는 저장소 읽기 권한만 준다. 지정하지 않으면 저장소 설정의 기본 권한(설정에 따라 쓰기 포함)으로
+# 돌고, 이렇게 한 범위라도 적으면 적지 않은 범위는 모두 권한 없음이 된다. 두 작업은 코드를 받아 검사만 하므로
+# 쓰기 권한이 필요 없다.
+permissions:
+  contents: read
 
 jobs:
   test:
@@ -35,11 +45,19 @@ jobs:
       UV_PYTHON: "3.11"
 
     steps:
-      - uses: actions/checkout@v7
+      # 액션은 태그가 아니라 커밋 SHA로 고정하고, 줄 끝 주석에 그 SHA가 가리키는 릴리스 태그를 적는다. 태그는
+      # 옮겨질 수 있어서(actions/checkout의 v7은 새 v7.x 릴리스마다 옮겨지는 태그다) 같은 워크플로라도 다른 코드가
+      # 돌 수 있기 때문이다. 갱신은 손으로 한다: `gh api repos/<owner>/<repo>/git/ref/tags/<새 태그>`의 object.sha로
+      # SHA와 주석을 함께 바꾼다(object.type이 tag인 annotated 태그면 `gh api repos/<owner>/<repo>/git/tags/<그 sha>`를
+      # 한 번 더 따라가 커밋 SHA를 얻는다).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # setup-uv publishes no floating major tag (`v10` does not exist), so pin the exact release.
-      - uses: astral-sh/setup-uv@v10.1.0
+      # uv 판은 Dockerfile의 `COPY --from=ghcr.io/astral-sh/uv:0.12.23`과 같게 고정한다. version을 주지 않으면
+      # setup-uv가 실행 때의 최신 uv를 받아(2026-10-24 실행은 0.13.5) 이미지 빌드와 CI가 서로 다른 uv로 같은
+      # uv.lock을 읽는다. 판을 바꿀 때는 Dockerfile, 아래 audit 작업, README의 '로컬 개발'을 함께 바꾼다.
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
         with:
+          version: "0.12.23"
           enable-cache: true
 
       - name: Install dependencies
@@ -62,9 +80,12 @@ jobs:
   audit:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      # 액션 SHA 고정과 uv 판은 test 작업과 같다(이유와 갱신 방법은 그쪽 주석).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: astral-sh/setup-uv@v10.1.0
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with:
+          version: "0.12.23"
 
       - name: Audit locked dependencies
         run: |

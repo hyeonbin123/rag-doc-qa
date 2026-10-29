@@ -204,6 +204,7 @@ uv sync
 uv run alembic upgrade head   # DATABASE_URL이 로컬 Postgres를 가리켜야 함
 uv run uvicorn app.main:app --reload
 ```
+uv 판은 0.12.23으로 맞춘다. Docker 이미지(`Dockerfile`의 `COPY --from=ghcr.io/astral-sh/uv:0.12.23`)와 CI(`.github/workflows/ci.yml`의 setup-uv `version`)가 이 판으로 고정돼 있어서, 로컬에서도 같은 판을 쓰면(독립 설치본이면 `uv self update 0.12.23`) 세 곳이 같은 uv로 `uv.lock`을 다룬다. 더 새 판도 지금 `uv.lock`을 바꾸지 않고 읽지만(2026-10-29 uv 0.13.1로 `uv lock --check` 확인), 고정한 판을 바꿀 때는 세 곳을 함께 바꾼다.
 
 ## 테스트
 
