@@ -18,6 +18,7 @@ README의 측정 결과 요약에 대한 자세한 기록. 각 리포트 원본�
   - `eval/qa_dev_ko.jsonl`: 32문항, v9부터 쓴 한국어 튜닝용 셋. qa_dev의 질문을 한국어로 옮기고 정답을 한국어 번역 문서로 연결함
   - 질문 풀 3 (v12부터, `eval/pool3_provenance.md`): 문서를 보지 않고 쓴 한국어 질문 120개를 셋으로 나눔. `eval/qa_dev2_ko.jsonl`(40, 튜닝용), `eval/qa_test3a_ko.jsonl`(40, v12 테스트), `eval/qa_test3b_ko.jsonl`(40, 다음 단계용으로 남김)
   - 질문 풀 4 (v15부터, `eval/pool4_provenance.md`): 문서를 보지 않은 에이전트가 따로 쓴 한국어·영어 질문 각 110개(답 있음)와 문서가 다루지 않는 인접 주제 질문 각 30개(답 없음). 언어별 `qa_pool4_dev_*`(40, 튜닝용), `qa_pool4_test_*`(70, 다음 단계용으로 남김), `qa_pool4_na_dev_*`(10, 튜닝용), `qa_pool4_na_test_*`(20, v15 I4 테스트)
+  - 질문 풀 5 (2026-10-30 추가, `eval/pool5_provenance.md`): 문서가 주제는 다루지만 묻는 핵심이 없는 near-miss 질문과 인접 주제 질문(답 없음), 라벨러가 답 있음으로 본 near-miss 몇 개. `qa_pool5_na_dev_*`(언어별 10, 튜닝용), `qa_pool5_na_test_ko`(42)·`_en`(52, 다음 거절 결정의 test, 한 번만), `qa_pool5_ans_dev_ko`(6)·`_en`(3, 답 있음, 거절 과잉 확인용 dev). v16-B가 처음 씀
 - **검색 지표**: Hit@k(정답 문서가 상위 k개 안에 있는 비율), MRR(정답 문서 순위의 역수 평균), 검색 단계 지연(p50/p95)
   - v12부터 정답 문서의 다른 번역(같은 페이지의 영어 원문 등)이 나와도 맞음으로 셈. 한 언어만 검색할 때는 이전 정의와 결과가 같음
 - **답변 지표**: 키워드 커버리지, LLM 판정 충실도·정확도(1~5점, JSON 스키마로 범위 강제), 환각 판정 수
@@ -43,6 +44,7 @@ README의 측정 결과 요약에 대한 자세한 기록. 각 리포트 원본�
 - 17개 셋 사이에 질문 문장이 같은 문항은 없고, id를 같이 쓰는 것은 의도한 번역 짝인 test3b 영어·한국어 40문항뿐임. 정답 페이지는 많이 겹침(모든 셋의 정답 페이지는 언어를 구분하지 않으면 104개, 예: `qa_pool4_test_ko` 70문항 중 46문항의 정답 페이지가 `qa_test3a_ko`에도 있음). 질문이 달라 누수는 아니지만 셋끼리 난이도가 같이 움직일 수 있음
 - 한 번도 열지 않은 테스트셋은 `qa_pool4_test_*`(언어별 70문항)뿐임. 이 셋을 한 결정에만 쓰고 그 뒤에는 새 질문 풀을 만드는 규칙은 `eval/pool4_provenance.md`에 적음
 - 2026-10-30 추가: v16-L이 저장된 답에 Claude 라벨만 붙임(새 생성·판정 없음, 보고만이라 결정 조건에 들어가지 않음). `qa_test3b_ko`·`qa_test3b_en`의 v13 채택 G0·G3 답 160개 전부, v13b B2 P의 `qa_test3b_ko` 답 8개, 튜닝용 dev 셋의 v14 C3·C4 답 32개. 위 표는 2026-10-29에 센 것이라 두 test3b 행에 넣지 않고 여기 적음
+- 2026-10-30 추가: 질문 풀 5의 셋은 아직 어떤 시스템으로도 열지 않았음. 답 없는 test(`qa_pool5_na_test_ko` 42, `_en` 52)는 v16-B 채택 조건 1에 한 번 쓰기로 측정 전에 등록함(v16-B 절). v16-B의 dev 관문을 넘지 못하면 열지 않고 다음 거절 결정에 남김
 
 ## v1 → v3: 청킹 개선
 
@@ -1884,6 +1886,100 @@ dev = qa_dev_ko 32 + qa_dev2_ko 40, 72문항 한 번에. 복제 DB `ragdb_p1_<�
 - 해석·주의: 2026-10-24에 정한 v16 결정 판정기(J2 단독)는 이 결과로 바꾸지 않음. 평균 구성을 쓰지 않은 이유 중 'J3가 A.X와 같은 Qwen 계열'은 이 kappa(LLM 라벨과의 일치)로 없어지지 않음. 판정기를 다시 정할지는 사용자 결정으로 남김
 - 사실: kappa 값 자체는 I5 표본(0.48~0.79)보다 전반적으로 낮음(0.21~0.62). 이번 라벨은 3·4점에 몰려 있고(199개 중 121개) I5 표본은 J1이 낮게 준 문항을 많이 넣어 라벨이 고르게 퍼져 있었음. kappa는 점수 분포에 따라 달라지므로 두 표본의 값을 직접 견주지 않고, 같은 표본 안의 구성 비교로만 읽음
 - 사실: 같은 답의 재라벨은 1점 안에서 모두 일치했지만 이번 라벨이 평균 0.24점 낮음. 짝 차이는 같은 라벨러 안의 비교라 이 세션 차이가 들어가지 않음
+
+## v16-B: 생성 쪽 거절 지시 — 언어별 고정 거절문 + 한국어 거절 규칙 (규칙만, 아직 측정 안 함)
+
+이 절의 규칙은 2026-10-30에 측정 전에 기록함. 생성 프롬프트의 거절 지시 하나(`REFUSAL_STYLE`)를 고르는 단계이고, 측정 전에는 기본값(legacy)을 바꾸지 않음. 이전 단계의 수치와 결정은 고치지 않음.
+
+**왜** (커밋된 기록으로 다시 셈)
+- 지금 시스템은 문서가 다루지 않는 한국어 질문의 대부분에 답을 지어냄: v15 I4 test 기준 팔(지금과 같은 생성 프롬프트)의 거절률은 영어 20/20, 한국어 7/20이고, 한국어에서 거절하지 않은 13개는 모두 문서 밖 일반 지식으로 답함(예: k4a05 Celery beat의 crontab, k4a25 Stripe 대시보드의 'Webhooks' 섹션, k4a29 certbot 로그, k4a18 국내 채용 시장 인지도). 거절 지시는 영어 규칙 2('say you don't know instead of guessing')에만 있고, 한국어 질문에 붙는 규칙 4에는 거절 문장이 없음
+- 그 2인칭 지시를 모델이 그대로 베낀 답이 사용자에게 나감: 같은 test 영어 기준 팔 20개 중 4개(e4a03, e4a06, e4a10, e4a29)가 "You don't know …"로 시작하고, 저장된 생성 기록 전체(팔 나누기 파일 `*.raw`·`*.lg` 제외, 데이터셋·id·답으로 중복 제거)의 영어 답 443개 중 11개(A.X 10, Qwen2.5 1)가 그렇게 시작함. 2026-10-18 분류기 보강은 이 문장을 거절로 세게 했을 뿐 문장은 그대로임
+- 검색 쪽 바닥값(v15 I4 (a)(b))은 이미 쓴 테스트셋에서 정답을 잃어 채택되지 않았으므로, 이번에는 생성 쪽 지시를 시험함. 함께 검토한 세 번째 팔(답 첫 줄에 `ANSWERABLE: yes|no` 태그를 쓰게 하고 앱이 파싱)은 A.X가 형식을 지키지 않을 위험이 커서 넣지 않고 다음 후보로 남김
+
+**코드 변경** (이 규칙과 같은 날 넣음, 기본값은 지금 동작)
+- 설정 `REFUSAL_STYLE`(`legacy` 기본 | `fixed`, 다른 값이면 시작하지 않음)을 두 생성기(Ollama 답변 호출, Claude)에 넘김. legacy의 system 프롬프트는 글자 하나까지 지금과 같음(`tests/test_generation.py`가 원문으로 고정)
+- fixed는 규칙 2를 1인칭 고정 문장으로 바꿈: "2. If the passages do not contain enough information to answer, reply with exactly this sentence and nothing else: I don't know: the provided documentation passages do not cover this question."
+- fixed는 한국어 규칙 4 끝에 " If the passages do not contain enough information to answer, reply with exactly this Korean text instead of the sentence in rule 2, and nothing else: 모르겠습니다. 제공된 문서 구절에는 이 질문에 대한 내용이 없습니다."를 더함. 언어 가드의 재시도 규칙(`KOREAN_RETRY_RULE`)에도 같은 문장을 더함(재시도는 한국어 규칙을 갈아 끼우므로 붙이지 않으면 재시도한 답에서만 거절 지시가 사라짐)
+- 두 고정 거절문은 지금 거절 분류기(2026-10-24 좁힘 뒤)에서 거절이고(테스트), 요청의 나머지(문단·질문·options·인용 호출)는 legacy와 같음(테스트)
+- `eval/run_answer_eval.py`가 이 설정을 평가용 생성기·프롬프트 토큰 세기에 넘기고 실행 meta에 `refusal_style`로 남김(전에는 평가 스크립트가 생성기를 직접 만들어, 넘기지 않으면 fixed 팔이 legacy로 돌았을 것임). 그 전 기록에는 이 필드가 없음(모두 legacy)
+- `eval/refusal.py prompt-arms`가 아래 관문·조건·멈춤을 코드로 옮김. 경계값은 `tests/test_v16_eval.py`가 고정함
+
+**CPU 확인** (2026-10-30, GPU 0): A.X 토크나이저(고정 리비전, 오프라인)로 센 답변 호출 프롬프트(규칙 + 짧은 문단 하나 + 질문)는 legacy → fixed가 영어 104 → 119(+15), 한국어 128 → 185(+57)토큰. 저장된 A.X 생성 기록의 답변 프롬프트는 많아야 2,872토큰이라, 늘어난 뒤에도 문맥 8192에서 답 몫 1024를 뺀 7,168보다 한참 작음(잘림 위험 없음)
+
+**팔**
+- A = `REFUSAL_STYLE=legacy`(지금), B = `REFUSAL_STYLE=fixed`
+- 나머지는 지금 기본값: 본 DB `ragdb`(v16-A 결정 뒤 상태. 두 팔이 같은 DB), dense, 바닥값 0.3, 답변 top-5, 생성 `a.x-4.0-light:q4_k_m`(digest `a874a70d…`, `think` 보내지 않음), `LANGUAGE_GUARD=true`, `EMPTY_CITATIONS_ON_REFUSAL=true`, `CITATION_MODE=separate`, `REFUSE_WITHOUT_CONTEXT=false`, Ollama 0.35.1(CUDA)
+
+**셋** (13개, 327문항)
+- 답 있는 dev 193: 정확도 셋 184 = 영어 `qa_dev` 32 + `qa_pool4_dev_en` 40, 한국어 `qa_dev_ko` 32 + `qa_dev2_ko` 40 + `qa_pool4_dev_ko` 40. 그리고 질문 풀 5의 답 있는 near-miss `qa_pool5_ans_dev_en` 3·`_ko` 6(계획의 '언어별 20까지' 안이라 전부)
+- 답 없는 dev 40: `qa_pool4_na_dev_en`·`_ko` 10씩, `qa_pool5_na_dev_en`·`_ko` 10씩
+- 답 없는 test 94 (한 번): `qa_pool5_na_test_ko` 42, `qa_pool5_na_test_en` 52. `eval/pool5_provenance.md`의 '한 결정에만 씀'의 그 결정이 이 단계임. 질문 풀 4의 답 있는 test는 열지 않음
+
+**판정기**: 결정 판정기는 J2 `gemma4:12b-it-qat`(digest `38044be4…`, `think: false`) 단독(2026-10-24 결정, v16-A와 같음), 판정은 v15 절 끝 '규칙 변경 (v16부터): 판정 절차'대로 1회 + 경계 규칙. J1 `qwen2.5:7b-instruct`는 같은 답을 같은 절차로 1회 판정해 보고만 함. 판정하는 답은 답 있는 dev 193문항 × 두 팔뿐임(답 없는 셋의 결정 조건은 거절 분류기와 판정 무관 지표이고, J1은 답 없는 질문의 올바른 거절에도 대체로 1점을 줬음: v15 I4 dev 보고). v16-L 결과(J2+J3 평균의 kappa가 J2 단독보다 높음)는 판정기 결정을 바꾸지 않았음(사용자 결정으로 남김). 판정기를 바꾸려면 측정 전에 날짜 붙인 규칙 변경으로만 함
+
+**절차와 명령** (저장소 루트, DB 호스트 포트 55432, `PG=postgresql+asyncpg://raguser:ragpass@localhost:55432`)
+
+0. 확인: 작업 트리가 이 규칙의 커밋 뒤 상태와 같음, v16-A 결과(본 DB 청커 상태의 결정)가 이 문서에 기록됨, 다른 GPU 작업 없음, Ollama `/api/ps` 비어 있음, `/api/version` 0.35.1, 생성기·판정기 digest가 위와 같음
+1. dev 생성 (GPU): 아래 순서의 셋마다 A → B를 같은 세션에서(부하 공유) 한 번씩, 데이터셋 순서로. 첫 생성 전에만 최대 10분 유휴를 기다리고, 쉬지 않은 채 시작하면 '부하 조건'으로 표시함(조건 6이 생성 시간이라)
+   ```bash
+   DEV="qa_dev qa_pool4_dev_en qa_pool5_ans_dev_en qa_pool4_na_dev_en qa_pool5_na_dev_en \
+        qa_dev_ko qa_dev2_ko qa_pool4_dev_ko qa_pool5_ans_dev_ko qa_pool4_na_dev_ko qa_pool5_na_dev_ko"
+   for set in $DEV; do for arm in a:legacy b:fixed; do
+     env -u OLLAMA_THINK DATABASE_URL=$PG/ragdb OLLAMA_MODEL_NAME=a.x-4.0-light:q4_k_m LANGUAGE_GUARD=true \
+       REFUSAL_STYLE=${arm#*:} uv run --no-sync python -m eval.run_answer_eval --dataset eval/$set.jsonl \
+       --mode dense --score-floor 0.3 --skip-judge --order dataset --tag v16b_${arm%%:*}_$set
+   done; done
+   ```
+2. dev 판정 (GPU): 답 있는 dev 14개 파일을 위 순서(셋마다 A → B)로 한 번의 `run_judge`로. 판정 전 모든 모델을 내리고 판정 모델을 올려 준비 요청 하나(판정 절차 규칙)
+   ```bash
+   ANS="qa_dev qa_pool4_dev_en qa_pool5_ans_dev_en qa_dev_ko qa_dev2_ko qa_pool4_dev_ko qa_pool5_ans_dev_ko"
+   FILES=$(for set in $ANS; do echo eval/runs/v16b_a_$set.gen.jsonl eval/runs/v16b_b_$set.gen.jsonl; done)
+   uv run --no-sync python -m eval.run_judge --label J2v16b --model gemma4:12b-it-qat --think false $FILES
+   uv run --no-sync python -m eval.run_judge --label J1v16b --model qwen2.5:7b-instruct $FILES   # 보고용
+   ```
+3. dev 관문 (CPU): `uv run --no-sync python -m eval.refusal prompt-arms --tag v16b_dev --label J2v16b --report-label J1v16b --a-ans <A의 답 있는 dev 7개> --b-ans <B의 7개> --a-na <A의 답 없는 dev 4개> --b-na <B의 4개>`. 종료 코드 0이면 test를 열고, 2면 열지 않고 기록만 함(test 셋은 다음 거절 결정에 남음), 3이면 멈춤, 4면 경계 규칙: J2만 판정 절차 규칙의 (i)(역순, 라벨 `J2v16bb1`)·(ii)(준비 판정 라벨 `J2v16bbW` 뒤 정순, 라벨 `J2v16bb2`)를 같은 14개 파일로 돌리고 `eval.judge_stability median --labels J2v16b J2v16bb1 J2v16bb2 --out-label J2v16bm`, 그 라벨과 `--judged-with median`, 태그 `v16b_dev_median`으로 관문을 다시 냄(1회 판정의 `v16b_dev` 결과도 남김. 다시 낸 값이 또 경계 안이어도 더 판정하지 않음)
+4. 관문을 넘으면 dev 결과(생성 기록·meta·판정·리포트·`eval/runs/v16b_dev.json`, 경계 규칙을 썼으면 그 판정과 `v16b_dev_median.json`도)를 **커밋한 뒤에** test를 엶
+5. test 생성 (GPU, 한 번): `qa_pool5_na_test_en`, `qa_pool5_na_test_ko`를 1번과 같은 명령으로 각각 A → B. 판정하지 않음
+6. 결정 (CPU): 3번의 인자(결정 라벨이 `J2v16bm`이면 `--judged-with median`도) 그대로에 `--tag v16b_test --a-test <A의 test 2개> --b-test <B의 2개>`를 더함
+
+**dev 관문** (test를 열기 전, 아래를 모두 만족해야 test를 엶)
+- 답 없는 dev 한국어 20문항의 거절 수 B > A (계획의 관문. B ≤ A면 멈춤)
+- 아래 채택 조건 중 dev 기록만으로 정해지는 2, 3, 6과 조건 5의 dev 부분(B의 dev 영어 답). 이유: 이것이 dev에서 떨어지면 test 결과와 상관없이 채택될 수 없는데, 답 없는 test는 한 결정에만 쓸 수 있음. 어차피 떨어질 단계에 쓰지 않고 다음 거절 결정을 위해 남김(채택·탈락 결과는 계획의 관문 하나만 둘 때와 같음)
+
+**채택 조건** (모두 만족하면 B 채택)
+1. 답 없는 test의 거절 수: 한국어(42) B ≥ A + 7, 영어(52) B ≥ A − 1. 계획의 '30문항 기준'(한국어 +5, 영어 −1)을 test 크기에 같은 비율로 맞춤(5 × 42/30 = 7.0, −1 × 52/30 = −1.73인데 거절 수가 정수라 −1). test 크기가 이와 다르면 결정하지 않음
+2. 답 있는 dev 193, 언어별(영어 75, 한국어 118): '결정 판정 정확도 4 이상인데 거절로 분류된 답' B ≤ A + 1(v15 I4 (c)와 같은 크기), 거절로 분류된 답 B ≤ A + 2
+3. 답 있는 dev의 정확도 셋 184, 언어별(영어 72, 한국어 112) 결정 판정 정확도 합 B ≥ A − 2(v14·v15 I3와 같은 폭). 판정 절차 규칙의 경계 규칙을 씀: 1회 판정에서 B − A가 −3, −2, −1이고 판정과 무관한 조건(관문의 한국어 거절, 조건 2의 거절 수, 5, 6, test 때는 1·4도)이 모두 통과하면 위 3번처럼 두 번 더 판정한 중앙값으로 정함. 판정과 무관한 조건이 이미 떨어졌으면 결과가 같으므로 경계 규칙을 쓰지 않음
+4. 이 단계의 모든 한국어 답(답 있는 dev, 답 없는 dev, 답 없는 test)의 섞인 답(`kana_han`) B ≤ A
+5. 이 단계의 모든 영어 답 중 "You don't know"(대소문자 무시, "do not"·둥근 따옴표 포함)로 시작하는 답이 B에서 0
+6. 답 있는 dev 193의 생성 시간 중앙값 B ≤ A + 0.5초
+- 거절은 지금 분류기(`is_refusal_answer`)로 다시 셈(생성 기록의 `refusal` 필드는 쓰지 않음). 분류기를 dev 결과를 보고 고치려면 test 전에 날짜 붙인 규칙 변경으로만 함(v15 I4 선례)
+- 조건 2의 '판정 4 이상' 문항 수에는 경계 규칙을 따로 걸지 않음(점수 합이 아니라 문항 수). 조건 3 때문에 중앙값 라벨을 만들면 조건 2도 그 라벨로 다시 셈
+
+**멈춤** (결정하지 않음, `prompt-arms` 종료 코드 3)
+- 결정 판정이 없거나 오류·빈 점수, 잘린 판정 프롬프트, 판정한 답이 기록의 답과 다름(`answer_sha1`)
+- 100% GPU 조건(`size_vram == size`, `context_length` 8192) 위반(실행 스크립트가 그 실행을 버리고 한 번 다시 함)
+- 두 팔의 문항, 언어, 검색된 청크(`chunk_id` 순서까지)가 다름(같은 DB를 같은 질문으로 검색하므로 다르면 DB나 검색이 바뀐 것)
+- 실행 meta: A가 legacy가 아니거나 B가 fixed가 아님, 위 '팔'의 기본값과 다름, 같은 셋의 두 실행에서 생성 조건(모델 digest, 코퍼스 요약, 코드 커밋 등)이 다름, 단계 안의 실행끼리 DB 상태(코퍼스 요약)·모델·Ollama 판이 다름(dev와 test 사이에 다시 적재했으면 멈춤)
+- 셋 이름·문항 수가 위 '셋'과 다름, test 기록이 있는데 dev 관문이 닫혀 있음
+
+**보고만** (결정에 쓰지 않음, `prompt-arms` 결과의 `report`): 언어·유형별(near-miss·인접 주제·그 밖) 거절 수, 고정 거절문을 쓴 방식(그대로·앞에 쓰고 덧붙임·다른 언어의 고정 문장·그 밖. 한국어 질문에 영어 고정 문장을 쓰면 한국어 분류기가 거절로 세지 않음), 답 길이와 생성 시간 중앙값(셋 종류·언어별), 비워진 인용 수, 출력 상한에서 잘린 답 수, 거절로 분류되지 않은 답 없는 답과 거절로 분류된 답 있는 답의 목록, 정확도 차이의 대응표본 bootstrap 90% 구간(10,000회, seed 20261003), 질문 풀 5의 답 있는 셋까지 넣은 정확도 합, J1 판정의 조건 2·3
+
+**결정 뒤 할 일** (별도 커밋)
+- 채택: `REFUSAL_STYLE` 기본값을 fixed로, README 핵심 결과에 거절률 새 행(기존 영어 20/20·한국어 7/20 행은 그대로), 서비스 기본 동작이 바뀌므로 ZAP 7차
+- 떨어짐: 결과만 기록하고 기본값은 legacy 그대로. `ANSWERABLE` 태그 팔은 다음 후보로 남김
+
+**측정 조건** (v13 규칙 변경 1~4, v15 공통 조건을 따름): 다른 GPU 작업과 겹치지 않을 때 시작, 생성기와 판정 모델은 올린 뒤와 실행 뒤 100% GPU, 실행 중 10초 간격 감시 기록, 실행 스크립트는 로컬 파일(공개 저장소에 넣지 않음)
+
+**비용 예상**: 내려받기 0. 생성 654회(dev 233 × 2 + test 94 × 2) 약 1.2시간, 판정 J2 386회 약 0.36시간 + J1 386회 약 0.2시간 → **약 1.8시간**. 경계 규칙이 걸리면 J2 772회와 준비 판정 32회로 약 0.75시간 추가
+
+**위험** (결정을 바꾸지 않음)
+- 고정 거절문 지시가 답 있는 질문의 부분 답까지 막을 수 있음 → 조건 2·3이 막음
+- 분류기는 B의 고정 문장을 늘 잡고 A의 자유 거절을 놓칠 수 있어 B 쪽으로 기울 수 있음 → 2026-10-24 좁힘 뒤에도 저장된 답 없는 질문의 거절 첫 문장은 모두 거절(테스트 고정), A의 '거절로 분류되지 않은 답 없는 답' 목록을 보고
+- 한국어 질문에 규칙 2의 영어 문장을 쓰면 거절로 세지 않음(B에 불리) → 다른 언어 고정 문장 수를 보고
+- A.X가 고정 문장을 바꿔 쓸 수 있음 → 그대로 쓴 비율을 보고
+- 튜닝용 셋은 여러 단계에서 썼음. 이번에는 값을 고르지 않고 두 상태만 비교하므로 과적합 여지는 작음
+- 판정 1회의 흔들림 → 경계 규칙. Claude 경로도 같은 규칙이지만 실제로 돌려 보지 않음
 
 ## 기타 관찰
 
