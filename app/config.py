@@ -83,6 +83,12 @@ class Settings(BaseSettings):
     # API로는 돌려 보지 않았다.
     generation_provider: Literal["anthropic", "ollama"] = "ollama"
     anthropic_api_key: str = ""
+    # claude_model_name: Claude 경로의 모델 ID. 답변 생성(app/services/generation.py)은 도구 호출을 강제하는
+    # tool_choice({"type": "tool"})로 스키마 모양의 답을 받고, Claude 판정(eval/judge.py)도 같은 방식이다.
+    # 이것은 기본값 claude-sonnet-5 세대에서만 맞는 설계다. Claude Sonnet 5.5·Opus 5.5·Fable 5.1은 강제
+    # tool_choice("tool"·"any")를 400으로 거부하므로, 이 값만 그 모델들로 올리면 깨진다(2026-10-29에 Claude
+    # API 참조 자료로 확인, 실제 호출로는 확인하지 않음). 옮기려면 구조화 출력(output_config.format, SDK의
+    # messages.parse)이나 strict 도구 + tool_choice auto로 바꿔야 한다(README '알려진 한계').
     claude_model_name: str = "claude-sonnet-5"
     # Ollama 서버 주소. 호스트에서 실행하는 기준값이고, 컨테이너 안에서는 compose가
     # host.docker.internal:11434로 덮어쓴다.
