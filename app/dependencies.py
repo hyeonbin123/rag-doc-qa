@@ -1,15 +1,17 @@
 # [파일 역할] 라우터들이 Depends(...)로 받는 공용 의존성을 모은다. 로그인 사용자 확인, 언어별 임베딩·재정렬
-# 모델 조회 함수, 생성기, 관리자 토큰 검사가 여기 있다.
+# 모델 조회 함수, 생성기, 관리자 토큰 검사가 여기 있다. 감사 로그가 쓰는 클라이언트 주소 함수(client_host)도
+# 여기 둔다(인증 라우터와 관리자 토큰 검사가 함께 쓴다).
 # [왜 의존성으로 두나] 핸들러가 모델·서비스를 직접 만들지 않고 주입받으므로, 테스트는
 # app.dependency_overrides로 가짜 임베딩·생성기·토큰 검사를 끼워 넣어 실제 모델이나 외부 API 없이 돌 수
 # 있다(tests/conftest.py, tests/test_query.py, tests/test_documents.py).
 
+import logging
 import secrets
 from collections.abc import Callable
 
 # FastAPI 의존성 도구와 OAuth2 Bearer 토큰 추출기, 그리고 앱 내부의 설정·DB 세션·서비스 조회 함수들을
-# 가져온다.
-from fastapi import Depends, Header, HTTPException, status
+# 가져온다. Request는 감사 로그에 적을 메서드·경로·클라이언트 주소를 읽으려고 받는다.
+from fastapi import Depends, Header, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -22,9 +24,21 @@ from app.services.language import Language
 from app.services.reranking import RerankerService, get_reranker_service
 from app.services.security import InvalidTokenError, TokenType, decode_token
 
+# 이 모듈의 감사 로그(관리자 토큰 검사 결과 한 줄). configure_logging의 형식으로 'app.dependencies' 이름이
+# 찍힌다.
+logger = logging.getLogger(__name__)
+
 # Authorization: Bearer <토큰> 헤더에서 토큰 문자열을 꺼내는 의존성. 헤더가 없으면 FastAPI가 401을 돌려준다.
 # tokenUrl은 Swagger UI의 Authorize 버튼이 로그인할 주소다(/auth/login이 폼 형식으로 받는 이유).
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
+
+
+# 감사 로그에 적는 클라이언트 주소. uvicorn 접근 로그에 찍히는 것과 같은 값(ASGI scope의 client)이다: 소켓의
+# 상대 주소, 또는 uvicorn이 믿는 프록시(FORWARDED_ALLOW_IPS, 기본 127.0.0.1)가 X-Forwarded-For로 넘긴 주소.
+# X-Forwarded-For 헤더를 여기서 직접 읽지 않는 이유는 누구나 그 헤더를 꾸며 보낼 수 있기 때문이다. ASGI 서버가
+# client를 주지 않으면(request.client가 None) '-'를 돌려준다.
+def client_host(request: Request) -> str:
+    return request.client.host if request.client is not None else "-"
 
 
 # 접근 토큰을 검증하고 그 토큰의 사용자 행을 돌려준다. /query/ask, /logs, /auth/me가 이것으로 로그인 사용자를
@@ -90,15 +104,25 @@ PLACEHOLDER_ADMIN_TOKENS = frozenset({"", "change-me-admin-token"})
 # - 비교는 secrets.compare_digest로 해 일치하는 앞부분 길이에 따라 응답 시간이 달라지지 않게 한다. 바이트로
 #   바꿔 넘기는 이유: 헤더는 latin-1로 풀리므로 ASCII 밖 문자가 올 수 있는데, compare_digest는 ASCII 밖
 #   문자가 든 str을 받으면 TypeError(500)를 낸다.
+# - 결과는 감사 로그 한 줄로 남긴다. 거부는 WARNING이고 reason으로 이유를 가른다(disabled: 설정이 비었거나
+#   공개 예시 값, mismatch: 값이 다름). 통과는 INFO다(적재는 문서 삭제까지 하는 관리자 작업이라 누가
+#   돌렸는지가 감사 대상). 메서드·경로와 클라이언트 주소만 적고, 보낸 헤더 값과 설정된 토큰은 어떤 경우에도
+#   적지 않는다. 예전에는 uvicorn 접근 로그(주소·경로·상태 코드)만 남아, 403이 꺼져 있어서인지 값이 틀려서인지
+#   가를 수 없었다. 헤더가 아예 없는 요청(422)은 이 함수까지 오지 않으므로 이 로그도 없다.
 async def require_admin_token(
+    request: Request,
     x_admin_token: str = Header(...),
     settings: Settings = Depends(get_settings),
 ) -> None:
     expected = settings.admin_ingest_token
+    method, path, client = request.method, request.url.path, client_host(request)
     if expected.strip() in PLACEHOLDER_ADMIN_TOKENS:
+        logger.warning("admin token rejected reason=disabled on %s %s client=%s", method, path, client)
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Admin ingest is disabled: set ADMIN_INGEST_TOKEN to a secret value",
         )
     if not secrets.compare_digest(x_admin_token.encode("utf-8"), expected.encode("utf-8")):
+        logger.warning("admin token rejected reason=mismatch on %s %s client=%s", method, path, client)
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid admin token")
+    logger.info("admin token accepted on %s %s client=%s", method, path, client)

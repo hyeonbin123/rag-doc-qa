@@ -5,13 +5,17 @@ python-jose로 만든 토큰을 그대로 적어 두고, 바꾼 뒤에도 같은
 나오는지 본다. 이미 발급된 토큰(접근 30분, 갱신 7일)이 교체 뒤에도 그대로 쓰여야 하기 때문이다.
 """
 
-# [테스트 묶음] app/services/security.py의 토큰 함수와 app/config.py의 JWT 비밀키 검사. DB가 필요 없다.
+# [테스트 묶음] app/services/security.py의 토큰 함수·이메일 지문, app/config.py의 JWT 비밀키 검사, 관리자 토큰
+# 검사(app/dependencies.py의 require_admin_token)가 남기는 감사 로그. DB가 필요 없다.
 # [왜 중요한가]
 # - 토큰 형식이 바뀌면 배포 순간 모든 사용자가 로그아웃된다. 머리글·클레임·서명이 바이트 단위로 같아야 한다.
 # - 알고리즘을 HS256 하나로 고정해야 'alg: none'이나 다른 알고리즘을 주장하는 토큰을 받지 않는다.
+# - 서명이 맞아도 sub가 UUID가 아닌 토큰은 500이 아니라 401(InvalidTokenError)이어야 한다.
 # - 공개 예시 비밀키(.env.example 값)로 서명하면 누구나 토큰을 만들 수 있다. 기본은 경고,
 #   APP_ENV=production이면 시작 거부다.
+# - 감사 로그에는 이메일 원문·토큰 값이 들어가면 안 된다(이메일은 지문, 토큰은 아예 적지 않음).
 
+import hashlib
 import logging
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -19,6 +23,7 @@ from datetime import UTC, datetime, timedelta
 # jwt: PyJWT. 테스트에서 일부러 잘못된 토큰(다른 알고리즘, 만료, 클레임 빠짐)을 만들 때만 직접 쓴다.
 import jwt
 import pytest
+from fastapi import HTTPException, Request
 from pydantic import ValidationError
 
 from app.config import (
@@ -28,8 +33,9 @@ from app.config import (
     jwt_secret_problem,
     warn_if_weak_jwt_secret,
 )
+from app.dependencies import require_admin_token
 from app.services import security
-from app.services.security import InvalidTokenError, TokenType, decode_token
+from app.services.security import InvalidTokenError, TokenType, decode_token, email_fingerprint
 
 # python-jose 3.5.0으로 2026-10-15에 만든 토큰(교체 전 마지막 판). 비밀키·클레임은 아래 상수와 같다. exp는
 # 2100-01-01이라 테스트가 오래 지나도 만료되지 않는다.
@@ -112,6 +118,107 @@ def test_tokens_missing_a_required_claim_are_rejected(jose_secret, missing):
     del payload[missing]
     with pytest.raises(InvalidTokenError):
         decode_token(_signed(payload), TokenType.ACCESS)
+
+
+# 서명이 맞아도 sub가 UUID 모양이 아니면 InvalidTokenError(라우터에서 401)다. 예전에는 uuid.UUID가 낸
+# ValueError가 그대로 새어 나가 401 대신 500이 됐다. 이 앱은 sub에 늘 str(uuid)를 넣으므로 이런 토큰은
+# 비밀키를 아는 쪽이 직접 만든 것뿐이지만, 비밀키가 공개 예시 값인 서버에서는 누구나 만들 수 있다. 빈 문자열은
+# PyJWT의 필수 클레임 검사(값이 None인지만 봄)를 통과하므로 여기까지 온다. 문자열이 아닌 sub(정수 12345)는
+# PyJWT가 jwt.decode에서 먼저 거부한다(InvalidSubjectError). 그 경우는 고치기 전에도 통과하던 회귀 방지다.
+@pytest.mark.parametrize("subject", ["not-a-uuid", "12345", "", 12345])
+def test_a_signed_token_whose_subject_is_not_a_uuid_is_rejected(jose_secret, subject):
+    payload = {"sub": subject, "type": "access", "iat": JOSE_IAT, "exp": JOSE_EXP}
+    with pytest.raises(InvalidTokenError):
+        decode_token(_signed(payload), TokenType.ACCESS)
+
+
+# 감사 로그의 이메일 지문은 '앞뒤 공백을 빼고 소문자로 바꾼 주소의 UTF-8 sha256 16진수 앞 8자'다. 운영자가
+# 손으로 같은 값을 만들어 로그를 찾을 수 있게 공식을 고정한다. 대소문자·공백만 다른 입력은 같은 지문이 되고,
+# JSON의 "\ud800" 같은 고립 서로게이트가 든 문자열에서도 예외를 내지 않는다(로그 한 줄 때문에 요청이 500이
+# 되면 안 됨).
+def test_email_fingerprint_is_the_documented_sha256_prefix():
+    expected = hashlib.sha256(b"alice@example.com").hexdigest()[:8]
+
+    assert email_fingerprint("alice@example.com") == expected
+    assert email_fingerprint("  Alice@Example.COM ") == expected
+    assert email_fingerprint("bob@example.com") != expected
+    assert len(email_fingerprint("\ud800@example.com")) == 8
+
+
+# --- 감사 로그: 관리자 토큰 검사 (app/dependencies.py의 require_admin_token) ---
+
+
+# 의존성 함수를 HTTP 없이 바로 부를 때 넘길 요청. 감사 로그가 읽는 메서드·경로·클라이언트 주소만 채운다.
+# 203.0.113.0/24는 문서용 예시 주소 대역(RFC 5737)이다.
+def _admin_request(client: tuple[str, int] | None = ("203.0.113.7", 50123)) -> Request:
+    return Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/admin/documents/ingest",
+            "query_string": b"",
+            "headers": [],
+            "client": client,
+        }
+    )
+
+
+# 관리자 토큰만 정한 설정. 비밀키는 경고가 나지 않는 길이로 둔다.
+def _admin_settings(token: str) -> Settings:
+    return Settings(database_url="x", jwt_secret_key="k" * 48, admin_ingest_token=token, _env_file=None)
+
+
+# 이 모듈 로거의 기록만 고른다(다른 로거의 기록이 섞여도 단언이 흔들리지 않게).
+def _dependency_records(caplog) -> list[logging.LogRecord]:
+    return [record for record in caplog.records if record.name == "app.dependencies"]
+
+
+# 거부된 관리자 토큰은 WARNING 한 줄로 남고, 꺼져 있어서인지(설정이 비었거나 공개 예시 값) 값이 틀려서인지를
+# reason으로 구분한다. 보낸 헤더 값과 설정된 토큰은 로그 어디에도 없어야 한다.
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("configured", "sent", "reason"),
+    [
+        ("", "guess-from-the-client", "disabled"),
+        ("change-me-admin-token", "change-me-admin-token", "disabled"),
+        ("a-real-secret-token", "a-wrong-guess", "mismatch"),
+    ],
+)
+async def test_a_rejected_admin_token_is_logged_with_its_reason_but_not_its_value(
+    caplog, configured, sent, reason
+):
+    settings = _admin_settings(configured)
+    with caplog.at_level(logging.INFO, logger="app.dependencies"):
+        with pytest.raises(HTTPException) as raised:
+            await require_admin_token(_admin_request(), x_admin_token=sent, settings=settings)
+
+    assert raised.value.status_code == 403
+    assert [(record.levelno, record.getMessage()) for record in _dependency_records(caplog)] == [
+        (
+            logging.WARNING,
+            f"admin token rejected reason={reason} on POST /admin/documents/ingest client=203.0.113.7",
+        )
+    ]
+    assert sent not in caplog.text
+    if configured:
+        assert configured not in caplog.text
+
+
+# 맞는 관리자 토큰도 INFO 한 줄로 남긴다(적재는 문서 삭제까지 하는 관리자 작업이라 누가 돌렸는지가 감사 대상).
+# 토큰 값은 남기지 않는다. 클라이언트 주소를 모르면(request.client가 None) '-'로 적는다.
+@pytest.mark.asyncio
+async def test_an_accepted_admin_token_is_logged_without_its_value(caplog):
+    with caplog.at_level(logging.INFO, logger="app.dependencies"):
+        await require_admin_token(
+            _admin_request(client=None),
+            x_admin_token="a-real-secret-token",
+            settings=_admin_settings("a-real-secret-token"),
+        )
+
+    assert [(record.levelno, record.getMessage()) for record in _dependency_records(caplog)] == [
+        (logging.INFO, "admin token accepted on POST /admin/documents/ingest client=-")
+    ]
+    assert "a-real-secret-token" not in caplog.text
 
 
 # 비밀키 검사: 빈 값, 공개 예시 값, 32바이트 미만은 문제로 보고, 충분히 긴 무작위 값은 통과한다.
