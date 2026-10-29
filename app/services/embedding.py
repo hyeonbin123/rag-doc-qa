@@ -33,17 +33,27 @@ from app.models.chunk import EMBEDDING_DIM
 from app.services.language import Language
 
 
-# 모델 하나의 임베딩 규칙. 질문 앞에 붙일 접두사, 문서 앞에 붙일 접두사, 고정할 허브 리비전, 자를 차원.
-# frozen이라 표의 값을 실수로 바꿀 수 없다.
+# 모델 하나의 임베딩 규칙. 질문 앞에 붙일 접두사, 문서 앞에 붙일 접두사, 고정할 허브 리비전, 자를 차원,
+# 리비전을 적재 해시에 넣을지. frozen이라 표의 값을 실수로 바꿀 수 없다.
 @dataclass(frozen=True)
 class EmbeddingSpec:
     query_prefix: str
     passage_prefix: str
-    # 불러올 허브 커밋(리비전). v12 비교 때 더한 모델은 리비전을 고정했다. v8부터 쓰던 두 모델은 처음부터
-    # 고정하지 않았고 지금도 그대로 둔다. 그래야 이미 저장된 벡터와 계속 맞는다.
+    # 불러올 허브 커밋(리비전). 모든 모델을 40자 커밋 해시로 고정한다. 고정하지 않으면 호스트에서는 그날
+    # 허브의 main이 들어와 저장된 벡터와 질문 벡터가 조용히 다른 가중치로 만들어질 수 있다. 또 Docker 이미지는
+    # 모델을 이 커밋으로 받아 refs/main을 만들지 않으므로(Dockerfile), 리비전 없이 부르면 HF_HUB_OFFLINE=1인
+    # 컨테이너에서 캐시를 찾지 못한다. 그래서 이미지가 받는 리비전과 이 값은 늘 같아야 한다.
+    # tests/test_docker_image.py가 둘을 맞춰 본다.
     revision: str | None = None
     # 잘라 쓰도록 학습된 Matryoshka 모델: 앞쪽 `truncate_dim`개 성분만 남겨 vector(384) 열에 맞춘다.
     truncate_dim: int | None = None
+    # 고정한 리비전을 적재 해시용 identity에 넣을지. 기본(True)은 넣으므로 리비전을 바꾸면 문서가 다시
+    # 임베딩된다. v8부터 쓰던 두 모델(bge·e5)만 False다. 이 둘은 리비전 없이 적재한 벡터가 이미 DB에 있고,
+    # 2026-10-30에 고정한 커밋이 그 벡터를 만든 스냅숏이다(그날 허브의 main이자 로컬 캐시와 이미지에 있던
+    # 유일한 스냅숏이고, 두 저장소의 마지막 커밋 2024-02-22·2026-04-02가 이 프로젝트의 첫 적재보다 앞선다).
+    # 그래서 identity를 예전처럼 모델 이름만으로 두면 적재 해시가 그대로라 재임베딩이 필요 없다. 새 모델에는
+    # 쓰지 않는다(리비전을 바꿔도 다시 임베딩되지 않으므로).
+    revision_in_identity: bool = True
 
 
 # 모델 이름 → 규칙 표. 지금 기본으로 쓰는 것은 영어 bge-small-en-v1.5와 한국어 granite-embedding-311m이고,
@@ -51,15 +61,25 @@ class EmbeddingSpec:
 # - bge-small-en-v1.5: 질문에만 검색용 지시문을 붙이고 문서에는 붙이지 않는다.
 # - multilingual-e5-small: 'query: ' / 'passage: '를 붙인다(v8~v13 단계 B 전까지의 한국어 모델, 이미지에 남아
 #   있음).
+# - 위 두 모델(v8부터)은 처음에 리비전 없이 불렀고, 2026-10-30부터 그때까지 쓰던 스냅숏의 커밋으로 고정했다.
+#   적재 해시가 바뀌지 않도록 리비전은 identity에 넣지 않는다(위 EmbeddingSpec의 revision_in_identity).
 # - granite 97m / 311m: 접두사 없음. v12 비교 때 넣으며 리비전을 고정했다. 311m은 768차원이라 384로
 #   자른다(Matryoshka 학습 모델, docs/experiments.md v12 후보 표).
 # - Qwen3-Embedding-0.6B: 1024차원을 384로 자르고 질문에만 모델 카드의 지시문을 붙인다. v12에서 CPU 질의
 #   임베딩이 315ms로 예산(100ms)을 넘어 탈락했다.
 EMBEDDING_MODELS: dict[str, EmbeddingSpec] = {
     "BAAI/bge-small-en-v1.5": EmbeddingSpec(
-        "Represent this sentence for searching relevant passages: ", ""
+        "Represent this sentence for searching relevant passages: ",
+        "",
+        revision="5c38ec7c405ec4b44b94cc5a9bb96e735b38267a",
+        revision_in_identity=False,
     ),
-    "intfloat/multilingual-e5-small": EmbeddingSpec("query: ", "passage: "),
+    "intfloat/multilingual-e5-small": EmbeddingSpec(
+        "query: ",
+        "passage: ",
+        revision="614241f622f53c4eeff9890bdc4f31cfecc418b3",
+        revision_in_identity=False,
+    ),
     # docs/experiments.md v12에서 잰 한국어 후보들. Granite R2는 접두사를 쓰지 않는다. Qwen3는 모델 카드가
     # "query" 프롬프트로 제공하는 지시문을 질문 쪽에만 붙인다.
     "ibm-granite/granite-embedding-97m-multilingual-r2": EmbeddingSpec(
@@ -102,12 +122,14 @@ class EmbeddingService:
     # 클래스 수준 기본값. __init__을 건너뛰는 테스트 대역도 이 속성을 갖게 한다.
     revision: str | None = None
     truncate_dim: int | None = None
+    revision_in_identity: bool = True
 
     def __init__(self, model_name: str) -> None:
         spec = spec_for(model_name)
         self.model_name = model_name
         self.revision = spec.revision
         self.truncate_dim = spec.truncate_dim
+        self.revision_in_identity = spec.revision_in_identity
         self._query_prefix, self._passage_prefix = spec.query_prefix, spec.passage_prefix
         # float32를 명시한다: 그러지 않으면 transformers 5는 체크포인트를 저장된 dtype 그대로 올리는데,
         # Granite R2 모델은 bfloat16이라 CPU에서 느리고 덜 정확하다. e5와 bge 체크포인트는 이미 float32다.
@@ -132,11 +154,12 @@ class EmbeddingService:
     def identity(self) -> str:
         """적재가 '모델'로 해시하는 값. 리비전이나 자르기 차원이 다르면 문서를 다시 임베딩한다.
 
-        v8부터 쓰던 모델은 리비전·자르기가 없어 모델 이름만 돌려준다. 그래서 이 속성이 생기기 전에
-        적재한 문서도 내용 해시가 그대로 유지된다.
+        v8부터 쓰던 모델(bge·e5)은 자르기가 없고 고정한 리비전도 identity에 넣지 않아
+        (revision_in_identity=False) 모델 이름만 돌려준다. 그래서 이 속성이 생기기 전에, 그리고
+        리비전을 고정하기 전에 적재한 문서도 내용 해시가 그대로 유지된다.
         """
         identity = self.model_name
-        if self.revision:
+        if self.revision and self.revision_in_identity:
             identity += f"@{self.revision}"
         if self.truncate_dim:
             identity += f":dim{self.truncate_dim}"

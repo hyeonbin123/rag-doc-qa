@@ -90,16 +90,22 @@ def test_models_load_in_float32_with_their_revision_and_truncation(recorded):
     assert kwargs["truncate_dim"] == EMBEDDING_DIM
 
 
-# v8부터 쓰던 e5-small은 리비전·자르기 없이 예전과 똑같이 올라가야 한다(float32 명시는 원래 float32라 바뀌는
-# 것이 없음). 바뀌면 이미 저장된 벡터와 어긋난다.
-def test_the_models_already_in_use_load_as_before(recorded):
-    EmbeddingService(E5_SMALL)
+# v8부터 쓰던 두 모델(bge·e5)이 저장된 벡터를 만든 스냅숏 그대로 올라가는지 확인한다. 고정한 리비전은
+# 2026-10-30에 허브의 main이자 로컬 캐시와 이미지에 있던 유일한 스냅숏이고, 자르기는 없으며 float32 명시는
+# 원래 float32라 바뀌는 것이 없다. 이미지는 이 커밋 해시로 모델을 받아 refs/main을 만들지 않으므로, 리비전
+# 없이 부르면 HF_HUB_OFFLINE=1인 컨테이너에서 캐시를 찾지 못한다(Dockerfile). 그래서 런타임도 같은 값으로
+# 고정한다.
+def test_the_models_already_in_use_load_the_snapshot_that_made_the_stored_vectors(recorded):
+    assert EMBEDDING_MODELS[BGE_SMALL].revision == "5c38ec7c405ec4b44b94cc5a9bb96e735b38267a"
+    assert EMBEDDING_MODELS[E5_SMALL].revision == "614241f622f53c4eeff9890bdc4f31cfecc418b3"
+    for model_name in (BGE_SMALL, E5_SMALL):
+        EmbeddingService(model_name)
 
-    name, kwargs = recorded[-1]
-    assert name == E5_SMALL
-    assert kwargs["revision"] is None
-    assert kwargs["truncate_dim"] is None
-    assert kwargs["model_kwargs"] == {"dtype": torch.float32}  # 이 모델들의 체크포인트는 float32다
+        name, kwargs = recorded[-1]
+        assert name == model_name
+        assert kwargs["revision"] == EMBEDDING_MODELS[model_name].revision
+        assert kwargs["truncate_dim"] is None
+        assert kwargs["model_kwargs"] == {"dtype": torch.float32}  # 이 모델들의 체크포인트는 float32다
 
 
 # 자르기 설정 없이 1024차원을 내는 모델이면 서비스를 만들 때 바로 ValueError가 나야 한다. 그대로 두면 적재할
@@ -116,11 +122,34 @@ def test_a_model_whose_vectors_do_not_fit_the_column_fails_loudly(recorded, monk
 
 
 # 적재 해시에 들어가는 identity가 e5·bge(그리고 가짜)에서는 모델 이름 그대로인지 확인한다. 리비전 등이 붙으면
-# 해시가 바뀌어 저장된 모든 문서가 '바뀜'으로 보여 쓸데없이 다시 임베딩된다.
+# 해시가 바뀌어 저장된 모든 문서가 '바뀜'으로 보여 쓸데없이 다시 임베딩된다. 두 모델은 이제 리비전을
+# 고정하지만(위 테스트) 그 커밋이 저장된 벡터를 만든 스냅숏이라 identity에는 넣지 않는다
+# (revision_in_identity=False).
 def test_identity_stays_the_bare_name_for_the_models_already_ingested(recorded):
     assert EmbeddingService(E5_SMALL).identity == E5_SMALL
     assert EmbeddingService(BGE_SMALL).identity == BGE_SMALL
     assert FakeEmbeddingService().identity == "fake-embedding"
+
+
+# revision_in_identity의 뜻을 고정한다. 기본값(True)이면 고정한 리비전이 identity에 붙어 리비전을 바꿀 때 다시
+# 임베딩되고, False면 리비전을 고정해도 identity는 모델 이름(과 자르기 차원)뿐이다. False는 리비전 없이 적재한
+# 벡터가 이미 DB에 있는 모델에만 쓴다. 새 모델에 쓰면 리비전을 바꿔도 다시 임베딩되지 않는다.
+def test_revision_in_identity_decides_whether_the_pin_reaches_the_ingest_hash(recorded, monkeypatch):
+    revision = "1" * 40
+    monkeypatch.setitem(EMBEDDING_MODELS, "some/new-model", EmbeddingSpec("", "", revision=revision))
+    monkeypatch.setitem(
+        EMBEDDING_MODELS,
+        "some/old-model",
+        EmbeddingSpec("", "", revision=revision, revision_in_identity=False),
+    )
+
+    assert EmbeddingSpec("", "").revision_in_identity is True
+    assert EmbeddingService("some/new-model").identity == f"some/new-model@{revision}"
+    old = EmbeddingService("some/old-model")
+    assert old.identity == "some/old-model"
+    # identity에서 빠질 뿐, 모델은 고정한 리비전으로 올라간다.
+    assert old.revision == revision
+    assert recorded[-1][1]["revision"] == revision
 
 
 # 새 모델의 identity에는 리비전(@...)과 자르기 차원(:dim384)이 들어가, 둘 중 하나만 바뀌어도 해시가 달라져

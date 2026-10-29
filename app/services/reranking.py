@@ -17,6 +17,7 @@
 
 from __future__ import annotations
 
+import logging
 from functools import lru_cache
 
 # torch: 점수에 시그모이드를 씌울 활성화 함수(torch.nn.Sigmoid)를 넘기려고 가져온다. CrossEncoder:
@@ -27,17 +28,50 @@ from sentence_transformers import CrossEncoder
 from app.config import get_settings
 from app.services.language import Language
 
+# 리비전이 고정되지 않은 모델을 올릴 때 남기는 경고용. configure_logging의 형식으로 'app.services.reranking'
+# 이름이 찍힌다.
+logger = logging.getLogger(__name__)
+
 # MAX_LENGTH: 질문+본문 쌍을 자르는 최대 토큰 수(512, BERT 계열 모델의 일반적인 입력 한도). 긴 청크는 뒷부분이
 # 잘린 채 채점된다. BATCH_SIZE: 한 번의 forward에 넣는 쌍 수.
 MAX_LENGTH = 512
 BATCH_SIZE = 16
 
+# 모델 이름 → 불러올 허브 커밋(리비전). 값은 2026-10-30에 허브의 main이자 이미지와 로컬 캐시에 있던 유일한
+# 스냅숏이다. 두 저장소의 마지막 커밋(영어 2026-08-09, 한국어 2025-04-15)이 v6(영어)·v9(한국어) 측정보다
+# 앞서므로, 지금까지의 rerank 측정은 모두 이 스냅숏으로 했다.
+# 고정하는 이유는 임베딩 모델과 같다(app/services/embedding.py의 EmbeddingSpec.revision). 고정하지 않으면
+# 호스트에서는 그날 허브의 main이 들어올 수 있고, Docker 이미지는 이 커밋으로 받아 refs/main을 만들지
+# 않으므로(Dockerfile) 리비전 없이 부르면 HF_HUB_OFFLINE=1인 컨테이너에서 캐시를 찾지 못한다. 그래서 이미지가
+# 받는 리비전과 이 표는 늘 같아야 한다. tests/test_docker_image.py가 둘을 맞춰 본다.
+# 영어 모델 저장소는 허브에서 cross-encoder/ms-marco-MiniLM-L6-v2로 이름이 바뀌어, 옛 이름으로 부르면 그쪽으로
+# 넘겨진다. 이미지 안 캐시 폴더와 설정값(RERANKER_MODEL_NAME)이 옛 이름이라 이름은 그대로 둔다.
+RERANKER_REVISIONS: dict[str, str] = {
+    "cross-encoder/ms-marco-MiniLM-L-6-v2": "233902d25c440f23af6f7d6e94d2946bac0bee0a",
+    "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1": "1427fd652930e4ba29e8149678df786c240d8825",
+}
+
+
+# 모델 이름에 맞는 고정 리비전. 표에 없는 모델(RERANKER_MODEL_NAME으로 다른 cross-encoder를 시험할 때)은 막지
+# 않고 None(허브 기본 브랜치)을 돌려주되 경고를 남긴다. 임베딩 모델과 달리 접두사 같은 모델별 규칙이 없어 표에
+# 없어도 올릴 수는 있기 때문이다. 다만 이미지 안에서는 그런 모델이 캐시에 없어 오프라인으로 올라가지 않으므로,
+# 경고가 원인을 알려 준다.
+def revision_for(model_name: str) -> str | None:
+    revision = RERANKER_REVISIONS.get(model_name)
+    if revision is None:
+        logger.warning(
+            "cross-encoder %r has no pinned revision in RERANKER_REVISIONS; loading the Hub's "
+            "default branch (inside the Docker image only the pinned models are cached)",
+            model_name,
+        )
+    return revision
+
 
 # cross-encoder 모델 하나를 감싼다. 생성자에서 모델 파일을 올리므로 비싸다. 그래서 아래 _load가 모델 이름별로
-# 한 번만 만든다.
+# 한 번만 만든다. 모델은 위 표의 고정 리비전으로 올린다.
 class RerankerService:
     def __init__(self, model_name: str) -> None:
-        self._model = CrossEncoder(model_name, max_length=MAX_LENGTH)
+        self._model = CrossEncoder(model_name, max_length=MAX_LENGTH, revision=revision_for(model_name))
 
     def score(self, question: str, passages: list[str]) -> list[float]:
         """각 문서 조각이 질문과 얼마나 관련 있는지를 (0, 1) 사이 확률로 돌려준다.
