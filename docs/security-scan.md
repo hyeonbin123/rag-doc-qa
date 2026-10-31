@@ -28,6 +28,8 @@ curl -X POST localhost:8000/auth/register -H "Content-Type: application/json" \
 TOKEN=$(curl -s -X POST localhost:8000/auth/login -d "username=<이메일>&password=<비밀번호>" \
   | python -c "import json, sys; print(json.load(sys.stdin)['access_token'])")
 # ZAP_DIR은 zap-2.17.0.jar가 있는 폴더. 리포트(<이름>.json, <이름>.md)와 로그는 work/zap/<이름>/
+# 6차부터: ZAP이 여는 메인 프록시(기본 127.0.0.1:8080, 스캔 계획은 쓰지 않음)가 같은 PC의 다른 서비스와 겹치지
+# 않게 ZAP_PORT=<포트>로 옮길 수 있다(6차는 8095)
 ZAP_DIR=<폴더> ACCESS_TOKEN=$TOKEN bash zap/run_zap.sh <이름>
 ```
 

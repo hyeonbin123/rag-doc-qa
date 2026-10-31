@@ -3,7 +3,7 @@
 # 실행한다. 스캔 대상은 zap/compose.scan.yml로 띄운 api 이미지다.
 #
 #   ZAP_DIR=<zap-2.17.0.jar가 있는 폴더> ACCESS_TOKEN=<스캔하는 DB에 있는 사용자의 접근 토큰> \
-#     zap/run_zap.sh <name>
+#     [ZAP_PORT=<ZAP 메인 프록시 포트, 기본 8080>] zap/run_zap.sh <name>
 #
 # 대상은 TARGET(기본 http://127.0.0.1:8000)에서 이미 실행 중이어야 한다. 리포트 <name>.json과 <name>.md, ZAP
 # 로그, 새로 만든 ZAP 홈 폴더는 work/zap/<name>/에 생긴다. 출력은 파이프로 보내지 않고 파일로만 받는다.
@@ -23,6 +23,21 @@ name=${1:?usage: zap/run_zap.sh <name>}
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 : "${ZAP_DIR:?set ZAP_DIR to the folder that holds zap-<version>.jar}"
 : "${ACCESS_TOKEN:?set ACCESS_TOKEN to an access token from POST /auth/login on the target}"
+
+# ZAP은 켜질 때 브라우저 같은 바깥 클라이언트용 메인 프록시를 하나 연다(설정 기본값 127.0.0.1:8080). 스캔 계획
+# (zap/automation.yaml)은 이 프록시를 쓰지 않지만, 같은 PC에서 8080을 쓰는 다른 서비스가 떠 있으면 ZAP이 'Cannot
+# listen on port' 오류를 내고, 반대로 ZAP이 먼저 잡으면 그 포트를 쓰려는 서비스가 뜨지 못할 수 있다. 그래서 ZAP_PORT를 주면 network
+# 애드온의 -port 옵션으로 그 포트를 쓰게 한다. 비워 두면 옵션을 넘기지 않아 예전처럼 ZAP 설정값을 쓴다. 숫자가
+# 아니면 출력 폴더를 만들기 전에 멈춘다(ZAP의 오류는 zap.log에만 남아 놓치기 쉽고, 폴더가 남으면 같은 이름으로
+# 다시 돌릴 수 없다). 빈 배열은 아래 java 줄에서 ${port_args[@]+"${port_args[@]}"}로 펼쳐, set -u에서 빈 배열을
+# unbound로 보는 옛 bash(4.4 전)에서도 멈추지 않게 한다.
+port_args=()
+if [ -n "${ZAP_PORT:-}" ]; then
+  case $ZAP_PORT in
+    *[!0-9]*) echo "ZAP_PORT must be a port number, got: $ZAP_PORT" >&2; exit 1 ;;
+  esac
+  port_args=(-port "$ZAP_PORT")
+fi
 
 # 경로를 절대 경로로 바꾸고, Git Bash(Windows)에서는 cygpath -m으로 Java가 이해하는 'C:/...' 형태로 바꾼다.
 # Linux처럼 cygpath가 없으면 절대 경로 그대로 쓴다. 상대 경로를 넘기지 않는 이유는 ZAP이 상대 경로를 작업
@@ -56,10 +71,12 @@ REPORT_DIR=$(native "$out")
 
 # set -e 상태에서 ZAP이 0이 아닌 코드로 끝나도 스크립트가 바로 멈추지 않도록 '|| status=$?'로 종료 코드를 받아
 # 두고, 결과 위치를 알린 뒤 같은 코드로 끝낸다.
-# ZAP 옵션: -Xmx2g 힙 2GB, -cmd 화면 없이 실행, -notel 원격 측정 끔, -dir 이번 차수 전용 홈 폴더, 업데이트
-# 확인 끔, -autorun으로 계획 파일 실행. 표준 출력·오류는 모두 zap.log 파일로만 보낸다.
+# ZAP 옵션: -Xmx2g 힙 2GB, -cmd 화면 없이 실행, -notel 원격 측정 끔, -dir 이번 차수 전용 홈 폴더, (ZAP_PORT가
+# 있으면) -port 메인 프록시 포트, 업데이트 확인 끔, -autorun으로 계획 파일 실행. 표준 출력·오류는 모두 zap.log
+# 파일로만 보낸다.
 status=0
 java -Xmx2g -jar "$(native "${jars[0]}")" -cmd -notel -dir "$(native "$out/home")" \
+  ${port_args[@]+"${port_args[@]}"} \
   -config start.checkForUpdates=false -autorun "$(native "$root/zap/automation.yaml")" \
   > "$out/zap.log" 2>&1 || status=$?
 echo "ZAP exit status $status, reports and log in $out"
