@@ -913,10 +913,11 @@ async def test_answer_eval_exact_search_holds_for_every_question_and_is_recorded
 
 
 # 명령행에서 --exact를 받는다(기본은 끔 = 예전 실행과 같은 계획대로 검색). 도움말은 무엇을 하는지 한국어로
-# 적는다.
+# 적는다. argparse는 터미널 폭에 맞춰 도움말 줄을 바꾸므로(폭 69~73에서는 '정확'과 '탐색' 사이에서 줄이 바뀜)
+# 공백을 하나로 모은 뒤 찾는다.
 def test_answer_eval_parser_takes_exact_and_defaults_to_planned_search():
     parser = run_answer_eval.build_parser()
 
     assert parser.parse_args([]).exact is False
     assert parser.parse_args(["--exact"]).exact is True
-    assert "정확 탐색" in parser.format_help()
+    assert "정확 탐색" in " ".join(parser.format_help().split())
