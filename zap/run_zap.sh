@@ -28,15 +28,23 @@ root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 # (zap/automation.yaml)은 이 프록시를 쓰지 않지만, 같은 PC에서 8080을 쓰는 다른 서비스가 떠 있으면 ZAP이 'Cannot
 # listen on port' 오류를 내고, 반대로 ZAP이 먼저 잡으면 그 포트를 쓰려는 서비스가 뜨지 못할 수 있다. 그래서 ZAP_PORT를 주면 network
 # 애드온의 -port 옵션으로 그 포트를 쓰게 한다. 비워 두면 옵션을 넘기지 않아 예전처럼 ZAP 설정값을 쓴다. 숫자가
-# 아니면 출력 폴더를 만들기 전에 멈춘다(ZAP의 오류는 zap.log에만 남아 놓치기 쉽고, 폴더가 남으면 같은 이름으로
-# 다시 돌릴 수 없다). 빈 배열은 아래 java 줄에서 ${port_args[@]+"${port_args[@]}"}로 펼쳐, set -u에서 빈 배열을
-# unbound로 보는 옛 bash(4.4 전)에서도 멈추지 않게 한다.
+# 아니거나 1~65535 밖이면 출력 폴더를 만들기 전에 멈춘다(ZAP의 오류는 zap.log에만 남아 놓치기 쉽고, 폴더가 남으면
+# 같은 이름으로 다시 돌릴 수 없다). 빈 배열은 아래 java 줄에서 ${port_args[@]+"${port_args[@]}"}로 펼쳐, set -u에서
+# 빈 배열을 unbound로 보는 옛 bash(4.4 전)에서도 멈추지 않게 한다.
 port_args=()
 if [ -n "${ZAP_PORT:-}" ]; then
   case $ZAP_PORT in
     *[!0-9]*) echo "ZAP_PORT must be a port number, got: $ZAP_PORT" >&2; exit 1 ;;
   esac
-  port_args=(-port "$ZAP_PORT")
+  # 숫자여도 0이나 65535를 넘는 값은 ZAP이 같은 'Cannot listen' 오류를 zap.log에만 남기므로 여기서 멈춘다. 다섯
+  # 자리를 넘으면 bash 산술이 넘쳐 엉뚱한 값이 되기 전에 길이로 거부하고, 앞자리 0(예: 08095)은 10# 접두로
+  # 10진수로 읽는다(접두가 없으면 0으로 시작하는 값을 8진수로 읽어 08·09가 산술 오류가 된다). ZAP에는 앞자리
+  # 0을 뗀 값을 넘긴다.
+  if [ "${#ZAP_PORT}" -gt 5 ] || [ "$((10#$ZAP_PORT))" -lt 1 ] || [ "$((10#$ZAP_PORT))" -gt 65535 ]; then
+    echo "ZAP_PORT must be between 1 and 65535, got: $ZAP_PORT" >&2
+    exit 1
+  fi
+  port_args=(-port "$((10#$ZAP_PORT))")
 fi
 
 # 경로를 절대 경로로 바꾸고, Git Bash(Windows)에서는 cygpath -m으로 Java가 이해하는 'C:/...' 형태로 바꾼다.
