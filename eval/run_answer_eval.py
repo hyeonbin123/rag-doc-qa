@@ -15,7 +15,7 @@ Ollama 기본 문맥에서 돌던 v11 이전 호출을 보낸다.
     python -m eval.run_answer_eval [--top-k 5] [--tag v1_baseline] [--mode dense|hybrid|rerank] [--skip-judge]
         [--dataset eval/qa_test2.jsonl] [--judge-model qwen2.5:7b-instruct]
         [--judge-num-ctx 8192] [--judge-label J1] [--order dataset|shuffle] [--seed 20261003]
-        [--no-token-count] [--cross-lingual] [--score-floor 0.3] [--no-vector-check]
+        [--no-token-count] [--cross-lingual] [--score-floor 0.3] [--no-vector-check] [--exact]
 """
 
 # [파일 역할] 답변 품질 평가의 본 스크립트. 질문셋의 문항마다 앱과 같은 경로(질문 언어 판별 → 같은 언어 모델로
@@ -24,8 +24,9 @@ Ollama 기본 문맥에서 돌던 v11 이전 호출을 보낸다.
 # eval/run_judge.py로 생성 없이 다시 판정할 수 있고(판정 설정 비교, J0/J1), 생성과 판정을 번갈아 하면 Ollama가
 # 모델을 계속 바꿔 올려 생성 시간에 그 시간이 섞이기 때문이다(docs/experiments.md v11).
 # [흐름] main: 설정·생성기·토크나이저 준비 → 코퍼스 요약(eval/common.py)과 저장 벡터 확인
-# (eval/retrieval_checks.py) → 문항별 generate_answer → <tag>.gen.jsonl과 .meta.json 저장 → (선택)
-# judge_and_save로 판정 → eval/answer_report.render_report로 리포트(머리에 코퍼스 줄을 더함).
+# (eval/retrieval_checks.py) → (--exact면 정확 탐색으로 바꿈) dense 실행 계획 기록 → 문항별 generate_answer →
+# <tag>.gen.jsonl과 .meta.json 저장 → (선택) judge_and_save로 판정 → eval/answer_report.render_report로
+# 리포트(머리에 코퍼스 줄을 더함).
 # [연결] 판정 로직은 eval/judge.py, 판정 실행·기록은 eval/run_judge.py, 토크나이저는 eval/tokens.py, 두 팔
 # 나누기는 eval/generator_arms.py가 이 파일의 기록을 읽는다. tests/test_answer_eval.py가
 # generate_answer·generation_order·build_generator를 검증한다.
@@ -78,7 +79,7 @@ from eval.common import (
     write_report,
 )
 from eval.judge import DEFAULT_JUDGE_NUM_CTX, JUDGE_SCHEMA, JUDGE_TOOL, JudgeConfig, TokenCounter
-from eval.retrieval_checks import check_stored_vectors
+from eval.retrieval_checks import check_stored_vectors, dense_search_plan, force_exact_search
 from eval.run_judge import default_label, judge_and_save, meta_path, model_digest, ollama_state
 from eval.tokens import counter_for_model
 
@@ -356,6 +357,21 @@ async def main(args: argparse.Namespace) -> int:
                 vector_checks.append(await check_stored_vectors(db, embedder(language), language))
             if args.cross_lingual and "ko" in languages:
                 vector_checks.append(await check_stored_vectors(db, embedder("ko"), "en"))
+        # --exact면 이 평가 세션의 인덱스 스캔을 꺼, 모든 문항의 dense 검색을 HNSW(근사) 대신 정확 탐색으로
+        # 한다(eval/run_retrieval_eval.py의 --exact와 같은 force_exact_search). docs/experiments.md v16-A의
+        # 2026-11-01 규칙 보충이 두 팔(본 DB와, 그것을 복사해 전체를 다시 적재한 사본)을 같은 탐색 방식으로
+        # 재려고 넣었다: 사본은 테이블이 커져 영어가 HNSW로 계획될 수 있고 본 DB는 정확 탐색이라, 그대로 재면
+        # 비교에 탐색 방식 차이가 섞인다. SET은 이 세션(연결)에만 걸리고, 이 실행은 처음부터 끝까지 한 세션·한
+        # 트랜잭션에서 검색하므로(중간 commit 없음) 모든 문항에 그대로 적용된다. 세션을 닫을 때의 rollback으로
+        # 설정도 되돌아가므로 앱이나 다른 연결에는 영향이 없다.
+        if args.exact:
+            await force_exact_search(db)
+        # 이 세션에서 실제로 검색하는 언어(교차언어면 영어 포함)의 dense 실행 계획을 이 실행의 top_k로 남긴다.
+        # HNSW 인덱스를 탔는지(근사) Sort + Seq Scan(정확 탐색)이었는지를 meta만 보고 알 수 있게 하려는
+        # 것이다(검색 평가의 dense_plans와 같은 방법: 앱과 같은 SQL에 저장된 벡터 하나를 넣은 EXPLAIN,
+        # 실행하지 않음).
+        searched = set(languages) | ({"en"} if args.cross_lingual and "ko" in languages else set())
+        dense_plans = {lang: await dense_search_plan(db, lang, args.top_k) for lang in sorted(searched)}
         for order_index, index in enumerate(generation_order(len(questions), args.order, args.seed)):
             q = questions[index]
             reranker = None
@@ -396,6 +412,8 @@ async def main(args: argparse.Namespace) -> int:
     # /api/ps(모델이 GPU에 다 올라갔는지 확인용), 모델 digest(태그만으로는 모델이 고정되지 않음), think·언어
     # 가드 설정이 들어간다. 2026-10-29부터는 출처 정보도 넣는다: 질문셋 파일의 sha256, --ids-file로 일부만
     # 생성했으면 그 파일, DB 코퍼스 요약(corpus). 그 전 기록에는 이 필드가 없다(고쳐 넣지 않음).
+    # 2026-11-01부터는 --exact 여부(exact)와 이 평가 세션의 dense 실행 계획(dense_plans)도 넣는다(그 전
+    # 기록에는 없음).
     gen_path = RUNS_DIR / f"{args.tag}.gen.jsonl"
     write_jsonl(gen_path, records)
     state = await ollama_state(settings.ollama_base_url) if ollama else {}
@@ -407,6 +425,8 @@ async def main(args: argparse.Namespace) -> int:
         "top_k": args.top_k,
         "retrieval_mode": mode,
         "cross_lingual": bool(args.cross_lingual),
+        "exact": bool(args.exact),
+        "dense_plans": dense_plans,
         "score_floor": args.score_floor,
         # 접속 URL의 마지막 부분(DB 이름)만 남긴다. 복제 DB(ragdb_p1_<이름>) 중 어느 것을 쟀는지 알 수 있고,
         # URL 앞쪽의 사용자·비밀번호는 기록에 들어가지 않는다.
@@ -473,9 +493,10 @@ async def main(args: argparse.Namespace) -> int:
     return 1 if errors else 0
 
 
-if __name__ == "__main__":
-    # 명령행 옵션. 기본값은 앱 기본 동작(top-5, 설정의 검색 모드)과 v11 판정 설정(J1: num_ctx 8192)이다.
-    # --seed 20261003은 v11 규칙에 적힌 seed다.
+# 명령행 옵션. 기본값은 앱 기본 동작(top-5, 설정의 검색 모드)과 v11 판정 설정(J1: num_ctx 8192)이다.
+# --seed 20261003은 v11 규칙에 적힌 seed다. 함수로 둔 이유: 테스트가 실제 옵션 정의(--exact의 기본값 등)를
+# 그대로 확인할 수 있게(tests/test_answer_eval.py, scripts/fetch_docs.py의 build_parser와 같은 방식).
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument("--top-k", type=int, default=5)
     parser.add_argument("--tag", default="run")
@@ -512,6 +533,18 @@ if __name__ == "__main__":
         help="이 파일의 '데이터셋 파일 이름<TAB>문항 id' 줄 중 --dataset과 이름이 같은 줄의 문항만 생성한다"
         "(eval.refusal changed가 쓰는 형식, docs/experiments.md v15 I4). id만 적은 옛 형식은 거부한다",
     )
+    # 주지 않으면(기본) 예전 실행과 같이 플래너가 고른 계획대로 검색한다. meta의 dense_plans는 어느 쪽이든
+    # 남는다.
+    parser.add_argument(
+        "--exact",
+        action="store_true",
+        help="이 평가 세션의 인덱스 스캔을 꺼 dense 검색을 HNSW(근사) 대신 정확 탐색으로 한다(검색 평가의 "
+        "--exact와 같음, docs/experiments.md v16-A의 2026-11-01 규칙 보충)",
+    )
+    return parser
+
+
+if __name__ == "__main__":
     # 콘솔 코드 페이지에 답의 어떤 글자가 없더라도 오래 걸리는 실행이 그 때문에 끝나면 안 된다.
     sys.stdout.reconfigure(errors="backslashreplace")
-    sys.exit(asyncio.run(main(parser.parse_args())))
+    sys.exit(asyncio.run(main(build_parser().parse_args())))

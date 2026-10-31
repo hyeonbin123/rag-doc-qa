@@ -13,8 +13,8 @@
 # v12 '벡터 확인').
 # [주요 구성] force_exact_search(인덱스 스캔을 꺼 정확 탐색으로 비교), check_stored_vectors(저장 벡터와 다시
 # 만든 벡터의 cos 비교), dense_search_plan(플래너가 고른 스캔 방식 기록).
-# [연결] eval/run_retrieval_eval.py가 세 함수를 모두, eval/run_answer_eval.py가 check_stored_vectors를 쓴다.
-# tests/test_retrieval_eval.py가 동작을 고정한다.
+# [연결] eval/run_retrieval_eval.py와 eval/run_answer_eval.py가 세 함수를 모두 쓴다(답변 평가의 --exact와
+# 계획 기록은 2026-11-01부터). tests/test_retrieval_eval.py와 tests/test_answer_eval.py가 동작을 고정한다.
 
 from __future__ import annotations
 
@@ -44,6 +44,8 @@ class VectorModelMismatch(RuntimeError):
 
 # 이 세션에서만 인덱스 스캔을 끄는 함수. --exact 옵션일 때 eval/run_retrieval_eval.py가 부르며, 근사(HNSW)
 # 결과와 정확 탐색 결과가 같은지 비교하는 기준 실행을 만든다(docs/experiments.md v12 '실행 계획').
+# eval/run_answer_eval.py의 --exact도 이 함수를 불러, 비교하는 두 팔을 같은 정확 탐색으로 생성한다
+# (docs/experiments.md v16-A의 2026-11-01 규칙 보충).
 # SET은 세션 범위라 다른 연결이나 앱에는 영향이 없다.
 async def force_exact_search(db: AsyncSession) -> None:
     """이 세션의 벡터 검색을 HNSW 인덱스 스캔 대신 정확 탐색으로 바꾼다.
@@ -111,8 +113,10 @@ async def check_stored_vectors(
 # 앱의 dense 검색 SQL에 EXPLAIN을 붙여 Postgres가 고른 스캔 노드 이름 목록을 돌려준다. 리포트에 실행 계획을
 # 남기는 데 쓴다.
 # 왜 기록하나: 2026-10-04 본 DB에서 dense 검색이 HNSW가 아니라 Seq Scan + Sort(정확 탐색)로 계획되는 것을
-# 확인했고, v8 때와 달라진 원인은 확인하지 않았다. 그래서 리포트마다 계획을 적어 '근사 오차를 잰 것인지'를 알
-# 수 있게 한다(docs/experiments.md v12).
+# 확인했다(docs/experiments.md v12). 원인은 2026-10-29에 확인했다: 계획은 두 방식의 근소한 비용 추정 차이로
+# 정해지고, 그 차이는 적재 이력이 남긴 테이블·인덱스 크기에 따라 뒤집힌다(전체 재적재 뒤에는 영어가 HNSW가 될
+# 수 있음, docs/experiments.md 기타 관찰). 그래서 리포트마다 계획을 적어 '근사 오차를 잰 것인지'를 알 수 있게
+# 한다.
 # 그 언어의 청크가 없으면 빈 목록을 돌려준다.
 async def dense_search_plan(db: AsyncSession, language: str, top_k: int = 10) -> list[str]:
     """Postgres가 `language`의 dense 검색에 고른 스캔 노드들.

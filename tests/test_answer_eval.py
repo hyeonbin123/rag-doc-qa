@@ -4,7 +4,8 @@ v10까지 Ollama 판정 호출은 temperature 0만 지정해서 Ollama 기본 �
 긴 프롬프트를 알리지 않고 잘라 낸다. 이 테스트들은 v11 판정(num_ctx 8192, truncate=false, 보내기 전 길이
 확인, 토크나이저 수와 나란히 남기는 prompt_eval_count), 비교용으로 남긴 legacy 판정, 그리고 답을 다시
 생성하지 않고 판정만 다시 돌릴 수 있게 하는 문항별 JSONL을 고정한다. Ollama와 토크나이저 다운로드가 필요
-없다. 평가 실행 전체(main)를 가짜 모델로 한 번 돌리는 테스트 하나만 테스트 DB를 쓴다.
+없다. 평가 실행 전체(main)를 가짜 모델로 돌리는 테스트(실행 기록의 출처, --exact 정확 탐색)만 테스트 DB를
+쓴다.
 """
 
 # [테스트 묶음] 답변 평가 하네스(eval/judge.py, eval/run_answer_eval.py, eval/run_judge.py,
@@ -21,9 +22,11 @@ import json
 import uuid
 
 # httpx: MockTransport로 Ollama HTTP 응답을 흉내 낸다. pytest: 예외 검사(raises)와 근사 비교(approx).
-# async_sessionmaker: 평가 main이 여는 DB 세션을 테스트 DB로 바꿔 끼울 때 쓴다.
+# async_sessionmaker: 평가 main이 여는 DB 세션을 테스트 DB로 바꿔 끼울 때 쓴다. text: 그 세션의 설정
+# (SHOW enable_indexscan)을 검색 직전에 읽을 때 쓴다.
 import httpx
 import pytest
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 # 테스트 대상인 평가 모듈들과, 가짜 생성기·검색 결과를 만들 앱의 데이터 클래스를 가져온다. 문서·청크 모델과
@@ -790,6 +793,7 @@ async def test_answer_eval_generates_only_its_listed_items_and_records_provenanc
         score_floor=None,
         no_vector_check=False,
         ids_file=ids_file,
+        exact=False,
     )
 
     try:
@@ -809,3 +813,110 @@ async def test_answer_eval_generates_only_its_listed_items_and_records_provenanc
     report = next(tmp_path.glob("answer_eval_ids_*.md")).read_text(encoding="utf-8").splitlines()
     at = next(i for i, line in enumerate(report) if line.startswith("- database:"))
     assert report[at + 1].startswith("- corpus: source commit ccccccc (1 document)")
+
+
+# --exact면 평가 세션의 인덱스 스캔을 꺼(검색 평가의 --exact와 같은 force_exact_search) 모든 문항의 dense
+# 검색이 HNSW(근사) 대신 정확 탐색으로 돈다. meta에는 exact와 그 세션의 dense 실행 계획(dense_plans, 이 실행의
+# top_k)이 남아, 두 팔을 같은 탐색 방식으로 쟀는지 기록만으로 확인할 수 있다(docs/experiments.md v16-A의
+# 2026-11-01 규칙 보충: 전체 재적재한 사본은 영어가 HNSW로 계획될 수 있고 본 DB는 정확 탐색이다). --exact가
+# 없으면 세션 설정은 그대로이고 계획대로의 계획을 남긴다. 실제 검색 함수(retrieve)를 감싸 문항마다 검색 직전에
+# 그 세션의 enable_indexscan을 읽으므로, 첫 문항에만 걸리고 뒤 문항에서 풀리는 경우도 잡는다. 테스트 DB는 모델
+# 정의로 만들어 HNSW 인덱스가 없어 계획 자체는 두 경우 모두 정확 탐색이고, 두 경우를 가르는 것은 세션
+# 설정이다.
+@pytest.mark.asyncio
+@pytest.mark.parametrize("exact", [True, False])
+async def test_answer_eval_exact_search_holds_for_every_question_and_is_recorded(
+    db_engine, db_session, tmp_path, monkeypatch, exact
+):
+    embedder = FakeEmbeddingService()
+    document = Document(
+        source_path="docs/en/docs/a.md", title="A", source_commit_sha="c" * 40, content_hash="h"
+    )
+    db_session.add(document)
+    await db_session.flush()
+    heading, content = "A", "Declare query parameters as function parameters."
+    db_session.add(
+        Chunk(
+            document_id=document.id,
+            chunk_index=0,
+            heading_path=heading,
+            content=content,
+            token_count=8,
+            embedding=embedder.embed_passages([build_embedding_text(heading, content)])[0],
+            language="en",
+        )
+    )
+    await db_session.commit()
+    dataset = tmp_path / "qa_dev.jsonl"
+    write_jsonl(
+        dataset,
+        [
+            {
+                "id": item_id,
+                "question": f"How do I declare query parameters ({item_id})?",
+                "expected_source_paths": ["docs/en/docs/a.md"],
+                "reference_answer": "As function parameters.",
+            }
+            for item_id in ("q001", "q002")
+        ],
+    )
+
+    index_scan_settings = []
+    real_retrieve = run_answer_eval.retrieve
+
+    async def retrieve_reading_the_session_setting(db, *args, **kwargs):
+        index_scan_settings.append((await db.execute(text("SHOW enable_indexscan"))).scalar())
+        return await real_retrieve(db, *args, **kwargs)
+
+    async def no_ollama(base_url: str) -> dict:
+        return {}
+
+    def write_report_here(filename: str, content: str):
+        path = tmp_path / filename
+        path.write_text(content, encoding="utf-8")
+        return path
+
+    monkeypatch.setattr(run_answer_eval, "retrieve", retrieve_reading_the_session_setting)
+    monkeypatch.setattr(run_answer_eval, "async_session_maker", async_sessionmaker(db_engine))
+    monkeypatch.setattr(run_answer_eval, "get_embedding_service", lambda language: embedder)
+    monkeypatch.setattr(run_answer_eval, "build_generator", lambda settings: FakeGenerationService())
+    monkeypatch.setattr(run_answer_eval, "ollama_state", no_ollama)
+    monkeypatch.setattr(run_answer_eval, "RUNS_DIR", tmp_path / "runs")
+    monkeypatch.setattr(run_answer_eval, "write_report", write_report_here)
+    args = argparse.Namespace(
+        top_k=5,
+        tag="exact",
+        skip_judge=True,
+        mode="dense",
+        dataset=dataset,
+        judge_model=None,
+        judge_num_ctx=8192,
+        judge_label=None,
+        order="dataset",
+        seed=20261003,
+        no_token_count=True,
+        cross_lingual=False,
+        score_floor=None,
+        no_vector_check=False,
+        ids_file=None,
+        exact=exact,
+    )
+
+    assert await run_answer_eval.main(args) == 0
+
+    assert index_scan_settings == (["off", "off"] if exact else ["on", "on"])
+    meta = json.loads((tmp_path / "runs" / "exact.gen.meta.json").read_text(encoding="utf-8"))
+    assert meta["exact"] is exact
+    assert set(meta["dense_plans"]) == {"en"}
+    assert any(node.startswith("Seq Scan on chunks") for node in meta["dense_plans"]["en"])
+    assert not any("hnsw" in node for node in meta["dense_plans"]["en"])
+
+
+# 명령행에서 --exact를 받는다(기본은 끔 = 예전 실행과 같은 계획대로 검색). 도움말은 무엇을 하는지 한국어로
+# 적는다.
+def test_answer_eval_parser_takes_exact_and_defaults_to_planned_search():
+    parser = run_answer_eval.build_parser()
+
+    assert parser.parse_args([]).exact is False
+    assert parser.parse_args(["--exact"]).exact is True
+    assert "정확 탐색" in parser.format_help()
