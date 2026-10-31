@@ -86,7 +86,7 @@ INGESTION_LOCK_KEY = 2126143313622324131
 # 같은 DB에서 다른 적재(관리자 API의 다른 요청이나 CLI 프로세스)가 진행 중이라 이번 적재를 시작하지 않았을
 # 때의 예외. 라우터는 409로, CLI는 종료 코드 1로 바꾼다.
 class IngestionAlreadyRunning(RuntimeError):
-    """Another ingestion holds the ingestion lock on this database."""
+    """같은 DB에서 다른 적재가 적재 잠금(PostgreSQL 어드바이저리 잠금)을 쥐고 있다."""
 
 
 # GitHub API·raw 파일을 받는 HTTP 클라이언트. 30초 제한, User-Agent(GitHub API는 User-Agent 없는 요청을 거부),

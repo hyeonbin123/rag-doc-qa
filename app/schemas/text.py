@@ -26,9 +26,9 @@ def reject_nul(value: str) -> str:
 
 
 # str에 검증기를 붙인 재사용 타입. AfterValidator라 pydantic의 기본 str 타입 검증을 통과한 값에 실행된다. 끝의
-# 문자열은 이 타입의 설명(docstring 역할)이고, 뜻은 "앱이 PostgreSQL에 저장하는 요청 문자열"이다.
+# 문자열은 이 타입의 설명(docstring 역할)이다. 실행 중에는 쓰이지 않고 OpenAPI 스키마에도 나가지 않는다.
 NulFreeStr = Annotated[str, AfterValidator(reject_nul)]
-"""Request text the app stores in PostgreSQL."""
+"""앱이 PostgreSQL에 저장하는 요청 문자열(NUL 문자 U+0000이 있으면 거부한다)."""
 
 
 # Git ref(브랜치·태그·짧거나 긴 커밋 SHA)로 받는 문자열의 형식. 영숫자·'.'·'_'·'-'로 된 조각을 '/'로 이은 꼴만
@@ -60,6 +60,6 @@ def validate_git_ref(value: str) -> str:
 
 
 # IngestRequest.commit_sha의 타입. NUL 검사(NulFreeStr) 다음에 ref 형식 검사를 붙인다. 끝의 문자열은 이 타입의
-# 설명(docstring 역할)이고, 뜻은 "적재가 받는 tiangolo/fastapi의 브랜치·태그·커밋 SHA"다.
+# 설명(docstring 역할)이다(NulFreeStr와 같이 실행 중에는 쓰이지 않음).
 GitRefStr = Annotated[NulFreeStr, AfterValidator(validate_git_ref)]
-"""A tiangolo/fastapi branch, tag or commit sha accepted by the ingestion."""
+"""적재가 받는 tiangolo/fastapi의 브랜치·태그·커밋 SHA(validate_git_ref의 형식만 받는다)."""
