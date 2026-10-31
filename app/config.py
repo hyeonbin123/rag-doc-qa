@@ -11,8 +11,13 @@ import logging
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# 적재 ref 형식 검사. 요청 본문(IngestRequest.commit_sha)과 적재 명령의 --commit이 쓰는 것과 같은 규칙으로
+# FASTAPI_DOCS_COMMIT_SHA도 시작할 때 검사한다(아래 _check_default_ingestion_ref). app/schemas/text.py는
+# 표준 라이브러리와 pydantic만 가져오므로 순환 import가 생기지 않는다.
+from app.schemas.text import validate_git_ref
 
 logger = logging.getLogger(__name__)
 
@@ -148,7 +153,8 @@ class Settings(BaseSettings):
     # tiangolo/fastapi의 ref(브랜치·태그·커밋 SHA). 비어 있으면(기본) 측정에 쓴 문서 스냅숏 커밋 50113da를
     # 쓴다(app/services/ingestion.py의 DOCS_SNAPSHOT_COMMIT·default_commit_ref). 최신 문서를 늘 받으려면
     # master를 넣는다. 어느 값이든 적재가 GitHub에 물어 40자 SHA로 바꾼 뒤 쓴다. 2026-10-29 전에는 코드가 이
-    # 필드를 읽지 않았고 기본 적재 대상은 master의 최신 커밋이었다.
+    # 필드를 읽지 않았고 기본 적재 대상은 master의 최신 커밋이었다. ref 형식이 아니면 시작할 때 거부한다(아래
+    # _check_default_ingestion_ref).
     # admin_ingest_token: 관리자 적재 API(/admin/documents/ingest)의 X-Admin-Token 헤더와 비교하는
     # 값(app/dependencies.py의 require_admin_token). 기본값은 비어 있고, 비어 있거나 예전 공개 예시
     # 값('change-me-admin-token')이면 관리자 적재 API가 꺼진다(403). 쓰려면 .env에 추측할 수 없는 값을 넣는다.
@@ -164,6 +170,21 @@ class Settings(BaseSettings):
     # eval/run_retrieval_eval.py가 쓴다.
     def reranker_model_for(self, language: str) -> str:
         return self.reranker_model_name_ko if language == "ko" else self.reranker_model_name
+
+    # FASTAPI_DOCS_COMMIT_SHA를 시작할 때 검사한다. 2026-10-29부터 이 값이 실제 기본 적재 ref인데 형식 검사가
+    # 적재할 때(app/services/ingestion.py의 default_commit_ref)에만 있어서, 'x y'나 '../x' 같은 값이 서버
+    # 시작과 /health를 통과한 뒤 관리자 적재 요청이 적재 잠금을 잡은 다음 처리되지 않은 ValueError(500)로, CLI
+    # 적재는 트레이스백으로 끝났다. 요청 본문·--commit과 같은 규칙(validate_git_ref)을 써서 다른 범위 검사처럼
+    # ValidationError로 시작(uvicorn·Alembic·적재 명령)을 막는다. 비어 있거나 공백뿐이면 '설정 없음'(측정
+    # 스냅숏을 적재)이라 통과시킨다. 적재 쪽이 앞뒤 공백을 떼고 쓰므로 뗀 값으로 검사하되 값 자체는 바꾸지
+    # 않는다(적재 쪽 동작을 그대로 두려고). 적재 쪽 검사는 설정을 거치지 않고 바뀐 값(테스트의 model_copy
+    # 등)을 위해 남긴다.
+    @field_validator("fastapi_docs_commit_sha")
+    @classmethod
+    def _check_default_ingestion_ref(cls, value: str) -> str:
+        if value.strip():
+            validate_git_ref(value.strip())
+        return value
 
     # APP_ENV=production일 때만 약한 JWT 비밀키를 거부한다. ValueError는 pydantic의 ValidationError가 되어
     # Settings()가 실패하므로, uvicorn 시작(app/main.py)과 Alembic(alembic/env.py)이 모두 멈춘다. 최소 길이는

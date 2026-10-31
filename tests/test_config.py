@@ -7,6 +7,8 @@
 # - JWT_ALGORITHM이 HMAC이 아님(RS256 등): 문자열 비밀키로는 서명할 수 없어 첫 로그인이 500(이 프로젝트
 #   의존성에는 cryptography가 없어 PyJWT가 NotImplementedError를 낸다).
 # - 토큰 수명이 0 이하: 발급하자마자 만료된 토큰이 나와 로그인해도 모든 인증 요청이 401.
+# - FASTAPI_DOCS_COMMIT_SHA가 ref 형식이 아님('x y', '../x' 등): 이 값은 기본 적재 ref라, 관리자 적재 요청이
+#   잠금을 잡은 뒤 처리되지 않은 ValueError로 500, CLI 적재는 트레이스백으로 끝났다(2026-11-01에 더함).
 # 이제는 Settings()를 만들 때 ValidationError가 나서 uvicorn·Alembic이 시작하지 않고, 오류에 어느 설정이
 # 틀렸는지 나온다(RETRIEVAL_MODE=foo가 원래 시작 때 거부되던 것과 같은 방식).
 # [격리] _env_file=None으로 저장소의 .env를 읽지 않고 필수 값(database_url, jwt_secret_key)만 직접 준다.
@@ -104,6 +106,7 @@ def test_the_hmac_sha2_algorithms_are_accepted_and_sign_with_a_string_key(algori
         ("ACCESS_TOKEN_EXPIRE_MINUTES", "-1", "access_token_expire_minutes", "greater_than_equal"),
         ("REFRESH_TOKEN_EXPIRE_DAYS", "0", "refresh_token_expire_days", "greater_than_equal"),
         ("JWT_ALGORITHM", "RS256", "jwt_algorithm", "literal_error"),
+        ("FASTAPI_DOCS_COMMIT_SHA", "../x", "fastapi_docs_commit_sha", "value_error"),
     ],
 )
 def test_out_of_range_environment_values_are_refused(monkeypatch, variable, value, field, error_type):
@@ -113,3 +116,24 @@ def test_out_of_range_environment_values_are_refused(monkeypatch, variable, valu
         make_settings()
 
     assert_rejected(excinfo, field, error_type)
+
+
+# 기본 적재 ref(FASTAPI_DOCS_COMMIT_SHA)는 요청 본문·--commit과 같은 ref 형식 규칙(app/schemas/text.py의
+# validate_git_ref)으로 시작할 때 검사한다. 공백·'..'·점으로 시작하는 조각·'?'·NUL·100자 초과는 거부한다.
+@pytest.mark.parametrize("value", ["x y", "../x", "a..b", ".hidden", "master?x", "a\x00b", "a" * 101])
+def test_a_malformed_default_ingestion_ref_is_refused(value):
+    with pytest.raises(ValidationError) as excinfo:
+        make_settings(fastapi_docs_commit_sha=value)
+
+    assert_rejected(excinfo, "fastapi_docs_commit_sha", "value_error")
+
+
+# 비어 있거나 공백뿐이면(기본값) '설정 없음'이라 측정 스냅숏을 적재한다(app/services/ingestion.py의
+# default_commit_ref). 브랜치·태그·짧거나 긴 SHA는 받는다. 앞뒤 공백은 적재 쪽이 떼므로 뗀 값으로 검사하고, 값
+# 자체는 바꾸지 않는다(적재 쪽 동작을 그대로 두려고).
+@pytest.mark.parametrize(
+    "value",
+    ["", "  ", "master", "release/0.115", "50113da", "50113da16fec53b66b80d75e80a89296de4fa5a5", " master "],
+)
+def test_empty_and_well_formed_default_ingestion_refs_are_accepted(value):
+    assert make_settings(fastapi_docs_commit_sha=value).fastapi_docs_commit_sha == value
