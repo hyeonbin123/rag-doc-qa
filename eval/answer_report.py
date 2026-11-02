@@ -87,16 +87,23 @@ def generation_notes(gen_meta: dict, records: list[dict]) -> list[str]:
         if gen_meta.get("language_guard"):
             guard += f" (regenerated {sum(1 for r in records if r.get('guard_applied'))}/{n})"
         lines.append(f"- think: {gen_meta.get('think')}, language guard: {guard}")
+    # 호출 목록은 있는 것만 모은다. 거절로 분류된 답은 인용 호출을 건너뛰므로
+    # (EMPTY_CITATIONS_ON_REFUSAL, v15 I4에서 채택해 기본 켬) citation이 None이고,
+    # 청크 0개 거절(REFUSE_WITHOUT_CONTEXT)은 답변 호출 목록도 비어 있다. 2026-11-03 전에는
+    # 둘을 dict로 가정해 v16-A의 첫 생성(거절 답 1개)에서 리포트 렌더링이 AttributeError로
+    # 멈췄다(생성 기록은 이미 저장된 뒤였음). eval/generator_arms.py의 호출 집계와 같은 처리다.
+    def every_call(c: dict) -> list[dict]:
+        return [*(c.get("answer") or []), *([c["citation"]] if c.get("citation") else [])]
+
     if any(calls):
-        cut = sum(1 for c in calls if c and c["answer"][-1].get("done_reason") == "length")
+        cut = sum(
+            1 for c in calls if c and (c.get("answer") or [{}])[-1].get("done_reason") == "length"
+        )
         thinking = sum(
             1
             for r, c in zip(records, calls, strict=True)
             if c
-            and (
-                r.get("think_tag_in_answer")
-                or any(x.get("thinking_chars") for x in [*c["answer"], c["citation"]])
-            )
+            and (r.get("think_tag_in_answer") or any(x.get("thinking_chars") for x in every_call(c)))
         )
         bad = sum(1 for r in records if r.get("citation_schema_error"))
         lines.append(

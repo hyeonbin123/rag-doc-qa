@@ -700,6 +700,40 @@ def test_report_notes_the_generation_settings_and_diagnostics():
     assert "citation replies breaking the schema: 1/2" in report
 
 
+# 인용 호출을 건너뛴 답(거절: citation이 None, EMPTY_CITATIONS_ON_REFUSAL)과 LLM을 부르지 않은
+# 청크 0개 거절(답변 호출 목록이 빔)이 섞여 있어도 리포트 머리의 호출 진단 줄이 만들어져야 한다.
+# 2026-11-03 전에는 citation을 dict로 가정해 v16-A의 첫 생성 리포트가 AttributeError로 멈췄다
+# (생성 기록은 저장된 뒤). 추론 출력은 답변 호출만으로도 세고, done_reason=length는 마지막 답변
+# 호출에서 읽는다.
+def test_report_notes_survive_skipped_citation_calls_and_empty_answer_calls():
+    from eval.answer_report import generation_notes
+
+    def record(item_id, answer_calls, citation_call, skipped):
+        return {
+            "id": item_id,
+            "answer": "A",
+            "generation_ms": 1000.0,
+            "kana_han": False,
+            "guard_applied": False,
+            "generation_calls": {"answer": answer_calls, "citation": citation_call},
+            "citation_skipped": skipped,
+            "citation_schema_error": None,
+        }
+
+    records = [
+        record("r1", [{"done_reason": "length", "thinking_chars": 12}], None, "refusal"),
+        record("r2", [], None, "no_context"),
+        record("r3", [{"done_reason": "stop", "thinking_chars": 0}], {"thinking_chars": 3}, None),
+    ]
+
+    lines = generation_notes({"model_digest": "a874a70d", "language_guard": True}, records)
+
+    assert lines[-1] == (
+        "- final answer call stopped by the output limit, done_reason=length: 1/3; "
+        "reasoning output: 2/3; citation replies breaking the schema: 0/3"
+    )
+
+
 # --ids-file은 '데이터셋<TAB>id' 줄 중 자기 데이터셋 줄만 받는다(eval/refusal.py changed가 쓰는 형식). 빈 줄과
 # Windows 줄 끝은 무시한다. id만 적은 옛 형식은 다른 데이터셋의 같은 id까지 다시 생성하게 하므로(v15 I4) 받지
 # 않고, 칸이 둘이 아닌 줄도 거부한다.
