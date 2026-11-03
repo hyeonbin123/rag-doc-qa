@@ -199,9 +199,11 @@ def test_comparing_two_runs_reports_questions_whose_ranking_changed():
 # 앱과 같은 고정 아래의 실행 계획(dense_search_plan 기본값)에 Seq Scan이 있고 HNSW 인덱스가 없는지, 청크가
 # 없는 언어는 빈 목록인지 확인한다. 리포트에 적는 계획이 실제 스캔 방식을 보여 주는지 고정한다. 2026-11-03부터
 # 기본값은 --exact(force_exact_search) 없이도 앱처럼 이 트랜잭션에 고정을 걸고 EXPLAIN하므로 그 뒤 같은
-# 트랜잭션의 enable_indexscan은 off이고, SET LOCAL이라 commit하면 풀린다. --exact만 건 세션(고정 없는
-# pinned=False 계획)도 정확 탐색인지 함께 본다. 고치기 전 이 테스트는 force_exact_search를 먼저 부른 뒤의
-# 계획만 봤다.
+# 트랜잭션의 enable_indexscan은 off이고, SET LOCAL이라 commit하면 풀린다. --exact만 건 세션의 pinned=False
+# 계획도 노드 목록의 모양을 함께 본다. 다만 테스트 DB는 모델(create_all)로 만들어 HNSW 인덱스가 없으므로 이
+# 계획은 --exact와 상관없이 Seq Scan이고, 이 단언은 --exact의 효과를 확인하지 않는다(그것은 SHOW로 보는
+# test_exact_search_turns_off_index_scans_for_the_session 등이 지키고, 플래너가 HNSW를 고르는 조건은
+# tests/test_retrieval.py가 만든다). 고치기 전 이 테스트는 force_exact_search를 먼저 부른 뒤의 계획만 봤다.
 @pytest.mark.asyncio
 async def test_dense_plan_names_the_scan_and_defaults_to_the_apps_exact_pin(db_session):
     await _seed_embedded_chunk(db_session, FakeEmbeddingService())

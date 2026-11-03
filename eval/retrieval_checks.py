@@ -62,9 +62,11 @@ async def force_exact_search(db: AsyncSession) -> None:
     다른 문장도 인덱스 스캔 없이 계획되게 할 뿐이다(검색 결과는 같다). 그 전에는 이것이 근사 HNSW 탐색과
     비교할 정확한 상위 k개를 만드는 방법이었다.
 
-    LOCAL이 아닌 SET이라 트랜잭션 안에서 보내면 그 트랜잭션이 rollback될 때 함께 사라지고, commit되면 그
-    연결(세션)이 끝날 때까지 남는다. 두 평가 스크립트는 계획 기록 뒤의 rollback 다음, 문항을 검색하는
-    트랜잭션 안에서 부르고 중간에 commit하지 않으므로 세션을 닫을 때의 rollback이 설정을 되돌린다.
+    LOCAL이 아닌 SET이라 트랜잭션 안에서 보내면 그 트랜잭션이 rollback될 때 함께 사라지고, commit되면 그 DB
+    연결이 끝날 때까지 남는다. SQLAlchemy 연결 풀은 연결을 돌려받을 때 rollback만 하고 이런 세션 범위 설정은
+    되돌리지 않으므로, commit된 설정은 같은 엔진에서 그 연결을 다시 받은 새 AsyncSession에도 남는다(2026-11-03
+    확인). 두 평가 스크립트는 계획 기록 뒤의 rollback 다음, 문항을 검색하는 트랜잭션 안에서 부르고 중간에
+    commit하지 않으므로 세션을 닫을 때의 rollback이 설정을 되돌린다.
     """
     await db.execute(text("SET enable_indexscan = off"))
 
@@ -131,8 +133,10 @@ async def check_stored_vectors(
 # 수 있음, docs/experiments.md 기타 관찰). 그래서 리포트마다 계획을 적어 '근사 오차를 잰 것인지'를 알 수 있게
 # 한다.
 # 2026-11-03부터 앱은 dense 검색을 정확 탐색으로 고정하므로(app.services.retrieval.pin_exact_dense_search),
-# 기본값(pinned=True)은 같은 고정을 이 트랜잭션에 건 뒤 EXPLAIN해 앱과 평가가 실제로 도는 계획을 적는다. 그 전
-# 기록의 dense_plans는 고정 없이 플래너가 고른 계획(--exact면 세션 전체에서 인덱스 스캔을 끈 계획)이다.
+# 기본값(pinned=True)은 같은 고정을 이 트랜잭션에 건 뒤 EXPLAIN해, 고정한 검색 SQL이 이 DB에서 받는 계획을
+# 적는다. 문항 검색마다 고정이 걸렸는지는 보여 주지 않는다(그것은 단위 테스트가 지킨다, docs/experiments.md
+# v16-A '결정 뒤' 소절의 보충 (마)). 그 전 기록의 dense_plans는 고정 없이 플래너가 고른 계획(--exact면 세션
+# 전체에서 인덱스 스캔을 끈 계획)이다.
 # pinned=False는 고정 없이 플래너가 고를 계획을 보고용으로 볼 때 쓴다(예: DB를 다시 적재한 뒤의 기록).
 # 그 언어의 청크가 없으면 빈 목록을 돌려준다(그때는 고정도 걸지 않는다).
 async def dense_search_plan(
@@ -150,8 +154,10 @@ async def dense_search_plan(
     pinned=False면 고정을 걸지 않고 EXPLAIN한다. 다만 고정을 풀지는 않는다: 같은 트랜잭션에서 이미
     고정했거나(앞선 검색이나 pinned=True 호출) --exact(force_exact_search)로 세션 설정을 바꿨으면 그 값이 남아
     정확 탐색 계획이 나온다. 플래너가 고정 없이 고를 계획을 보려면 새 트랜잭션에서 검색·고정보다 먼저 부른다.
-    다만 --exact의 세션 설정이 든 트랜잭션이 commit된 연결이면 새 트랜잭션에도 그 설정이 남으므로(LOCAL이
-    아닌 SET은 commit 뒤 세션 끝까지 남음), 그때는 새 연결(세션)에서 부른다.
+    다만 --exact의 세션 설정이 든 트랜잭션이 commit된 연결이면 새 트랜잭션에도 그 설정이 남으므로(LOCAL이 아닌
+    SET은 commit 뒤 그 DB 연결이 끝날 때까지 남음), 그때는 새 DB 연결(예: NullPool 엔진의 연결, 또는
+    engine.dispose() 뒤에 연 연결)에서 부른다. 같은 엔진의 새 AsyncSession은 연결 풀에서 같은 연결을 받아 그
+    설정이 남아 있을 수 있다(force_exact_search docstring).
     """
     # 실제 질문 벡터 대신 저장된 벡터 하나를 질의로 쓴다. 계획은 값보다 SQL 모양과 테이블 통계로 정해지므로
     # 이것으로 충분하다.
