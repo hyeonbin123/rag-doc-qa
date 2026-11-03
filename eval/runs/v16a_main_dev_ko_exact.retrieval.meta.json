@@ -1,0 +1,62 @@
+{
+  "date": "2026-11-03T08:15:32.413301+00:00",
+  "tag": "v16a_main_dev_ko_exact",
+  "git_commit": "7d1d75cedcd4046cda18c9b8f773349674c494d2",
+  "database": "ragdb",
+  "embedding_models": {
+    "ko": "ibm-granite/granite-embedding-311m-multilingual-r2@44399559930365213510b1ee2eb15ded83374f0e:dim384"
+  },
+  "mode": "dense",
+  "top_k": 10,
+  "score_floors": {
+    "ko": 0.3
+  },
+  "cross_lingual": false,
+  "exact": true,
+  "dense_plans": {
+    "ko": [
+      "Sort",
+      "Seq Scan on chunks c",
+      "Seq Scan on documents d"
+    ]
+  },
+  "datasets": [
+    "qa_dev_ko.jsonl",
+    "qa_dev2_ko.jsonl",
+    "qa_pool4_dev_ko.jsonl"
+  ],
+  "dataset_sha256": {
+    "qa_dev_ko.jsonl": "4e5e4ebfcd6d2fcbd6ae61dd1e71d2c75befc1454a130a13336e3c61269de2ff",
+    "qa_dev2_ko.jsonl": "9bea72d23949c354dc7ce666588285aec2daca68a2409fda4205636c7930b2c5",
+    "qa_pool4_dev_ko.jsonl": "da55dfe6bf739c6346c38178adbdeeb326e0e06e65791ebb420d1c5a4349e34c"
+  },
+  "corpus": {
+    "documents_by_source_commit": {
+      "50113da16fec53b66b80d75e80a89296de4fa5a5": 277
+    },
+    "last_fetched_at": "2026-11-03T08:04:42.172603+00:00",
+    "chunks_by_language": {
+      "en": 914,
+      "ko": 621
+    }
+  },
+  "vector_checks": [
+    {
+      "language": "ko",
+      "model": "ibm-granite/granite-embedding-311m-multilingual-r2@44399559930365213510b1ee2eb15ded83374f0e:dim384",
+      "checked": 3,
+      "min_cosine": 1.0
+    }
+  ],
+  "torch_threads": 6,
+  "aggregate": {
+    "n": 112,
+    "hit@3": 0.9464285714285714,
+    "hit@5": 0.9642857142857143,
+    "hit@10": 0.9642857142857143,
+    "mrr": 0.884970238095238,
+    "short": 0,
+    "p50": 10.038400068879128,
+    "p95": 11.533435061573982
+  }
+}
