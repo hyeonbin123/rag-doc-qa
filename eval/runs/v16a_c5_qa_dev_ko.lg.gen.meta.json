@@ -1,0 +1,82 @@
+{
+  "date": "2026-11-02T23:41:38.322460+00:00",
+  "tag": "v16a_c5_qa_dev_ko",
+  "provider": "ollama",
+  "model": "a.x-4.0-light:q4_k_m",
+  "top_k": 5,
+  "retrieval_mode": "dense",
+  "cross_lingual": false,
+  "exact": true,
+  "dense_plans": {
+    "ko": [
+      "Sort",
+      "Seq Scan on chunks c",
+      "Seq Scan on documents d"
+    ]
+  },
+  "score_floor": 0.3,
+  "database": "ragdb",
+  "embedding_models": {
+    "ko": "ibm-granite/granite-embedding-311m-multilingual-r2@44399559930365213510b1ee2eb15ded83374f0e:dim384"
+  },
+  "vector_checks": [
+    {
+      "language": "ko",
+      "model": "ibm-granite/granite-embedding-311m-multilingual-r2@44399559930365213510b1ee2eb15ded83374f0e:dim384",
+      "checked": 3,
+      "min_cosine": 1.0
+    }
+  ],
+  "dataset": "qa_dev_ko.jsonl",
+  "dataset_sha256": {
+    "qa_dev_ko.jsonl": "4e5e4ebfcd6d2fcbd6ae61dd1e71d2c75befc1454a130a13336e3c61269de2ff"
+  },
+  "ids_file": null,
+  "corpus": {
+    "documents_by_source_commit": {
+      "50113da16fec53b66b80d75e80a89296de4fa5a5": 277
+    },
+    "last_fetched_at": "2026-10-09T02:59:20.705331+00:00",
+    "chunks_by_language": {
+      "en": 914,
+      "ko": 621
+    }
+  },
+  "order": "dataset",
+  "seed": null,
+  "git_commit": "3873503b42812c6d136607372302e740d8eb9f83",
+  "ollama_version": "0.35.1",
+  "ollama_ps_after": {
+    "models": [
+      {
+        "name": "a.x-4.0-light:q4_k_m",
+        "model": "a.x-4.0-light:q4_k_m",
+        "size": 4987929230,
+        "digest": "a874a70d2c09d0b718662cc3f52e38a85c34eacfb29284996530edfbc23d8661",
+        "details": {
+          "parent_model": "",
+          "format": "gguf",
+          "family": "qwen2",
+          "families": [
+            "qwen2"
+          ],
+          "parameter_size": "7.3B",
+          "quantization_level": "Q4_K_M"
+        },
+        "expires_at": "2026-11-03T08:49:46.9905039+09:00",
+        "size_vram": 4987929230,
+        "context_length": 8192
+      }
+    ]
+  },
+  "model_digest": "a874a70d2c09d0b718662cc3f52e38a85c34eacfb29284996530edfbc23d8661",
+  "think": null,
+  "language_guard": true,
+  "citation_mode": "separate",
+  "refuse_without_context": false,
+  "empty_citations_on_refusal": true,
+  "refusal_style": "legacy",
+  "records_path": "eval/runs/v16a_c5_qa_dev_ko.gen.jsonl",
+  "arm": "lg",
+  "derived_from": "eval/runs/v16a_c5_qa_dev_ko.gen.jsonl"
+}

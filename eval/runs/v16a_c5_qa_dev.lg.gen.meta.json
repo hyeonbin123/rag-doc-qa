@@ -1,0 +1,82 @@
+{
+  "date": "2026-11-02T23:32:46.761542+00:00",
+  "tag": "v16a_c5_qa_dev",
+  "provider": "ollama",
+  "model": "a.x-4.0-light:q4_k_m",
+  "top_k": 5,
+  "retrieval_mode": "dense",
+  "cross_lingual": false,
+  "exact": true,
+  "dense_plans": {
+    "en": [
+      "Sort",
+      "Seq Scan on chunks c",
+      "Seq Scan on documents d"
+    ]
+  },
+  "score_floor": 0.3,
+  "database": "ragdb",
+  "embedding_models": {
+    "en": "BAAI/bge-small-en-v1.5"
+  },
+  "vector_checks": [
+    {
+      "language": "en",
+      "model": "BAAI/bge-small-en-v1.5",
+      "checked": 3,
+      "min_cosine": 1.0
+    }
+  ],
+  "dataset": "qa_dev.jsonl",
+  "dataset_sha256": {
+    "qa_dev.jsonl": "d8193d619769c62eb20e569a05fb44b0b38e7ec5c1c72ad55941ec62844e5348"
+  },
+  "ids_file": null,
+  "corpus": {
+    "documents_by_source_commit": {
+      "50113da16fec53b66b80d75e80a89296de4fa5a5": 277
+    },
+    "last_fetched_at": "2026-10-09T02:59:20.705331+00:00",
+    "chunks_by_language": {
+      "en": 914,
+      "ko": 621
+    }
+  },
+  "order": "dataset",
+  "seed": null,
+  "git_commit": "3873503b42812c6d136607372302e740d8eb9f83",
+  "ollama_version": "0.35.1",
+  "ollama_ps_after": {
+    "models": [
+      {
+        "name": "a.x-4.0-light:q4_k_m",
+        "model": "a.x-4.0-light:q4_k_m",
+        "size": 4987929230,
+        "digest": "a874a70d2c09d0b718662cc3f52e38a85c34eacfb29284996530edfbc23d8661",
+        "details": {
+          "parent_model": "",
+          "format": "gguf",
+          "family": "qwen2",
+          "families": [
+            "qwen2"
+          ],
+          "parameter_size": "7.3B",
+          "quantization_level": "Q4_K_M"
+        },
+        "expires_at": "2026-11-03T08:41:47.031317+09:00",
+        "size_vram": 4987929230,
+        "context_length": 8192
+      }
+    ]
+  },
+  "model_digest": "a874a70d2c09d0b718662cc3f52e38a85c34eacfb29284996530edfbc23d8661",
+  "think": null,
+  "language_guard": true,
+  "citation_mode": "separate",
+  "refuse_without_context": false,
+  "empty_citations_on_refusal": true,
+  "refusal_style": "legacy",
+  "records_path": "eval/runs/v16a_c5_qa_dev.gen.jsonl",
+  "arm": "lg",
+  "derived_from": "eval/runs/v16a_c5_qa_dev.gen.jsonl"
+}

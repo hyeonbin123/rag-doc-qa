@@ -1,0 +1,59 @@
+{
+  "date": "2026-11-02T22:51:20.365479+00:00",
+  "tag": "v16a_dev_en_c6_planned",
+  "git_commit": "2fa026acc5f37b1bd5744820b4e5541bbcf5b087",
+  "database": "ragdb_v16a",
+  "embedding_models": {
+    "en": "BAAI/bge-small-en-v1.5"
+  },
+  "mode": "dense",
+  "top_k": 10,
+  "score_floors": {
+    "en": 0.3
+  },
+  "cross_lingual": false,
+  "exact": false,
+  "dense_plans": {
+    "en": [
+      "Index Scan using chunks_embedding_en_hnsw_idx on chunks c",
+      "Index Scan using documents_pkey on documents d"
+    ]
+  },
+  "datasets": [
+    "qa_dev.jsonl",
+    "qa_pool4_dev_en.jsonl"
+  ],
+  "dataset_sha256": {
+    "qa_dev.jsonl": "d8193d619769c62eb20e569a05fb44b0b38e7ec5c1c72ad55941ec62844e5348",
+    "qa_pool4_dev_en.jsonl": "73c544a4d72ca9da66eb73b3e33833bde89ae5a02fab7ad1624d860d28fe4669"
+  },
+  "corpus": {
+    "documents_by_source_commit": {
+      "50113da16fec53b66b80d75e80a89296de4fa5a5": 277
+    },
+    "last_fetched_at": "2026-11-02T22:42:36.604069+00:00",
+    "chunks_by_language": {
+      "en": 914,
+      "ko": 621
+    }
+  },
+  "vector_checks": [
+    {
+      "language": "en",
+      "model": "BAAI/bge-small-en-v1.5",
+      "checked": 3,
+      "min_cosine": 1.0
+    }
+  ],
+  "torch_threads": 6,
+  "aggregate": {
+    "n": 72,
+    "hit@3": 0.8611111111111112,
+    "hit@5": 0.875,
+    "hit@10": 0.9583333333333334,
+    "mrr": 0.8192901234567902,
+    "short": 0,
+    "p50": 3.328150021843612,
+    "p95": 3.738290083128959
+  }
+}
