@@ -1682,7 +1682,7 @@ dev = qa_dev_ko 32 + qa_dev2_ko 40, 72문항 한 번에. 복제 DB `ragdb_p1_<�
 - 비용: 판정 호출이 3회 중앙값 규칙의 3분의 1. 경계 규칙이 걸린 단계는 결정 판정기의 판정이 세 번 + 준비 판정 32문항(v16-A면 J2 208회 두 번과 32문항으로 약 0.45시간 추가)
 - 이 규칙을 정한 근거는 커밋된 판정 기록뿐이고 이 규칙을 위해 GPU로 잰 것은 없음. I2의 A2 ≠ A1이 생긴 내부 원인(세션 이력의 어느 부분인지)은 결정에 쓰이지 않아 재지 않았음
 
-## v16-A: 청크 heading_path 바로잡기 (측정 끝: 규칙대로 C6 채택, 본 DB 재적재는 dense 실행 계획 결정 뒤)
+## v16-A: 청크 heading_path 바로잡기 (측정 끝: 규칙대로 C6 채택. dense 실행 계획은 2026-11-03 정확 탐색 고정으로 정함, 본 DB 재적재·재측정 전)
 
 이 절의 규칙은 2026-10-24에 측정 전에 기록함. 새 설정을 고르는 단계가 아니라, 청커 버그를 고친 뒤 지금 기본 구성으로 다시 재서 고친 청커(`CHUNKER_VERSION` 6)를 본 DB에 쓸지 정하는 단계임. 버그 수정이라 '개선해야 채택'이 아니라 **미리 정한 허용 폭 안이면 채택(비열등)**을 봄. 이전 단계의 수치와 결정은 고치지 않음.
 
@@ -1886,6 +1886,68 @@ dev = qa_dev_ko 32 + qa_dev2_ko 40, 72문항 한 번에. 복제 DB `ragdb_p1_<�
   - C6의 영어 기본 계획이 HNSW인 것은 측정 경로(정확 탐색)와 서비스 경로의 차이로 남음. (2)에서 상위 10개가 71/72 같았지만 보고만이고, 계획 고정은 사용자 결정임
   - 튜닝용 셋은 v5~v15에서 여러 번 썼음(규칙의 위험 절 그대로). 질문 풀 4의 튜닝용 셋은 검색 결정에 처음 씀
 - 리포트 `eval/reports/retrieval_eval_v16a_*`, `retrieval_compare_v16a_*`, `answer_eval_v16a_*`, `generator_summary_v16a_20261103_002638.*`(J2 결정), `generator_summary_v16a_J1_*`·`_J3_*`·`_J23_*`(보고용), `judge_truncation_v16a_J2v16a_*`·`_J1v16a_*`·`_J3v16a_*`·`_J23v16a_*`(파일 이름의 시각은 UTC), 기록 `eval/runs/v16a_dev_*`·`v16a_test_*`(검색), `v16a_c5_*`·`v16a_c6_*`(생성, raw/lg 분할, J2v16a·J1v16a·J3v16a·J23v16a 판정). 명령은 로컬 스크립트(공개 저장소에 넣지 않음, v15와 같음)
+
+### 결정 뒤: dense 검색 정확 탐색 고정과 본 DB 재적재 (2026-11-03 사용자 결정, 재적재·재측정 전에 기록)
+
+위 결과의 '결정 뒤 할 일'(2026-11-01 보충)대로, 사용자가 2026-11-03에 dense 실행 계획을 **정확 탐색 고정**으로 정함(후보: 정확 탐색 고정 / HNSW 고정 / 지금처럼 플래너에 맡김). 이 소절은 그 결정을 서비스 코드에 넣은 커밋과 함께, 본 DB `ragdb`를 다시 적재하고 다시 재기 전에 기록함. 위 규칙 줄과 결과 수치는 그대로 둠.
+
+**이유**
+- 측정 경로와 서비스 경로가 같아짐: v16-A는 검색·생성 모두 두 팔을 정확 탐색(`--exact`, 그 평가 세션에서 `enable_indexscan = off`)으로 쟀음. 같은 설정으로 고정하면 서비스가 받는 검색이 v16-A가 잰 검색과 같은 방식이 됨
+- 비용이 작음: 2026-10-29 본 DB에서 같은 연결로 잰 실행 시간 중앙값이 정확 탐색 영어 5.6ms(한국어 4.1~4.2ms), HNSW 0.28~0.34ms였음(기타 관찰). 답변 생성(수 초)에 비하면 무시할 만함
+- 플래너에 맡기면 계획이 적재 이력에 따라 뒤집힘: 계획은 두 방식의 근소한 비용 추정 차이로 정해지고, 그 차이는 적재 이력이 남긴 힙·인덱스 크기에 따라 바뀜(기타 관찰 2026-10-29). 실제로 C6 사본(전체 재적재)은 영어 top_k 5·10의 기본 계획이 HNSW였음(위 결과 1번)
+
+**코드 변경** (이 소절과 같은 커밋)
+- `app/services/retrieval.py`: 벡터 거리로 정렬하는 앱의 SQL 세 개(dense 검색의 `dense_search_sql`, hybrid의 dense CTE, rerank 후보의 dense CTE)를 보내기 바로 앞에 같은 연결·같은 트랜잭션으로 `SET LOCAL enable_indexscan = off`를 보냄. 세 경로가 도우미 하나(`pin_exact_dense_search`)를 부르고, 교차언어 검색과 검색할 단어가 없는 질문의 dense 대신 경로는 dense 검색을 거침. 평가의 `--exact`와 같은 플래너 설정이고, SQL 글자는 v16-A 측정 때와 그대로임(고정 문장만 앞에 더함). pgvector의 HNSW 인덱스는 거리순 인덱스 스캔으로만 쓰이므로(비트맵·인덱스 전용 스캔은 지원하지 않음, `pg_index_has_property`로 확인) 이 설정 하나로 HNSW 경로가 빠지고, 결과는 그 언어의 모든 청크를 거리순으로 정렬한 상위 k개임. BM25의 GIN 인덱스는 비트맵 스캔만 써서 hybrid·rerank의 어휘 검색은 그대로 그 인덱스를 씀
+- 범위: `SET LOCAL`은 그 트랜잭션이 끝날 때까지만 남음. `/query/ask`는 검색 직후 commit하므로 질문 기록을 저장하는 트랜잭션에는 남지 않음(테스트로 고정). 평가 스크립트는 한 트랜잭션에서 여러 문항을 검색하므로 끝까지 남지만 그 사이의 검색도 모두 정확 탐색이라 결과가 같음. 트랜잭션 밖(자동 커밋 연결)에서는 효과가 없는데, 앱의 세션은 첫 문장에서 트랜잭션을 열고 검색은 자동 커밋 연결에서 돌지 않음
+- 준비문 계획 캐시: SQLAlchemy의 asyncpg 드라이버는 같은 SQL을 연결마다 준비문으로 다시 쓰고, PostgreSQL은 같은 준비문을 여섯 번째 실행부터 일반 계획(generic plan)으로 바꿀 수 있음. 일반 계획은 만들 때의 플래너 설정으로 정해지고 설정을 바꿔도 다시 계획하지 않음(테스트 DB에서 고정 없이 만든 일반 계획이 고정 뒤에도 HNSW로 남는 것을 확인함). 앱에서는 이 세 SQL을 늘 고정 바로 뒤에서만 보내므로 일반 계획도 고정 아래에서 만들어져 정확 탐색임
+- 설정으로 끄고 켜는 스위치는 두지 않음(스위치가 있으면 측정 경로와 서비스 경로가 다시 갈라질 수 있음). 다른 계획으로 바꾸려면 이 문서에 새 규칙을 먼저 적고 코드를 바꿈. HNSW 인덱스(마이그레이션 0004)는 코퍼스가 커질 때를 위해 그대로 둠
+- `eval.retrieval_checks.dense_search_plan`은 기본으로 앱과 같은 고정 아래에서 EXPLAIN함. 그래서 이 커밋 뒤 검색·생성 meta의 `dense_plans`는 그 실행이 실제로 돈 계획(고정 계획)이고, 그 전 기록의 `dense_plans`는 플래너가 고른 계획(`--exact`면 세션 전체에서 인덱스 스캔을 끈 계획)임. 플래너가 고정 없이 고를 계획은 `pinned=False`로 따로 볼 수 있음(같은 트랜잭션에서 이미 고정했거나 `--exact`로 세션 설정을 바꿨으면 그 값이 남으므로 새 트랜잭션에서 먼저 봄)
+- `--exact`(두 평가 스크립트)는 남김: 이제 기본 검색도 정확 탐색이고, `--exact`는 평가 세션 전체에서 인덱스 스캔을 끄는 것만 더함(검색 결과는 같음). meta의 `exact`는 그 옵션을 줬는지임. 검색 리포트 머리의 탐색 방식 줄은 `dense exact, pinned like the app`(+ `--exact`면 세션 전체 설정)이 됨(그 전 리포트의 `as planned`는 플래너가 고른 계획대로였음)
+- 검색 지연: 검색마다 고정 문장 한 번의 DB 왕복이 더해지고 검색 평가의 지연에 들어감(보고만)
+- 테스트(`tests/test_retrieval.py`, `tests/test_query.py`, `tests/test_retrieval_eval.py`, `tests/test_answer_eval.py`): 테스트 DB에 마이그레이션 0004의 HNSW 인덱스를 만들고 순차 스캔 비용만 올린 트랜잭션에서, 고정 없는 계획은 HNSW를 쓰고 고정 없이 실행하면 결과가 `hnsw.ef_search`개에서 멈추는 것을 먼저 보인 뒤, 고정 계획에 HNSW 노드가 없고 dense 검색 결과가 전수 거리순 상위 k개와 같은 것을 확인함(dense 검색이나 계획 기록에서 고정 한 줄을 빼면 실패하는 것을 확인함). 같은 연결에서 여러 번(일반 계획 강제 포함) 검색해도 정확 탐색 결과·계획인 것, 여섯 경로(dense·hybrid·rerank·교차언어, 검색할 단어 없는 hybrid·rerank) 모두 벡터 SQL 바로 앞에 같은 트랜잭션으로 고정 문장이 가는 것, `/query/ask`의 질문 기록 트랜잭션과 다음 트랜잭션에는 고정이 남지 않는 것도 고정함
+- 커밋 전 코드 확인(결정에 쓰지 않음, 기록은 커밋하지 않음): C6 사본(`ragdb_v16a`. 플래너 자유 계획은 영어 top_k 5·10이 HNSW)에서 v16-A 2번의 dev 검색 두 묶음을 `--exact` 없이 돌림 → 두 실행 meta의 `dense_plans`는 `Sort > Seq Scan on chunks c > Seq Scan on documents d`(HNSW 노드 없음), 문항마다 상위 10개 `chunk_id`와 (`source_path`, `score`)가 C6 기록(`--exact`)과 같음(영어 72/72, 한국어 112/112), MRR·Hit@5 맞힌 문항이 영어 0.819·63, 한국어 0.885·108로 C6와 같음. 같은 사본을 고정 없이 돌린 위 결과의 보고용 실행(`v16a_dev_en_c6_planned`)은 HNSW로 돌아 e4097 한 문항의 순서가 달랐음
+
+**절차** (저장소 루트, DB 호스트 포트 55432, `PG=postgresql+asyncpg://raguser:ragpass@localhost:55432`, 모두 CPU)
+1. 확인: 작업 트리가 이 커밋 뒤 상태(추적 파일 = HEAD)
+2. 되돌릴 수 있게, 다시 적재하기 전 본 DB를 TEMPLATE 사본으로 남김(보고만. `ragdb`에 다른 연결이 없을 때)
+   ```bash
+   docker compose exec -T db createdb -U raguser -T ragdb ragdb_v5_20261103
+   ```
+3. 본 DB를 청커 6으로 다시 적재
+   ```bash
+   DATABASE_URL=$PG/ragdb uv run --no-sync python -m scripts.ingest_fastapi_docs --commit 50113da16fec53b66b80d75e80a89296de4fa5a5
+   ```
+4. 확인: 처리한 문서 277·지운 문서 0, 청크 영어 914·한국어 621, 헤딩으로 시작하는 청크 중 제목이 `heading_path`의 마지막 항목과 다른 청크 0개(C6와 같음)
+5. 본 DB 실행 계획 기록(위 결과 1번과 같은 방법: 앱의 dense SQL에 저장된 벡터 하나를 넣은 EXPLAIN, 실행하지 않음): 영어·한국어 × top_k 5·10에서 고정 계획(`dense_search_plan` 기본값. 모두 HNSW 노드가 없어야 함)과 플래너 자유 계획(새 트랜잭션에서 `pinned=False`, 보고만), `chunks` 힙과 HNSW 인덱스의 페이지 수
+6. dev 검색(dense, top_k 10. 시스템을 고르지 않는 확인이고 아래 통과 기준에 씀): v16-A 2번과 같은 셋 묶음을 `--exact` 없이(= 서비스 경로) 한 번, 같은 DB에서 `--exact`로 한 번
+   ```bash
+   EN="eval/qa_dev.jsonl eval/qa_pool4_dev_en.jsonl"
+   KO="eval/qa_dev_ko.jsonl eval/qa_dev2_ko.jsonl eval/qa_pool4_dev_ko.jsonl"
+   DATABASE_URL=$PG/ragdb uv run --no-sync python -m eval.run_retrieval_eval --mode dense --dataset $EN --tag v16a_main_dev_en
+   DATABASE_URL=$PG/ragdb uv run --no-sync python -m eval.run_retrieval_eval --mode dense --dataset $KO --tag v16a_main_dev_ko
+   DATABASE_URL=$PG/ragdb uv run --no-sync python -m eval.run_retrieval_eval --mode dense --exact --dataset $EN --tag v16a_main_dev_en_exact
+   DATABASE_URL=$PG/ragdb uv run --no-sync python -m eval.run_retrieval_eval --mode dense --exact --dataset $KO --tag v16a_main_dev_ko_exact
+   for l in en ko; do uv run --no-sync python -m eval.retrieval_runs compare \
+     eval/runs/v16a_main_dev_${l}_exact.retrieval.jsonl eval/runs/v16a_main_dev_${l}.retrieval.jsonl; done
+   ```
+7. 테스트셋 검색 6개(v16-A 4번과 같은 셋), `--exact` 없이
+   ```bash
+   for set in qa_dataset qa_test2 qa_test3b_en qa_test2_ko qa_test3a_ko qa_test3b_ko; do
+     DATABASE_URL=$PG/ragdb uv run --no-sync python -m eval.run_retrieval_eval --mode dense \
+       --dataset eval/$set.jsonl --tag v16a_main_test_$set
+   done
+   ```
+8. 결과를 이 소절 아래에 기록하고 README에 날짜 붙여 덧붙임(별도 커밋)
+9. 그 뒤 v16-B: 그 절의 '팔'(본 DB `ragdb`, dense)은 이 고정된 서비스 경로로 생성함(`--exact` 없이). 생성 meta의 `dense_plans`에 HNSW 노드가 없는지로 확인함
+
+**통과 기준** (모두 만족해야 v16-B로 감. 하나라도 어기면 멈추고 원인을 확인함)
+- 4번의 청크 수(영어 914·한국어 621)와 헤딩·경로 불일치 0
+- 5번의 고정 계획 넷과 6·7번 실행 meta의 `dense_plans`에 HNSW 노드가 없음
+- 6번 고정 실행: dev 셋마다·언어마다 MRR·Hit@3·Hit@5·Hit@10이 C6 기록(`eval/runs/v16a_dev_{en,ko}_c6.retrieval.jsonl`, 위 결과 2번 표의 C6 행)과 같음. 문항마다 상위 10개의 (`source_path`, `score`)가 C6 기록과 같음(청크를 새로 만들어 `chunk_id`는 달라지므로 이 키로 비교함. `score`가 1e-6 안에서만 다르면 보고만)
+- 6번: 같은 본 DB의 고정 실행과 `--exact` 실행이 문항마다 상위 10개 `chunk_id`가 같음(`eval.retrieval_runs compare`)
+- 7번: 테스트셋 6개의 MRR·Hit@5·Hit@10이 위 결과 4번 표의 C6 값(기록 `eval/runs/v16a_test_<셋>_c6.retrieval.jsonl`)과 같음
+- 테스트셋 사용: 시스템을 고르지 않는 확인이라 위 결과 4번처럼 테스트셋 사용 횟수로 세지 않음. `qa_pool4_test_*`는 열지 않음
+- 보고만: 검색 지연 p50(부하 조건과 함께. 검색마다 고정 문장 한 번이 더해짐), 플래너 자유 계획, 5번의 페이지 수
 
 ## v16-L: Claude 라벨 확장 — v13 채택 G0·G3 짝 전부 + 판정 점수로 층화하지 않은 무작위 표본 (라벨·보고 끝: 보고만, 결정은 그대로)
 
@@ -2105,3 +2167,4 @@ dev = qa_dev_ko 32 + qa_dev2_ko 40, 72문항 한 번에. 복제 DB `ragdb_p1_<�
   - 결론: 계획은 SQL 모양이나 VACUUM 유무가 아니라 근소한 비용 추정 차이로 정해지고, 그 차이는 적재 이력이 남긴 힙·인덱스 크기에 따라 뒤집힘. 영어는 전체 재적재 한 번으로 HNSW가 되고, 한국어는 지금 인덱스에 빈 공간이 많아(다시 만들면 절반) 정확 탐색에 머묾. v8(2026-09-12)의 HNSW 계획은 그때의 페이지 수를 기록하지 않아 직접 확인할 수 없지만, v8은 측정 중에 전체 재적재를 했음(위 v8의 d024 기록). pgvector 판은 원인이 아님: v8과 2026-10-04 오전의 관찰은 모두 이미지를 0.8.7로 고정한 커밋(`2e80dcf`, 10-04 저녁) 전의 `pgvector/pgvector:pg16` 이미지에서 났고(로컬에 남은 그 이미지는 pgvector 0.8.6, PostgreSQL 16.15), 그 뒤 0.8.7에서 기록한 계획도 모두 정확 탐색임
   - 다음 측정에 주는 영향: 전체 재적재 뒤에는 영어 dense가 근사 탐색(HNSW)이 될 수 있으므로, 검색 리포트의 실행 계획 줄(`dense_plans`, 검색 평가의 top_k)로 확인함. 앱의 `/query/ask`(top_k 5)는 같은 DB에서도 그 줄과 계획이 다를 수 있음(지금 본 DB에서는 둘 다 정확 탐색). v16-A의 C6 사본은 `ragdb`를 복사한 뒤 277문서를 모두 다시 적재하므로 위 전체 재적재와 같은 모양이라, C6의 영어 검색은 C5(본 DB, 정확 탐색)와 달리 HNSW로 계획될 수 있음. 그러면 두 팔의 차이에 탐색 방식 차이가 섞이므로 C5·C6 검색 리포트의 실행 계획 줄을 함께 봐야 함. 계획을 고정할지(정확 탐색 고정, HNSW 고정, 지금처럼 플래너에 맡김)는 정하지 않았고, 고정하면 검색을 다시 재야 함
   - 2026-11-01 추가: v16-A는 위 두 팔의 차이를 피하려고 검색·생성 모두 두 팔을 정확 탐색(`--exact`)으로 재기로 측정 전에 정함(v16-A 절 끝의 규칙 보충). 서비스의 계획 고정은 여전히 정하지 않았고, v16-A를 채택하더라도 C6의 기본 계획이 본 DB와 다르면 본 DB를 다시 적재하기 전에 정함
+  - 2026-11-03 추가: 사용자가 dense 실행 계획을 정확 탐색 고정으로 정함. 서비스 코드에 넣은 내용과 본 DB 재적재·재측정 절차·통과 기준은 위 v16-A 절의 새 소절('결정 뒤: dense 검색 정확 탐색 고정과 본 DB 재적재')

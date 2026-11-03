@@ -20,6 +20,9 @@ settings = get_settings()
 # expire_on_commit=False: 커밋한 뒤에도 객체 속성을 그대로 읽을 수 있게 한다. 비동기 세션에서는 만료된 속성을
 # 다시 읽으려면 DB 왕복이 필요해 지연 로딩 오류가 나기 쉽다. /query/ask가 중간에 commit한 뒤에도
 # current_user를 쓰는 것이 이 설정 덕분이다(app/routers/query.py 주석).
+# 격리 수준은 기본값(트랜잭션을 씀)이고 세션은 첫 문장에서 트랜잭션을 연다(autobegin). 검색의 정확 탐색
+# 고정(app/services/retrieval.py의 pin_exact_dense_search)은 SET LOCAL이라 트랜잭션 안에서만 효과가 있으므로,
+# 이 엔진이나 세션을 AUTOCOMMIT으로 바꾸면 고정이 오류 없이 사라진다. 그래서 바꾸지 않는다.
 engine = create_async_engine(settings.database_url, pool_pre_ping=True)
 async_session_maker = async_sessionmaker(engine, expire_on_commit=False)
 

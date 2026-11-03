@@ -11,8 +11,9 @@
 # 스크립트를 환경 변수로 DB와 모델만 바꿔 돌렸다. DB와 모델을 엇갈려 짚어도 검색은 오류 없이 돌아가 틀린
 # 숫자만 나오므로, 측정 전에 저장된 벡터가 지금 모델로 만든 것인지 확인하고 아니면 멈춘다(docs/experiments.md
 # v12 '벡터 확인').
-# [주요 구성] force_exact_search(인덱스 스캔을 꺼 정확 탐색으로 비교), check_stored_vectors(저장 벡터와 다시
-# 만든 벡터의 cos 비교), dense_search_plan(플래너가 고른 스캔 방식 기록).
+# [주요 구성] force_exact_search(--exact: 평가 세션 전체의 인덱스 스캔을 끔), check_stored_vectors(저장 벡터와
+# 다시 만든 벡터의 cos 비교), dense_search_plan(앱과 같은 정확 탐색 고정 아래의 계획 기록. pinned=False면 고정
+# 없이 플래너가 고를 계획).
 # [연결] eval/run_retrieval_eval.py와 eval/run_answer_eval.py가 세 함수를 모두 쓴다(답변 평가의 --exact와
 # 계획 기록은 2026-11-01부터). tests/test_retrieval_eval.py와 tests/test_answer_eval.py가 동작을 고정한다.
 
@@ -26,10 +27,11 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 # 앱과 같은 코드를 써야 비교가 의미가 있다: 적재 때와 똑같이 머리말을 붙인 임베딩 입력(build_embedding_text),
-# 같은 임베딩 서비스, 앱이 실제로 보내는 dense 검색 SQL(dense_search_sql)을 가져온다.
+# 같은 임베딩 서비스, 앱이 실제로 보내는 dense 검색 SQL(dense_search_sql)과 그 앞에 거는 정확 탐색
+# 고정(pin_exact_dense_search)을 가져온다.
 from app.services.chunking import build_embedding_text
 from app.services.embedding import EmbeddingService
-from app.services.retrieval import dense_search_sql
+from app.services.retrieval import dense_search_sql, pin_exact_dense_search
 
 # 같은 모델이면 다시 만든 벡터와 저장 벡터의 cos가 약 1.0이 나온다. 0.99 미만이면 다른 모델의 벡터로 보고
 # 멈춘다(docs/experiments.md v12 '벡터 확인': cos ≥ 0.99).
@@ -47,6 +49,11 @@ class VectorModelMismatch(RuntimeError):
 # eval/run_answer_eval.py의 --exact도 이 함수를 불러, 비교하는 두 팔을 같은 정확 탐색으로 생성한다
 # (docs/experiments.md v16-A의 2026-11-01 규칙 보충).
 # SET은 세션 범위라 다른 연결이나 앱에는 영향이 없다.
+# 2026-11-03부터는 앱의 dense 검색 자체가 같은 설정을 검색마다 트랜잭션 범위로 건다
+# (app.services.retrieval.pin_exact_dense_search, 사용자가 '정확 탐색 고정'으로 정함). 그래서 --exact 없이도
+# dense 검색은 정확 탐색이고, 이 함수는 그 위에 세션 전체에서 인덱스 스캔을 끄는 것만 더한다(같은 세션의 다른
+# 문장도 인덱스 스캔 없이 계획됨). 옛 --exact 실행과 같은 명령을 다시 돌릴 수 있게 남겼다. 그 전 기록에서
+# --exact가 없는 실행은 플래너가 고른 계획대로 돌았다.
 async def force_exact_search(db: AsyncSession) -> None:
     """이 세션의 벡터 검색을 HNSW 인덱스 스캔 대신 정확 탐색으로 바꾼다.
 
@@ -117,13 +124,24 @@ async def check_stored_vectors(
 # 정해지고, 그 차이는 적재 이력이 남긴 테이블·인덱스 크기에 따라 뒤집힌다(전체 재적재 뒤에는 영어가 HNSW가 될
 # 수 있음, docs/experiments.md 기타 관찰). 그래서 리포트마다 계획을 적어 '근사 오차를 잰 것인지'를 알 수 있게
 # 한다.
-# 그 언어의 청크가 없으면 빈 목록을 돌려준다.
-async def dense_search_plan(db: AsyncSession, language: str, top_k: int = 10) -> list[str]:
+# 2026-11-03부터 앱은 dense 검색을 정확 탐색으로 고정하므로(app.services.retrieval.pin_exact_dense_search),
+# 기본값(pinned=True)은 같은 고정을 이 트랜잭션에 건 뒤 EXPLAIN해 앱과 평가가 실제로 도는 계획을 적는다. 그 전
+# 기록의 dense_plans는 고정 없이 플래너가 고른 계획(--exact면 세션 전체에서 인덱스 스캔을 끈 계획)이다.
+# pinned=False는 고정 없이 플래너가 고를 계획을 보고용으로 볼 때 쓴다(예: DB를 다시 적재한 뒤의 기록).
+# 그 언어의 청크가 없으면 빈 목록을 돌려준다(그때는 고정도 걸지 않는다).
+async def dense_search_plan(
+    db: AsyncSession, language: str, top_k: int = 10, *, pinned: bool = True
+) -> list[str]:
     """Postgres가 `language`의 dense 검색에 고른 스캔 노드들.
 
     "Index Scan using chunks_embedding_<language>_hnsw_idx"는 근사 HNSW 탐색이고, Sort 아래의
-    "Seq Scan on chunks"는 정확 탐색이다. 언어마다 청크가 수백 개 수준이면 플래너가 정확 탐색을 고를 수
-    있다. 질의 대신 저장된 벡터 하나를 쓴다.
+    "Seq Scan on chunks"는 정확 탐색이다. 질의 대신 저장된 벡터 하나를 쓴다.
+
+    pinned=True(기본)면 앱의 검색처럼 pin_exact_dense_search를 먼저 불러, 앱이 실제로 도는 계획(정확 탐색)을
+    돌려준다. 그 고정은 앱의 검색과 같이 이 트랜잭션이 끝날 때까지 남는다.
+    pinned=False면 고정을 걸지 않고 EXPLAIN한다. 다만 고정을 풀지는 않는다: 같은 트랜잭션에서 이미
+    고정했거나(앞선 검색이나 pinned=True 호출) --exact(force_exact_search)로 세션 설정을 바꿨으면 그 값이 남아
+    정확 탐색 계획이 나온다. 플래너가 고정 없이 고를 계획을 보려면 새 트랜잭션에서 검색·고정보다 먼저 부른다.
     """
     # 실제 질문 벡터 대신 저장된 벡터 하나를 질의로 쓴다. 계획은 값보다 SQL 모양과 테이블 통계로 정해지므로
     # 이것으로 충분하다.
@@ -135,6 +153,9 @@ async def dense_search_plan(db: AsyncSession, language: str, top_k: int = 10) ->
     ).scalar()
     if vector is None:
         return []
+    # 앱의 similarity_search와 같은 순서: 고정 문장 바로 뒤에 같은 트랜잭션으로 EXPLAIN을 보낸다.
+    if pinned:
+        await pin_exact_dense_search(db)
     plan = await db.execute(
         text("EXPLAIN " + dense_search_sql(language)), {"qvec": vector, "top_k": top_k}
     )

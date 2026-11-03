@@ -8,6 +8,12 @@
 #   'BM25를 SQL로', 이 규모에서 어휘 검색 1회 약 40~50ms).
 # - 모든 검색은 한 언어 안에서만 한다. 영어·한국어 벡터는 서로 다른 모델이 만든 다른 공간이고, 언어별 부분
 #   HNSW 인덱스를 쓰려면 언어를 SQL 리터럴로 넣어야 한다(_language_sql).
+# - 벡터 거리로 정렬하는 SQL(dense 검색과 hybrid·rerank의 dense 후보)은 정확 탐색(Seq Scan + 거리순
+#   정렬)으로 고정한다(2026-11-03 사용자 결정, pin_exact_dense_search). 평가의 --exact와 같은 설정이라
+#   v16-A가 잰 검색과 서비스 검색이 같은 방식이 되고, 지금 규모에서는 정확 탐색도 몇 ms라 답변 생성(수
+#   초)에 비해 작으며, 플래너에 맡기면 적재 이력에 따라 계획이 HNSW(근사)로 뒤집혔기 때문이다
+#   (docs/experiments.md v16-A의 '결정 뒤' 소절). 그래서 지금 앱은 HNSW 인덱스를 쓰지 않고, 인덱스는
+#   코퍼스가 커질 때를 위해 남긴다.
 # - 기본 dense는 v5~v9의 미리 정한 규칙으로 확정했다. hybrid·rerank는 측정 결과 기본값이 되지 못했지만
 #   설정으로 켤 수 있게 남겼다(docs/experiments.md v4~v9).
 # [연결] /query/ask(app/routers/query.py)와 평가 스크립트(eval/run_retrieval_eval.py,
@@ -45,10 +51,11 @@ SCORE_FLOORS: dict[str, float] = {}
 # RRF 상수 k. 순위 r인 결과가 가중치 / (60 + r)을 받는다. 60은 RRF에서 널리 쓰는 기본값이고 v4부터 그대로
 # 썼다. k가 크면 1위와 10위의 점수 차가 작아져 한 목록의 1위가 결과를 독점하지 못한다.
 RRF_K = 60
-# pgvector의 HNSW 탐색은 최대 hnsw.ef_search개(기본 40) 행만 돌려준다. LIMIT을 더 크게 잡아도 dense 후보
-# 목록은 어차피 조용히 40개로 줄어든다. 다만 플래너가 정확 탐색(Seq Scan + 정렬)을 고르면 LIMIT만큼
-# 돌려주는데, 지금 규모(언어당 청크 수백 개)에서는 2026-10-04 이후 기록된 계획이 모두 정확 탐색이었다
-# (dense_search_sql 위 주석, docs/experiments.md 기타 관찰).
+# pgvector의 HNSW 탐색은 최대 hnsw.ef_search개(기본 40) 행만 돌려준다. 그래서 플래너가 HNSW를 고르면
+# LIMIT을 더 크게 잡아도 dense 후보 목록이 조용히 40개로 줄어든다. 정확 탐색(Seq Scan + 정렬)은 LIMIT만큼
+# 돌려주는데, 지금 규모(언어당 청크 수백 개)의 본 DB에서는 2026-10-04 이후 기록된 계획이 모두 정확
+# 탐색이었고, 2026-11-03부터는 dense 후보 SQL을 정확 탐색으로 고정했다(pin_exact_dense_search). 40은 그
+# 상한과 같은 값이라 어느 쪽이든 후보 수가 같다(dense_search_sql 위 주석, docs/experiments.md 기타 관찰).
 CANDIDATE_POOL = 40
 # 표준 BM25 기본값(Lucene·Elasticsearch와 같음). 일부러 튜닝하지 않았다.
 # k1: 단어가 반복될수록 점수가 늘다가 포화하는 정도. b: 문서 길이 정규화 강도(0이면 길이 무시, 1이면 완전
@@ -213,7 +220,9 @@ def _bm25_params(words: str, language: Language) -> dict:
 
 # 언어를 SQL 문자열 리터럴로 만든다. 부분 인덱스(WHERE language = 'en')는 질의의 WHERE가 그 조건과 글자 그대로
 # 맞아야 플래너가 쓸 수 있어서 바인드 파라미터 대신 리터럴을 넣는다. 지원 언어 목록으로 먼저 검사하므로 SQL
-# 주입 위험이 없다.
+# 주입 위험이 없다. 2026-11-03부터 앱의 벡터 검색은 정확 탐색으로 고정돼 이 인덱스를 쓰지 않지만, SQL을
+# v16-A 측정 때와 글자 그대로 두고(측정 경로 = 서비스 경로) 나중에 새 규칙으로 계획을 바꿀 때 인덱스를 바로
+# 쓸 수 있게 리터럴은 그대로 둔다.
 def _language_sql(language: Language) -> str:
     """벡터 질의에 넣을 SQL 리터럴 형태의 언어 값.
 
@@ -226,13 +235,60 @@ def _language_sql(language: Language) -> str:
     return f"'{language}'"
 
 
-# dense 검색 SQL. ORDER BY 거리 + LIMIT 형태라 그 언어의 HNSW 인덱스로 근사 최근접 탐색을 할 수 있다. 1 -
-# 코사인 거리 = 코사인 유사도를 score로 돌려준다. 평가의 실행 계획 확인(eval/retrieval_checks.py)도 이 함수로
-# 앱과 똑같은 SQL을 EXPLAIN한다.
-# HNSW를 쓸지 정확 탐색(Seq Scan + 정렬)을 할지는 플래너가 비용 추정으로 고른다. 지금 규모(청크 영어 914개,
-# 한국어 621개)에서는 정확 탐색 쪽 추정이 조금 싸서 2026-10-04 이후 기록된 계획은 모두 정확 탐색이었고
-# 결과도 --exact와 같았다. 영어는 두 추정의 차이가 2~4%라 전체 재적재로 테이블이 커지면 HNSW로 바뀐다(DB
-# 사본으로 확인). HNSW 인덱스는 코퍼스가 커질 때를 위한 것이다(docs/experiments.md 기타 관찰).
+# dense 검색을 정확 탐색으로 고정하는 문장. 평가의 --exact(eval/retrieval_checks.py의 force_exact_search)와
+# 같은 플래너 설정(enable_indexscan off)이지만, 세션 전체가 아니라 SET LOCAL로 지금 트랜잭션에만 건다.
+EXACT_SEARCH_PIN_SQL = "SET LOCAL enable_indexscan = off"
+
+
+# 벡터 거리로 정렬하는 SQL을 보내기 바로 앞에 부르는 도우미. similarity_search(dense 검색. 교차언어 검색과
+# hybrid·rerank의 '검색할 단어 없음' 대신 경로도 이것을 거침), hybrid_search의 dense CTE, _rerank_candidates의
+# dense CTE가 모두 이 함수 하나를 부른다. 2026-11-03 사용자가 dense 실행 계획을 '정확 탐색 고정'으로 정해
+# 넣었다(docs/experiments.md v16-A의 '결정 뒤: dense 검색 정확 탐색 고정과 본 DB 재적재' 소절).
+# 왜 이 방식인가(다른 후보는 HNSW 고정 = enable_seqscan off + ef_search, 또는 지금처럼 플래너에 맡김):
+# - v16-A는 검색·생성 모두 두 팔을 --exact(같은 enable_indexscan off)로 쟀다. 같은 설정으로 고정하면 측정한
+#   검색과 서비스가 받는 검색이 같은 방식이 된다. 그래서 dense_search_sql의 SQL 글자도 측정 때와 그대로 둔다.
+# - 지금 규모에서 정확 탐색은 영어 약 5.6ms(HNSW 약 0.3ms, 2026-10-29 본 DB 실행 시간 중앙값)라 답변
+#   생성(수 초)에 비하면 작다.
+# - 플래너에 맡기면 두 방식의 근소한 비용 추정 차이로 계획이 정해지고, 그 차이가 적재 이력이 남긴
+#   힙·인덱스 크기에 따라 뒤집힌다(전체 재적재한 DB 사본은 영어가 HNSW가 됨, docs/experiments.md 기타 관찰
+#   2026-10-29와 v16-A 결과).
+# - pgvector의 HNSW 인덱스는 거리순 인덱스 스캔으로만 쓰인다(비트맵 스캔·인덱스 전용 스캔은 지원하지 않음.
+#   2026-11-03 pg_index_has_property로 확인). 그래서 인덱스 스캔 하나만 끄면 HNSW 경로가 모두 빠지고 순차
+#   스캔은 남아, 결과는 늘 '그 언어의 모든 청크를 거리순으로 정렬한 상위 k개'다. BM25의 GIN 인덱스는 비트맵
+#   스캔만 쓰므로 hybrid·rerank의 어휘 검색은 고정 아래에서도 그 인덱스를 그대로 쓴다.
+# 설정으로 끄고 켜는 스위치는 두지 않는다. 결정이 '고정'이고, 스위치가 있으면 측정 경로와 서비스 경로가 다시
+# 갈라질 수 있기 때문이다. 다른 계획으로 바꾸려면 docs/experiments.md에 새 규칙을 먼저 적고 이 코드를
+# 바꾼다. HNSW 인덱스(마이그레이션 0004)는 코퍼스가 커질 때를 위해 그대로 둔다.
+async def pin_exact_dense_search(db: AsyncSession) -> None:
+    """이 트랜잭션의 남은 문장에서 인덱스 스캔을 꺼, 벡터 거리 정렬을 정확 탐색으로 만든다.
+
+    범위와 부작용:
+    - SET LOCAL은 지금 트랜잭션이 끝날 때(commit이든 rollback이든)까지 남고, 그 사이의 다른 문장도 인덱스
+      스캔 없이 계획된다. /query/ask는 검색 직후 commit하므로(app/routers/query.py) 질문 기록을 저장하는
+      트랜잭션에는 남지 않는다. 평가 스크립트는 한 세션·한 트랜잭션에서 여러 문항을 검색하므로 끝까지
+      남지만, 그 사이의 검색도 모두 정확 탐색이라 결과가 같다.
+    - 트랜잭션 밖(AUTOCOMMIT 연결)에서는 PostgreSQL이 경고만 내고 아무 효과가 없다. 앱의
+      세션(app/db/session.py의 async_sessionmaker 기본값)은 첫 문장에서 트랜잭션을 열고(autobegin), 이
+      문장과 뒤의 검색 SQL은 같은 세션이라 같은 연결·같은 트랜잭션으로 간다.
+    - SQLAlchemy의 asyncpg 드라이버는 같은 SQL 문자열을 연결마다 준비문(prepared statement)으로 다시 쓰고,
+      PostgreSQL은 같은 준비문을 여섯 번째 실행부터 일반 계획(generic plan)으로 바꿀 수 있다. 일반 계획은
+      만들 때의 플래너 설정으로 정해지고, 나중에 설정을 바꿔도 다시 계획하지 않는다(2026-11-03 테스트
+      DB에서 고정 없이 만든 일반 계획이 고정 뒤에도 HNSW로 남는 것을 확인). 앱에서 벡터 거리로 정렬하는
+      SQL은 모두 이 함수 바로 뒤에서만 실행되므로 일반 계획도 고정 아래에서 만들어져 정확 탐색이다
+      (tests/test_retrieval.py). 새 경로에서 그런 SQL을 실행할 때도 반드시 이 함수를 먼저 부른다.
+    """
+    await db.execute(text(EXACT_SEARCH_PIN_SQL))
+
+
+# dense 검색 SQL. ORDER BY 거리 + LIMIT 형태라 그 언어의 HNSW 인덱스로 근사 최근접 탐색을 할 수 있는
+# 모양이다. 1 - 코사인 거리 = 코사인 유사도를 score로 돌려준다. 평가의 실행 계획 확인
+# (eval/retrieval_checks.py)도 이 함수로 앱과 똑같은 SQL을 EXPLAIN한다.
+# 2026-11-03부터 앱은 이 SQL을 늘 pin_exact_dense_search 바로 뒤에 실행하므로 정확 탐색(Seq Scan + 정렬)으로
+# 돈다. 그 전에는 HNSW를 쓸지 정확 탐색을 할지를 플래너가 비용 추정으로 골랐다. 지금 규모(청크 영어 914개,
+# 한국어 621개)의 본 DB에서는 정확 탐색 쪽 추정이 조금 싸서 2026-10-04 이후 기록된 계획은 모두 정확
+# 탐색이었고 결과도 --exact와 같았지만, 영어는 두 추정의 차이가 2~4%라 전체 재적재로 테이블이 커지면 HNSW로
+# 바뀌었다(DB 사본으로 확인, docs/experiments.md 기타 관찰). 고정한 뒤에도 SQL 글자는 v16-A 측정 때와 그대로
+# 둔다(측정 경로 = 서비스 경로). HNSW 인덱스는 코퍼스가 커질 때를 위한 것이다.
 def dense_search_sql(language: Language) -> str:
     """한 언어의 dense 검색 SQL 문(바인드 값은 :qvec와 :top_k)."""
     return f"""
@@ -248,6 +304,8 @@ def dense_search_sql(language: Language) -> str:
 
 # dense 검색. 상위 top_k를 가져온 뒤 바닥값 미만을 버리므로 top_k보다 적게(0개도) 돌려줄 수 있다. 문서가
 # 다루지 않는 질문에는 근거가 없게 하려는 것이다. 임베딩이 정규화돼 있어 점수는 대략 0~1이다.
+# SQL 문장을 먼저 만들어(그 안에서 언어 값을 검사) 지원하지 않는 언어는 DB에 아무것도 보내기 전에 막고,
+# 그다음 같은 트랜잭션에 정확 탐색 고정을 건 뒤 바로 검색한다.
 async def similarity_search(
     db: AsyncSession,
     query_embedding: list[float],
@@ -255,13 +313,16 @@ async def similarity_search(
     language: Language = "en",
     score_floor: float = SCORE_FLOOR,
 ) -> list[RetrievedChunk]:
-    """pgvector의 <=> 연산자로 청크를 코사인 유사도 검색한다.
+    """pgvector의 <=> 연산자로 청크를 코사인 유사도 검색한다(정확 탐색).
 
     `1 - (embedding <=> :qvec)`는 코사인 *거리*를 유사도 점수로 바꾸며, 정규화된 벡터라면 대략 [0, 1]
-    범위다. 상위 top_k개 중 `score_floor` 미만인 것은 버린다.
+    범위다. 상위 top_k개 중 `score_floor` 미만인 것은 버린다. 검색 바로 앞에 pin_exact_dense_search로 이
+    트랜잭션의 인덱스 스캔을 끄므로, 결과는 그 언어의 모든 청크를 거리순으로 정렬한 정확한 상위 top_k개다.
     """
+    statement = text(dense_search_sql(language))
+    await pin_exact_dense_search(db)
     result = await db.execute(
-        text(dense_search_sql(language)),
+        statement,
         {"qvec": _vector_literal(query_embedding), "top_k": top_k},
     )
     chunks = [_to_chunk(row) for row in result]
@@ -309,6 +370,7 @@ async def cross_lingual_search(
 
 # BM25만으로 순위를 매긴다. 앱의 검색 경로에서는 부르지 않고, 테스트(tests/test_retrieval.py)가 드문 단어가
 # 반복된 흔한 단어보다 높게 평가되는지 확인하는 데 쓴다. 질문에 영문·숫자 단어가 없으면 빈 목록.
+# 벡터 거리로 정렬하지 않으므로 정확 탐색 고정(pin_exact_dense_search)을 걸지 않는다.
 async def lexical_search(
     db: AsyncSession, question: str, top_k: int, language: Language = "en"
 ) -> list[RetrievedChunk]:
@@ -363,9 +425,11 @@ async def hybrid_search(
     if not words:
         return await similarity_search(db, query_embedding, top_k, language, score_floor)
 
-    result = await db.execute(
-        text(
-            f"""
+    # 이 문장의 dense CTE가 벡터 거리로 정렬하므로, 문장을 만든 뒤(그 안에서 언어 값을 검사) 같은 트랜잭션에
+    # 정확 탐색 고정을 걸고 보낸다. 고정은 문장 전체에 걸리지만 BM25 쪽은 GIN 인덱스의 비트맵 스캔이라
+    # 그대로 쓰인다(pin_exact_dense_search 주석). SQL 글자는 고정 전과 같다.
+    statement = text(
+        f"""
             WITH {_BM25_CTES},
             dense AS (
                 SELECT id, row_number() OVER (ORDER BY dist) AS rnk
@@ -394,7 +458,10 @@ async def hybrid_search(
             ORDER BY f.rrf DESC
             LIMIT :top_k
             """
-        ),
+    )
+    await pin_exact_dense_search(db)
+    result = await db.execute(
+        statement,
         {
             **_bm25_params(words, language),
             "qvec": _vector_literal(query_embedding),
@@ -422,9 +489,10 @@ async def _rerank_candidates(
     if not words:
         return await similarity_search(db, query_embedding, pool, language, score_floor)
 
-    result = await db.execute(
-        text(
-            f"""
+    # hybrid_search와 같은 이유로, 문장을 만든 뒤 정확 탐색 고정을 걸고 같은 트랜잭션으로 보낸다(SQL 글자는
+    # 고정 전과 같음).
+    statement = text(
+        f"""
             WITH {_BM25_CTES},
             dense AS (
                 SELECT id FROM chunks
@@ -441,7 +509,10 @@ async def _rerank_candidates(
             JOIN chunks c ON c.id = k.id
             JOIN documents d ON d.id = c.document_id
             """
-        ),
+    )
+    await pin_exact_dense_search(db)
+    result = await db.execute(
+        statement,
         {
             **_bm25_params(words, language),
             "pool": pool,
@@ -493,6 +564,7 @@ async def rerank_search(
 #   청크를 살리는 것이 목적이라 바닥값을 쓰지 않지만, 질문에 영문·숫자 단어가 없어 dense로 대신할 때는 같은
 #   바닥값을 쓴다. 예전에는 이 대신 경로만 모델별 바닥값이 아닌 공통 SCORE_FLOOR를 썼다(SCORE_FLOORS가
 #   비어 있는 동안은 같은 값).
+# - 어느 모드든 벡터 거리로 정렬하는 SQL은 정확 탐색으로 고정돼 돈다(pin_exact_dense_search, 2026-11-03부터).
 async def retrieve(
     db: AsyncSession,
     question: str,

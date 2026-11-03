@@ -24,7 +24,8 @@ Ollama 기본 문맥에서 돌던 v11 이전 호출을 보낸다.
 # eval/run_judge.py로 생성 없이 다시 판정할 수 있고(판정 설정 비교, J0/J1), 생성과 판정을 번갈아 하면 Ollama가
 # 모델을 계속 바꿔 올려 생성 시간에 그 시간이 섞이기 때문이다(docs/experiments.md v11).
 # [흐름] main: 설정·생성기·토크나이저 준비 → 코퍼스 요약(eval/common.py)과 저장 벡터 확인
-# (eval/retrieval_checks.py) → (--exact면 정확 탐색으로 바꿈) dense 실행 계획 기록 → 문항별 generate_answer →
+# (eval/retrieval_checks.py) → (--exact면 세션 전체의 인덱스 스캔도 끔) dense 실행 계획 기록(앱과 같은 정확
+# 탐색 고정 아래) → 문항별 generate_answer →
 # <tag>.gen.jsonl과 .meta.json 저장 → (선택) judge_and_save로 판정 → eval/answer_report.render_report로
 # 리포트(머리에 코퍼스 줄을 더함).
 # [연결] 판정 로직은 eval/judge.py, 판정 실행·기록은 eval/run_judge.py, 토크나이저는 eval/tokens.py, 두 팔
@@ -364,12 +365,16 @@ async def main(args: argparse.Namespace) -> int:
         # 비교에 탐색 방식 차이가 섞인다. SET은 이 세션(연결)에만 걸리고, 이 실행은 처음부터 끝까지 한 세션·한
         # 트랜잭션에서 검색하므로(중간 commit 없음) 모든 문항에 그대로 적용된다. 세션을 닫을 때의 rollback으로
         # 설정도 되돌아가므로 앱이나 다른 연결에는 영향이 없다.
+        # 2026-11-03부터는 --exact가 없어도 모든 문항의 dense 검색이 앱과 같은 정확 탐색 고정(검색 SQL마다
+        # 그 앞에 SET LOCAL enable_indexscan = off, app/services/retrieval.py)으로 돈다. --exact는 같은 설정을
+        # 세션 범위로 더할 뿐이라 검색 결과는 같고, v16-A 기록과 같은 명령을 다시 돌릴 수 있게 남겼다.
         if args.exact:
             await force_exact_search(db)
         # 이 세션에서 실제로 검색하는 언어(교차언어면 영어 포함)의 dense 실행 계획을 이 실행의 top_k로 남긴다.
         # HNSW 인덱스를 탔는지(근사) Sort + Seq Scan(정확 탐색)이었는지를 meta만 보고 알 수 있게 하려는
         # 것이다(검색 평가의 dense_plans와 같은 방법: 앱과 같은 SQL에 저장된 벡터 하나를 넣은 EXPLAIN,
-        # 실행하지 않음).
+        # 실행하지 않음). 2026-11-03부터 dense_search_plan의 기본값은 앱과 같은 고정 아래에서 EXPLAIN하므로 이
+        # 계획은 생성이 실제로 받은 검색의 계획이다(그 전 기록은 고정 없이 플래너가 고른 계획).
         searched = set(languages) | ({"en"} if args.cross_lingual and "ko" in languages else set())
         dense_plans = {lang: await dense_search_plan(db, lang, args.top_k) for lang in sorted(searched)}
         for order_index, index in enumerate(generation_order(len(questions), args.order, args.seed)):
@@ -413,7 +418,8 @@ async def main(args: argparse.Namespace) -> int:
     # 가드 설정이 들어간다. 2026-10-29부터는 출처 정보도 넣는다: 질문셋 파일의 sha256, --ids-file로 일부만
     # 생성했으면 그 파일, DB 코퍼스 요약(corpus). 그 전 기록에는 이 필드가 없다(고쳐 넣지 않음).
     # 2026-11-01부터는 --exact 여부(exact)와 이 평가 세션의 dense 실행 계획(dense_plans)도 넣는다(그 전
-    # 기록에는 없음).
+    # 기록에는 없음). 2026-11-03부터 exact는 세션 전체의 인덱스 스캔을 더 껐는지일 뿐이고(검색은 늘 고정된
+    # 정확 탐색), dense_plans는 고정 아래의 계획이다.
     gen_path = RUNS_DIR / f"{args.tag}.gen.jsonl"
     write_jsonl(gen_path, records)
     state = await ollama_state(settings.ollama_base_url) if ollama else {}
@@ -533,13 +539,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="이 파일의 '데이터셋 파일 이름<TAB>문항 id' 줄 중 --dataset과 이름이 같은 줄의 문항만 생성한다"
         "(eval.refusal changed가 쓰는 형식, docs/experiments.md v15 I4). id만 적은 옛 형식은 거부한다",
     )
-    # 주지 않으면(기본) 예전 실행과 같이 플래너가 고른 계획대로 검색한다. meta의 dense_plans는 어느 쪽이든
-    # 남는다.
+    # 2026-11-03부터 dense 검색은 이 옵션 없이도 앱과 같은 정확 탐색 고정으로 돈다. 주면 같은 설정을 평가
+    # 세션 전체에 더할 뿐이라 결과는 같다(v16-A의 --exact 실행과 같은 명령을 다시 돌릴 수 있게 남김). 그
+    # 전에는 주지 않으면 플래너가 고른 계획대로 검색했다. meta의 dense_plans는 어느 쪽이든 남는다.
     parser.add_argument(
         "--exact",
         action="store_true",
-        help="이 평가 세션의 인덱스 스캔을 꺼 dense 검색을 HNSW(근사) 대신 정확 탐색으로 한다(검색 평가의 "
-        "--exact와 같음, docs/experiments.md v16-A의 2026-11-01 규칙 보충)",
+        help="이 평가 세션 전체의 인덱스 스캔을 끈다. dense 검색은 이 옵션 없이도 앱과 같은 정확 탐색 "
+        "고정으로 돌므로(2026-11-03부터) 같은 설정을 세션 범위로 더할 뿐이고 결과는 같다(검색 평가의 "
+        "--exact와 같음, docs/experiments.md v16-A의 2026-11-01 규칙 보충과 '결정 뒤' 소절)",
     )
     return parser
 

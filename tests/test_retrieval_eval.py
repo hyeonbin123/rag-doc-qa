@@ -193,17 +193,28 @@ def test_comparing_two_runs_reports_questions_whose_ranking_changed():
     assert diff["mrr_a"] == pytest.approx(0.75) and diff["mrr_b"] == pytest.approx(1.0)
 
 
-# 정확 탐색으로 바꾼 뒤의 실행 계획에 Seq Scan이 있고 HNSW 인덱스가 없는지, 청크가 없는 언어는 빈 목록인지
-# 확인한다. 리포트에 적는 계획이 실제 스캔 방식을 보여 주는지 고정한다.
+# 앱과 같은 고정 아래의 실행 계획(dense_search_plan 기본값)에 Seq Scan이 있고 HNSW 인덱스가 없는지, 청크가
+# 없는 언어는 빈 목록인지 확인한다. 리포트에 적는 계획이 실제 스캔 방식을 보여 주는지 고정한다. 2026-11-03부터
+# 기본값은 --exact(force_exact_search) 없이도 앱처럼 이 트랜잭션에 고정을 걸고 EXPLAIN하므로 그 뒤 같은
+# 트랜잭션의 enable_indexscan은 off이고, SET LOCAL이라 commit하면 풀린다. --exact만 건 세션(고정 없는
+# pinned=False 계획)도 정확 탐색인지 함께 본다. 고치기 전 이 테스트는 force_exact_search를 먼저 부른 뒤의
+# 계획만 봤다.
 @pytest.mark.asyncio
-async def test_dense_plan_names_the_scan_and_exact_search_avoids_the_index(db_session):
+async def test_dense_plan_names_the_scan_and_defaults_to_the_apps_exact_pin(db_session):
     await _seed_embedded_chunk(db_session, FakeEmbeddingService())
 
-    await force_exact_search(db_session)
     nodes = await dense_search_plan(db_session, "ko")
 
     assert any(node.startswith("Seq Scan on chunks") for node in nodes)
     assert not any("hnsw" in node for node in nodes)
+    assert (await db_session.execute(text("SHOW enable_indexscan"))).scalar() == "off"
+    await db_session.commit()
+    assert (await db_session.execute(text("SHOW enable_indexscan"))).scalar() == "on"
+
+    await force_exact_search(db_session)
+    exact_nodes = await dense_search_plan(db_session, "ko", pinned=False)
+    assert any(node.startswith("Seq Scan on chunks") for node in exact_nodes)
+    assert not any("hnsw" in node for node in exact_nodes)
     assert await dense_search_plan(db_session, "en") == []  # 계획을 세울 영어 청크가 없다
 
 
@@ -266,6 +277,8 @@ async def test_corpus_snapshot_counts_documents_per_source_commit_and_chunks_per
 
 # 검색 평가 실행 한 번(main)을 테스트 DB와 가짜 임베딩으로 돌린다. meta에 질문셋 파일마다의 sha256과 DB 코퍼스
 # 요약이 남고, 리포트 머리의 database 줄 바로 아래에 코퍼스 줄이 있다.
+# 2026-11-03부터 리포트의 탐색 방식 줄은 앱과 같은 정확 탐색 고정을 적고(--exact 없음), meta의 dense_plans는
+# 고정 아래의 계획(HNSW 노드 없음)이다.
 @pytest.mark.asyncio
 async def test_retrieval_eval_records_question_set_hashes_and_the_corpus(
     db_engine, db_session, tmp_path, monkeypatch
@@ -317,6 +330,10 @@ async def test_retrieval_eval_records_question_set_hashes_and_the_corpus(
     assert meta["dataset_sha256"] == {path.name: dataset_sha256(path) for path in datasets}
     assert meta["corpus"]["documents_by_source_commit"] == {"x": 1}
     assert meta["corpus"]["chunks_by_language"] == {"en": 1}
+    assert meta["exact"] is False
+    assert meta["dense_plans"]["en"] and not any("hnsw" in node for node in meta["dense_plans"]["en"])
     report = next(tmp_path.glob("retrieval_eval_prov_*.md")).read_text(encoding="utf-8").splitlines()
     at = next(i for i, line in enumerate(report) if line.startswith("- database:"))
     assert report[at + 1].startswith("- corpus: source commit x (1 document); last fetched ")
+    search_line = "- search: dense exact, pinned like the app; dense plan: en "
+    assert any(line.startswith(search_line) for line in report)

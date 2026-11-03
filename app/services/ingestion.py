@@ -199,6 +199,11 @@ async def _vacuum_chunks(db: AsyncSession) -> None:
     전까지 HNSW 탐색은 그 행들도 훑느라 ef_search 예산을 버려질 행에 쓴다. 대량 재적재 직후 영어 튜닝용
     셋에서 맞히던 문항 하나가 빠졌다가 autovacuum이 돈 뒤 돌아온 일의 가장 그럴듯한 원인이 이것이다.
     VACUUM은 트랜잭션 안에서 돌 수 없어서 자동 커밋 연결을 쓴다.
+
+    2026-11-03부터 앱의 벡터 검색은 정확 탐색으로 고정돼(app/services/retrieval.py의
+    pin_exact_dense_search) HNSW 인덱스를 쓰지 않으므로, 위 ef_search 문제는 앱 검색에는 생기지 않는다.
+    그래도 VACUUM은 죽은 행의 자리를 다시 쓸 수 있게 하고 ANALYZE로 통계를 새로 하므로, 순차 스캔과 나중에
+    HNSW 인덱스를 다시 쓸 때를 위해 그대로 둔다.
     """
     async with db.bind.connect() as conn:
         conn = await conn.execution_options(isolation_level="AUTOCOMMIT")

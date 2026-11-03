@@ -24,8 +24,9 @@ eval/retrieval_runs.py가 실행끼리, 그리고 점수 바닥값을 비교한�
 # [왜 필요한가] README '핵심 결과'의 v1~v13 검색 결정(청킹 정제, hybrid·rerank 채택 여부, 한국어 임베딩
 # 교체)은 모두 이 스크립트의 수치로 내렸다. 답변 생성 없이 몇 분 안에 돌아가므로 파라미터 튜닝은 튜닝용 셋에서
 # 이 스크립트로만 하고, 테스트셋에는 고른 설정 하나만 돌린다(docs/experiments.md '원칙').
-# [흐름] main: 설정 → (rerank) 재정렬 모델 미리 올림 → 코퍼스 요약과 저장 벡터 확인 → (--exact) 정확 탐색으로
-# 전환 → 실행 계획 기록 → 문항별 evaluate_question → aggregate → 리포트·기록·meta 저장.
+# [흐름] main: 설정 → (rerank) 재정렬 모델 미리 올림 → 코퍼스 요약과 저장 벡터 확인 → (--exact) 세션 전체의
+# 인덱스 스캔 끔 → 실행 계획 기록(앱과 같은 정확 탐색 고정 아래) → 문항별 evaluate_question → aggregate →
+# 리포트·기록·meta 저장. dense 검색은 --exact와 상관없이 앱과 같은 정확 탐색 고정으로 돈다(2026-11-03부터).
 # [연결] 검색 로직은 app/services/retrieval.py, 측정 전 확인은 eval/retrieval_checks.py, 기록 분석은
 # eval/retrieval_runs.py. tests/test_retrieval_eval.py가 지표 함수와 교차언어 판정을 검증한다.
 
@@ -238,20 +239,25 @@ async def main(args: argparse.Namespace) -> None:
                 vector_checks.append(await check_stored_vectors(db, embedder(language), language))
             if args.cross_lingual and "ko" in languages:
                 vector_checks.append(await check_stored_vectors(db, embedder("ko"), "en"))
-        # --exact면 이 세션의 인덱스 스캔을 꺼 정확 탐색으로 잰다. 계획대로 돈 실행과 상위 10개가 같은지
-        # 비교하는 기준이다.
+        # --exact면 이 세션 전체의 인덱스 스캔을 끈다. 2026-11-03부터 dense 검색은 이 옵션 없이도 앱과 같은
+        # 정확 탐색 고정(검색 SQL마다 그 앞에 SET LOCAL enable_indexscan = off, app/services/retrieval.py)으로
+        # 돌므로, 이 옵션은 같은 설정을 세션 범위로 더할 뿐이고 검색 결과는 같다. 그 전에는 계획대로 돈 실행과
+        # 상위 10개가 같은지 비교하는 정확 탐색 기준이었고, 옛 실행과 같은 명령을 다시 돌릴 수 있게 남겼다.
         if args.exact:
             await force_exact_search(db)
-        # 실제로 검색하는 언어(교차언어면 영어 포함)마다 dense 검색의 실행 계획을 기록한다. HNSW 인덱스를
-        # 썼는지 Seq Scan(정확 탐색)이었는지를 리포트에서 알 수 있다.
+        # 실제로 검색하는 언어(교차언어면 영어 포함)마다 dense 검색의 실행 계획을 기록한다.
+        # dense_search_plan의 기본값은 앱과 같은 고정 아래에서 EXPLAIN하므로, 이 실행의 검색이 실제로 도는
+        # 계획(HNSW 인덱스를 썼는지 Seq Scan(정확 탐색)이었는지)을 리포트와 meta에서 알 수 있다.
         searched = set(languages) | ({"en"} if args.cross_lingual and "ko" in languages else set())
         plans = {lang: await dense_search_plan(db, lang, args.top_k) for lang in sorted(searched)}
         for path, questions in datasets:
             for q in questions:
                 results.append(await evaluate_question(db, embedder, q, args, reranker_for, path.name))
 
-    # 리포트 머리에는 결과를 해석하는 데 필요한 조건(모델, DB 이름과 그 코퍼스, 검색 모드, 정확/계획대로, 실행
-    # 계획, 바닥값, 벡터 확인, BM25 가중치, 재정렬 모델과 후보 수)을 모두 적는다.
+    # 리포트 머리에는 결과를 해석하는 데 필요한 조건(모델, DB 이름과 그 코퍼스, 검색 모드, 탐색 방식, 실행
+    # 계획, 바닥값, 벡터 확인, BM25 가중치, 재정렬 모델과 후보 수)을 모두 적는다. 탐색 방식 줄(search)은
+    # 2026-11-03부터 'dense exact, pinned like the app'(+ --exact면 세션 전체 설정)이다. 그 전 리포트의 'as
+    # planned'는 플래너가 고른 계획대로, 'exact (index scans off)'는 --exact로 돈 실행이었다.
     agg = aggregate(results)
     floors = {lang: question_floor(args, embedder, lang) for lang in languages}
     lines = [
@@ -265,7 +271,9 @@ async def main(args: argparse.Namespace) -> None:
         f"- retrieval mode: {args.mode}"
         + (" (Korean questions search the Korean and English chunks, one translation per page)"
            if args.cross_lingual else ""),
-        f"- search: {'exact (index scans off)' if args.exact else 'as planned'}; dense plan: "
+        "- search: dense exact, pinned like the app"
+        + (" + index scans off for the whole session (--exact)" if args.exact else "")
+        + "; dense plan: "
         + "; ".join(f"{lang} {' > '.join(nodes)}" for lang, nodes in plans.items()),
         f"- score floor: {', '.join(f'{lang} {floor}' for lang, floor in floors.items())}"
         + (" (dense only)" if args.mode != "dense" else ""),
@@ -321,6 +329,9 @@ async def main(args: argparse.Namespace) -> None:
     # 문항별 기록에서는 retrieved_paths를 뺀다(results에 같은 경로가 이미 있다). meta에는 실행 조건과 전체
     # 지표를 남긴다. 2026-10-29부터 출처 정보(질문셋 파일마다의 sha256, DB 코퍼스 요약)도 넣는다. 그 전
     # 기록에는 이 필드가 없다(고쳐 넣지 않음).
+    # exact는 --exact를 줬는지(세션 전체의 인덱스 스캔을 껐는지)다. 2026-11-03부터 dense 검색은 이 값과
+    # 상관없이 정확 탐색으로 고정돼 있고, 실제로 돈 계획은 dense_plans(고정 아래의 EXPLAIN)가 보여 준다. 그 전
+    # 기록에서 exact false는 '플래너가 고른 계획대로'였다.
     records_path = write_jsonl(
         RUNS_DIR / f"{args.tag}.retrieval.jsonl",
         [{k: v for k, v in r.items() if k != "retrieved_paths"} for r in results],
@@ -376,7 +387,14 @@ if __name__ == "__main__":
         help="한국어 질문이 한국어와 영어 청크를 함께 검색한다(영어 청크도 한국어 모델로 "
         "임베딩한 DB가 필요하다)",
     )
-    parser.add_argument("--exact", action="store_true", help="HNSW 대신 정확 탐색으로 검색한다")
+    # 2026-11-03 전에는 '계획대로' 대신 정확 탐색으로 재는 옵션이었다. 지금은 기본 검색도 정확 탐색 고정이라
+    # 결과는 같고, 옛 --exact 실행과 같은 명령을 다시 돌릴 때 쓴다.
+    parser.add_argument(
+        "--exact",
+        action="store_true",
+        help="평가 세션 전체에서 인덱스 스캔을 끈다. dense 검색은 이 옵션 없이도 앱과 같은 정확 탐색 "
+        "고정으로 돌므로(2026-11-03부터) 같은 설정을 세션 범위로 더할 뿐이고 검색 결과는 같다",
+    )
     parser.add_argument(
         "--no-vector-check", action="store_true",
         help="저장된 벡터가 설정된 모델로 만든 것인지 확인하는 단계를 건너뛴다",

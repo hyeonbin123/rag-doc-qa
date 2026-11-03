@@ -4,21 +4,38 @@
 # [왜 중요한가] 검색 모드의 동작은 docs/experiments.md v4~v12의 결정 근거다. 예를 들어 BM25가 IDF로 드문
 # 단어를 높이 치는지(v5), 언어별 인덱스에서 그 언어만 찾는지(v8), 재정렬 후보 수가 언어를 따르는지(v9),
 # 교차언어 검색이 페이지당 한 번역만 남기는지(v12)를 고정한다.
+# 2026-11-03부터는 벡터 거리로 정렬하는 모든 검색이 정확 탐색 고정(pin_exact_dense_search) 바로 뒤에 같은
+# 트랜잭션으로 가는지, 그 고정이 HNSW를 선호하는 플래너와 준비문의 일반 계획을 이기는지도 고정한다(사용자
+# 결정, docs/experiments.md v16-A의 '결정 뒤' 소절).
 # [방법] 벡터를 축 방향 단위 벡터로 만들어 코사인 점수를 정확히 정하고, cross-encoder는 키워드가 있으면 1.0을
 # 주는 가짜로 바꾼다.
 
+import importlib.util
+import re
+from pathlib import Path
+
 import pytest
 
+# MigrationContext·Operations: 마이그레이션 0004의 upgrade()를 테스트 DB 연결에서 그대로 돌려 언어별 부분 HNSW
+# 인덱스를 만든다(테스트 스키마는 모델로 만들어 이 인덱스가 없다). event·text: 엔진에 보낸 문장을 순서대로
+# 모으고, 세션 설정(SHOW)과 준비문 정보(pg_prepared_statements)를 직접 읽는다.
+from alembic.migration import MigrationContext
+from alembic.operations import Operations
+from sqlalchemy import event, text
+
 # 테스트 데이터로 넣을 문서·청크 모델, 가짜 재정렬기가 상속할 RerankerService, 테스트 대상 검색 함수와 설정값,
-# 벡터 차원(384).
+# 벡터 차원(384). 고정 문장(EXACT_SEARCH_PIN_SQL)과 앱의 dense SQL, 평가의 계획 기록 함수(dense_search_plan)는
+# 정확 탐색 고정 테스트가 쓴다.
 from app.models.chunk import Chunk
 from app.models.document import Document
 from app.services.reranking import RerankerService
 from app.services.retrieval import (
+    EXACT_SEARCH_PIN_SQL,
     RERANK_POOLS,
     SCORE_FLOOR,
     SCORE_FLOORS,
     cross_lingual_search,
+    dense_search_sql,
     hybrid_search,
     lexical_search,
     page_key,
@@ -27,6 +44,7 @@ from app.services.retrieval import (
     score_floor_for,
     similarity_search,
 )
+from eval.retrieval_checks import dense_search_plan
 from tests.conftest import EMBEDDING_DIM
 
 
@@ -409,3 +427,222 @@ async def test_the_dense_fallback_of_hybrid_and_rerank_uses_the_given_score_floo
 async def test_cross_lingual_retrieval_is_dense_only(db_session):
     with pytest.raises(ValueError):
         await retrieve(db_session, "질문", _unit(1.0), 5, "hybrid", language="ko", cross_lingual=True)
+
+
+# --- 정확 탐색 고정 (2026-11-03 사용자 결정, docs/experiments.md v16-A의 '결정 뒤' 소절) ---
+
+# 저장소 루트. 마이그레이션 파일을 테스트를 어느 폴더에서 돌리든 같은 경로로 읽는다.
+ROOT = Path(__file__).resolve().parents[1]
+# HNSW를 선호하게 만든 상황의 코퍼스 크기와 질의 top_k, HNSW 탐색 폭. hnsw.ef_search를 10으로 줄이면 HNSW
+# 실행은 10개까지만 돌려주므로, top_k 20이면 고정 없는 실행과 정확 탐색의 결과가 반드시 갈린다.
+HNSW_CORPUS = 30
+HNSW_TOP_K = 20
+HNSW_EF_SEARCH = 10
+
+
+def _literal(vector: list[float]) -> str:
+    """질문 벡터의 pgvector 텍스트 표기. 앱이 바인드 값으로 넘기는 것과 같은 꼴이다."""
+    return "[" + ",".join(str(x) for x in vector) + "]"
+
+
+# 마이그레이션 0004의 upgrade()를 이 세션의 연결에서 그대로 돌려, 운영 DB와 같은 언어별 부분 HNSW
+# 인덱스(chunks_embedding_<언어>_hnsw_idx)를 만든다. 테스트 스키마는 모델(create_all)로 만들어 이 인덱스가
+# 없기 때문이다(app/models/chunk.py의 주의). 테스트 끝의 drop_all이 테이블과 함께 지운다.
+async def _create_the_migration_0004_indexes(db_session) -> None:
+    spec = importlib.util.spec_from_file_location(
+        "migration_0004_under_test", ROOT / "alembic" / "versions" / "0004_hnsw_per_language.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    def upgrade(sync_connection) -> None:
+        with Operations.context(MigrationContext.configure(connection=sync_connection)):
+            module.upgrade()
+
+    await (await db_session.connection()).run_sync(upgrade)
+    await db_session.commit()
+
+
+# 영어 청크 30개를 질문 벡터 _unit(1.0)과의 코사인이 0.99부터 0.015씩 작아지게 넣고(모두 바닥값 0.3 위),
+# 마이그레이션 0004의 HNSW 인덱스를 만든 뒤 통계를 갱신한다. 돌려주는 본문 목록이 전수 거리순(정확 탐색)의
+# 정답 순서다.
+async def _seed_hnsw_preferring_corpus(db_session) -> list[str]:
+    document = Document(
+        source_path="docs/en/docs/near.md",
+        title="Near",
+        source_commit_sha="deadbeef",
+        content_hash="hash-near",
+    )
+    db_session.add(document)
+    await db_session.flush()
+    contents = [f"near {i:02d}" for i in range(HNSW_CORPUS)]
+    for i, content in enumerate(contents):
+        db_session.add(
+            Chunk(
+                document_id=document.id,
+                chunk_index=i,
+                heading_path="Near",
+                content=content,
+                token_count=2,
+                embedding=_at_similarity(0.99 - 0.015 * i),
+                language="en",
+            )
+        )
+    await db_session.commit()
+    await _create_the_migration_0004_indexes(db_session)
+    await db_session.execute(text("ANALYZE chunks"))
+    await db_session.execute(text("ANALYZE documents"))
+    await db_session.commit()
+    return contents
+
+
+# 지금 트랜잭션에서 플래너가 HNSW를 고르게 만든다. 순차 스캔의 페이지 비용만 올린다(enable_seqscan off는
+# 고정과 겹치면 두 경로가 모두 꺼져 계획이 불안정해지므로 쓰지 않는다). HNSW 탐색이 돌려주는 행은 ef_search로
+# 줄인다. 둘 다 SET LOCAL이라 이 트랜잭션이 끝나면 풀린다.
+async def _make_the_planner_prefer_hnsw(db_session) -> None:
+    await db_session.execute(text("SET LOCAL seq_page_cost = 100"))
+    await db_session.execute(text(f"SET LOCAL hnsw.ef_search = {HNSW_EF_SEARCH}"))
+
+
+# 고정이 플래너의 HNSW 선호를 실제로 이기는지 본다. (1) 고정 없는 계획(dense_search_plan의 pinned=False)은
+# HNSW 인덱스를 쓰고, (2) 같은 SQL을 고정 없이 실행하면 HNSW가 ef_search(10)개만 돌려줘 정확 탐색과 결과가
+# 다르다. (3) similarity_search의 실제 결과는 전수 거리순 상위 20개와 같고, (4) 앱과 같은 고정 아래의
+# 계획(dense_search_plan 기본값)에는 HNSW 노드가 없다. 단계마다 commit해 새 트랜잭션에서 HNSW 선호를 다시
+# 걸므로, 앞 단계가 건 고정에 기대지 않고 similarity_search와 dense_search_plan이 각자 고정해야 통과한다. 둘
+# 중 어느 쪽에서든 고정 한 줄을 빼면 이 테스트가 실패하는 것을 2026-11-03에 확인했다.
+@pytest.mark.asyncio
+async def test_the_exact_pin_wins_over_a_planner_that_prefers_hnsw(db_session):
+    exact_order = await _seed_hnsw_preferring_corpus(db_session)
+    await _make_the_planner_prefer_hnsw(db_session)
+
+    free_plan = await dense_search_plan(db_session, "en", HNSW_TOP_K, pinned=False)
+    assert any("Index Scan using chunks_embedding_en_hnsw_idx" in node for node in free_plan), free_plan
+    unpinned = (
+        await db_session.execute(
+            text(dense_search_sql("en")), {"qvec": _literal(_unit(1.0)), "top_k": HNSW_TOP_K}
+        )
+    ).all()
+    assert len(unpinned) == HNSW_EF_SEARCH  # 근사 탐색은 ef_search개에서 멈춘다
+    await db_session.commit()
+
+    await _make_the_planner_prefer_hnsw(db_session)
+    results = await similarity_search(db_session, _unit(1.0), HNSW_TOP_K)
+    assert [r.content for r in results] == exact_order[:HNSW_TOP_K]
+    await db_session.commit()
+
+    await _make_the_planner_prefer_hnsw(db_session)
+    pinned_plan = await dense_search_plan(db_session, "en", HNSW_TOP_K)
+    assert "Sort" in pinned_plan and not any("hnsw" in node for node in pinned_plan), pinned_plan
+
+
+# 같은 연결에서 같은 dense SQL을 여러 번 보내면 PostgreSQL은 여섯 번째 실행부터 준비문의 일반 계획(generic
+# plan)을 쓸 수 있고, 일반 계획은 만들 때의 플래너 설정으로 정해져 나중에 다시 계획하지 않는다
+# (pin_exact_dense_search docstring). 앱은 이 SQL을 늘 고정 뒤에만 보내므로 일반 계획도 정확 탐색이어야 한다:
+# HNSW를 선호하게 만든 상황에서 8번(자동 선택), 이어서 일반 계획을 강제(plan_cache_mode)해 한 번 더 검색해도
+# 모두 정확한 상위 20개이고, 그 준비문이 실제로 일반 계획을 썼으며 그 계획(EXPLAIN EXECUTE)에 HNSW 노드가
+# 없다.
+@pytest.mark.asyncio
+async def test_the_pinned_search_stays_exact_once_postgres_reuses_a_generic_plan(db_session):
+    exact_order = await _seed_hnsw_preferring_corpus(db_session)
+    await _make_the_planner_prefer_hnsw(db_session)
+
+    for _ in range(8):
+        results = await similarity_search(db_session, _unit(1.0), HNSW_TOP_K)
+        assert [r.content for r in results] == exact_order[:HNSW_TOP_K]
+    await db_session.execute(text("SET LOCAL plan_cache_mode = force_generic_plan"))
+    results = await similarity_search(db_session, _unit(1.0), HNSW_TOP_K)
+    assert [r.content for r in results] == exact_order[:HNSW_TOP_K]
+
+    # 찾는 글자를 바인드 값으로 넘겨 이 조회문 자신(역시 준비문)이 걸리지 않게 하고, 계획 기록의 EXPLAIN 문은
+    # 뺀다.
+    rows = (
+        await db_session.execute(
+            text(
+                "SELECT name, generic_plans FROM pg_prepared_statements "
+                "WHERE statement LIKE :pattern AND statement NOT LIKE 'EXPLAIN%'"
+            ),
+            {"pattern": "%ORDER BY c.embedding <=> $1%"},
+        )
+    ).all()
+    assert len(rows) == 1, rows
+    name, generic_plans = rows[0]
+    assert generic_plans >= 1
+    assert re.fullmatch(r"__asyncpg_stmt_[0-9a-f]+__", name), name  # SQL에 넣기 전에 이름 꼴을 확인한다
+    explain = text(f"EXPLAIN EXECUTE {name}('{_literal(_unit(1.0))}', {HNSW_TOP_K})")
+    plan = [line for (line,) in await db_session.execute(explain)]
+    assert any("Sort" in line for line in plan) and not any("hnsw" in line for line in plan), plan
+
+
+# dense_search_plan(pinned=False)은 고정을 풀지 않는다(그 docstring의 주의): 같은 트랜잭션에서 앱의 검색이
+# 이미 고정했으면 '고정 없는 계획'을 물어도 정확 탐색 계획이 나온다. 고정은 SET LOCAL이라 commit으로 끝나고,
+# 새 트랜잭션에서는 다시 플래너의 선택(HNSW)이 보인다.
+@pytest.mark.asyncio
+async def test_a_free_plan_asked_after_a_search_shows_the_pin_until_the_transaction_ends(db_session):
+    await _seed_hnsw_preferring_corpus(db_session)
+    await _make_the_planner_prefer_hnsw(db_session)
+    before = await dense_search_plan(db_session, "en", HNSW_TOP_K, pinned=False)
+    assert any("hnsw" in node for node in before), before
+
+    await similarity_search(db_session, _unit(1.0), HNSW_TOP_K)
+    after_search = await dense_search_plan(db_session, "en", HNSW_TOP_K, pinned=False)
+    assert after_search and not any("hnsw" in node for node in after_search), after_search
+
+    await db_session.commit()
+    await _make_the_planner_prefer_hnsw(db_session)
+    next_transaction = await dense_search_plan(db_session, "en", HNSW_TOP_K, pinned=False)
+    assert any("hnsw" in node for node in next_transaction), next_transaction
+
+
+# 벡터 거리로 정렬하는 SQL을 보내는 모든 경로(dense 검색, hybrid의 dense CTE, rerank 후보의 dense CTE,
+# 교차언어 검색, hybrid·rerank의 '검색할 단어 없음' 대신 경로)가 그 문장 바로 앞에 같은 트랜잭션으로 고정
+# 문장(SET LOCAL enable_indexscan = off)을 보내는지 엔진 이벤트로 본다. 경로마다 commit해 새 트랜잭션에서
+# 시작하므로, 앞 경로의 고정에 기대지 않고 각자 고정하는지도 확인한다(SET LOCAL은 commit으로 풀린다). 검색
+# 직후 같은 트랜잭션의 enable_indexscan이 off인 것은 세션이 트랜잭션 안(autobegin)이라 고정이 실제로 걸렸다는
+# 뜻이다(AUTOCOMMIT 연결이면 SET LOCAL은 효과가 없다).
+@pytest.mark.asyncio
+async def test_every_vector_ordered_query_is_sent_right_after_the_pin(db_session, db_engine):
+    await _seed_page_chunk(
+        db_session, "docs/en/docs/env.md", _unit(1.0), "load settings from environment variables"
+    )
+    await _seed_page_chunk(db_session, "docs/ko/docs/env.md", _unit(1.0), "환경 변수에서 설정을 읽는다")
+    reranker = KeywordReranker("environment")
+    paths = {
+        "dense": lambda: similarity_search(db_session, _unit(1.0), 5),
+        "hybrid": lambda: hybrid_search(db_session, "environment variables", _unit(1.0), 5),
+        "rerank": lambda: rerank_search(db_session, "environment variables", _unit(1.0), 5, reranker),
+        "cross-lingual": lambda: retrieve(
+            db_session, "환경 변수", _unit(1.0), 5, "dense", language="ko", cross_lingual=True
+        ),
+        "hybrid without words": lambda: hybrid_search(db_session, "?!", _unit(1.0), 5),
+        "rerank without words": lambda: rerank_search(db_session, "?!", _unit(1.0), 5, reranker),
+    }
+    sent: list[str] = []
+
+    def record_statement(conn, cursor, statement, parameters, context, executemany):
+        sent.append(statement)
+
+    def record_end(conn):
+        sent.append("<transaction end>")
+
+    sync_engine = db_engine.sync_engine
+    listeners = [
+        ("before_cursor_execute", record_statement),
+        ("commit", record_end),
+        ("rollback", record_end),
+    ]
+    for name, listener in listeners:
+        event.listen(sync_engine, name, listener)
+    try:
+        for path, search in paths.items():
+            start = len(sent)
+            assert await search(), path
+            assert (await db_session.execute(text("SHOW enable_indexscan"))).scalar() == "off", path
+            await db_session.commit()
+            window = sent[start:]
+            vector_at = [i for i, statement in enumerate(window) if "<=>" in statement]
+            assert len(vector_at) == (2 if path == "cross-lingual" else 1), (path, window)
+            for i in vector_at:
+                assert i > 0 and window[i - 1] == EXACT_SEARCH_PIN_SQL, (path, window)
+    finally:
+        for name, listener in listeners:
+            event.remove(sync_engine, name, listener)

@@ -4,20 +4,26 @@
 # [왜 중요한가] 여러 테스트가 실제로 고친 문제의 회귀 방지다: 생성 중에 DB 연결을 잡고 있던 것(커밋
 # 53250be), NUL 문자·고립 서로게이트가 든 질문이 LLM 답변까지 마친 뒤 500으로 끝나던 것(ZAP 1차 스캔,
 # 커밋 55002dc).
+# 2026-11-03부터는 검색이 정확 탐색 고정(SET LOCAL) 아래에서 돌고, 그 고정이 검색 직후의 commit으로 끝나 질문
+# 기록을 저장하는 트랜잭션에는 남지 않는 것도 확인한다(docs/experiments.md v16-A의 '결정 뒤' 소절).
 
 import logging
 
 import pytest
 
 # ASGITransport·AsyncClient: 앱 예외를 테스트로 올리지 않고 500 응답 그대로 받는 클라이언트를 따로 만든다.
+# event·text: 엔진에 보낸 문장을 순서대로 모으고, 요청 세션의 설정(SHOW enable_indexscan)을 직접 읽는다.
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import event, text
 
-# 바꿔 끼울 의존성(임베딩, 생성기), 앱, 직접 넣을 문서·청크 모델, 바닥값 표(SCORE_FLOORS)를 바꿀 검색 모듈,
-# 생성 모듈(생성기 장애 예외), conftest의 가짜와 벡터 차원.
+# 바꿔 끼울 의존성(임베딩, 생성기), 앱, 직접 넣을 문서·청크 모델, 바닥값 표(SCORE_FLOORS)와 고정
+# 문장(EXACT_SEARCH_PIN_SQL)이 있는 검색 모듈, 검색 함수를 감쌀 라우터 모듈, 생성 모듈(생성기 장애 예외),
+# conftest의 가짜와 벡터 차원.
 from app.dependencies import get_embedder, get_generator
 from app.main import app
 from app.models.chunk import Chunk
 from app.models.document import Document
+from app.routers import query as query_router
 from app.services import generation, retrieval
 from tests.conftest import EMBEDDING_DIM, FakeEmbeddingService, FakeGenerationService
 
@@ -114,6 +120,81 @@ async def test_ask_releases_db_connection_during_generation(authed_client, db_se
     # 질문 기록은 그 뒤에 따로 짧은 트랜잭션으로 저장된다.
     log_resp = await authed_client.get(f"/logs/{resp.json()['query_log_id']}")
     assert log_resp.status_code == 200
+
+
+# 생성기가 불리는 순간(검색 트랜잭션을 commit한 뒤, 질문 기록을 저장하기 전)에 요청 세션의 enable_indexscan을
+# 읽는 가짜 생성기. 이 읽기가 새 트랜잭션을 열고, 라우터는 그 트랜잭션에서 질문 기록을 저장하므로 읽은 값이 곧
+# 질문 기록 트랜잭션의 설정이다.
+class IndexScanSettingProbe(FakeGenerationService):
+    """생성하는 동안 요청 세션의 enable_indexscan을 읽는다(그 트랜잭션에서 질문 기록이 저장된다)."""
+
+    def __init__(self, session) -> None:
+        self.session = session
+        self.setting: str | None = None
+
+    async def answer(self, question, chunks, language="en"):
+        self.setting = (await self.session.execute(text("SHOW enable_indexscan"))).scalar()
+        return await super().answer(question, chunks, language)
+
+
+# /query/ask의 검색은 정확 탐색 고정 아래에서 돈다: 라우터가 부르는 retrieve를 감싸 검색 직후 같은 트랜잭션의
+# enable_indexscan을 읽으면 off이고, 엔진에 보낸 문장에서 dense SQL 바로 앞이 고정 문장이다. 고정은 SET
+# LOCAL이라 검색 직후의 commit으로 끝나므로 질문 기록을 저장하는 트랜잭션(생성기 대역이 읽은 값)과 응답 뒤의
+# 다음 트랜잭션에서는 on이다. 그래서 고정이 검색 밖의 문장(질문 기록 저장 등)에 번지지 않는다.
+@pytest.mark.asyncio
+async def test_ask_pins_exact_search_only_for_the_retrieval_transaction(
+    authed_client, db_session, db_engine, monkeypatch
+):
+    question = "How do path params work?"
+    document = Document(
+        source_path="docs/en/docs/tutorial/path-params.md",
+        title="Path Parameters",
+        source_commit_sha="deadbeef",
+        content_hash="hash-path-params",
+    )
+    db_session.add(document)
+    await db_session.flush()
+    db_session.add(
+        Chunk(
+            document_id=document.id,
+            chunk_index=0,
+            heading_path="Tutorial > Path Parameters",
+            content="You can declare path parameters using type hints.",
+            token_count=10,
+            embedding=FakeEmbeddingService().embed_query(question),
+        )
+    )
+    await db_session.commit()
+
+    in_retrieval: list[str] = []
+    real_retrieve = query_router.retrieve
+
+    async def retrieve_then_read_the_setting(db, *args, **kwargs):
+        chunks = await real_retrieve(db, *args, **kwargs)
+        in_retrieval.append((await db.execute(text("SHOW enable_indexscan"))).scalar())
+        return chunks
+
+    monkeypatch.setattr(query_router, "retrieve", retrieve_then_read_the_setting)
+    probe = IndexScanSettingProbe(db_session)
+    app.dependency_overrides[get_generator] = lambda: probe
+    sent: list[str] = []
+
+    def record_statement(conn, cursor, statement, parameters, context, executemany):
+        sent.append(statement)
+
+    event.listen(db_engine.sync_engine, "before_cursor_execute", record_statement)
+    try:
+        resp = await authed_client.post("/query/ask", json={"question": question})
+    finally:
+        event.remove(db_engine.sync_engine, "before_cursor_execute", record_statement)
+
+    assert resp.status_code == 200
+    assert [c["source_path"] for c in resp.json()["citations"]] == ["docs/en/docs/tutorial/path-params.md"]
+    assert in_retrieval == ["off"]
+    assert probe.setting == "on"
+    assert (await db_session.execute(text("SHOW enable_indexscan"))).scalar() == "on"
+    vector_at = [i for i, statement in enumerate(sent) if "<=>" in statement]
+    assert len(vector_at) == 1 and sent[vector_at[0] - 1] == retrieval.EXACT_SEARCH_PIN_SQL, sent
 
 
 # 모든 질문을 첫 번째 축 단위 벡터로 만드는 가짜 임베딩. 그러면 청크의 코사인 점수가 그 청크 벡터의 첫 성분과

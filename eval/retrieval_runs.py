@@ -14,7 +14,8 @@ compare: 두 실행의 같은 질문들을 비교한다. 예: HNSW 대 정확 �
 # [왜 필요한가] v12 한국어 임베딩 비교의 '선택' 절차가 이 두 분석을 요구했다(docs/experiments.md v12). (1)
 # floors: 후보 모델마다 점수 바닥값(score floor)을 품질이 아니라 '모든 문항이 5개 결과를 유지하는가'로만
 # 정한다. (2) compare: 계획대로 돈 실행과 --exact(정확 탐색) 실행의 상위 10개가 같은지, 또는 두 모델 실행의
-# 문항별 순위 변화를 본다.
+# 문항별 순위 변화를 본다. 2026-11-03부터는 기본 검색도 앱과 같은 정확 탐색 고정이라, 앞의 비교는 고정 실행과
+# --exact 실행의 상위 10개가 같은지 확인하는 데 쓴다.
 # [흐름] main이 하위 명령(floors/compare)을 고르고 → 기록을 읽어 metrics·pick_floor·compare로 계산 → 마크다운
 # 리포트를 eval/reports/에 쓴다.
 # [연결] tests/test_retrieval_eval.py가 metrics·pick_floor를 검증한다.

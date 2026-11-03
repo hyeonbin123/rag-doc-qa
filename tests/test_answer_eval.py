@@ -23,10 +23,10 @@ import uuid
 
 # httpx: MockTransport로 Ollama HTTP 응답을 흉내 낸다. pytest: 예외 검사(raises)와 근사 비교(approx).
 # async_sessionmaker: 평가 main이 여는 DB 세션을 테스트 DB로 바꿔 끼울 때 쓴다. text: 그 세션의 설정
-# (SHOW enable_indexscan)을 검색 직전에 읽을 때 쓴다.
+# (SHOW enable_indexscan)을 검색 직후에 읽을 때 쓴다. event: 엔진에 보낸 문장을 순서대로 모은다.
 import httpx
 import pytest
-from sqlalchemy import text
+from sqlalchemy import event, text
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 # 테스트 대상인 평가 모듈들과, 가짜 생성기·검색 결과를 만들 앱의 데이터 클래스를 가져온다. 문서·청크 모델과
@@ -35,7 +35,7 @@ from app.models.chunk import Chunk
 from app.models.document import Document
 from app.services.chunking import build_embedding_text
 from app.services.generation import GenerationResult
-from app.services.retrieval import RetrievedChunk
+from app.services.retrieval import EXACT_SEARCH_PIN_SQL, RetrievedChunk
 from eval import compare_judgments, judge, run_answer_eval, run_judge
 from eval.common import EvalQuestion, dataset_sha256, read_ids_file, read_jsonl, write_jsonl
 from eval.judge import (
@@ -849,14 +849,17 @@ async def test_answer_eval_generates_only_its_listed_items_and_records_provenanc
     assert report[at + 1].startswith("- corpus: source commit ccccccc (1 document)")
 
 
-# --exact면 평가 세션의 인덱스 스캔을 꺼(검색 평가의 --exact와 같은 force_exact_search) 모든 문항의 dense
-# 검색이 HNSW(근사) 대신 정확 탐색으로 돈다. meta에는 exact와 그 세션의 dense 실행 계획(dense_plans, 이 실행의
-# top_k)이 남아, 두 팔을 같은 탐색 방식으로 쟀는지 기록만으로 확인할 수 있다(docs/experiments.md v16-A의
-# 2026-11-01 규칙 보충: 전체 재적재한 사본은 영어가 HNSW로 계획될 수 있고 본 DB는 정확 탐색이다). --exact가
-# 없으면 세션 설정은 그대로이고 계획대로의 계획을 남긴다. 실제 검색 함수(retrieve)를 감싸 문항마다 검색 직전에
-# 그 세션의 enable_indexscan을 읽으므로, 첫 문항에만 걸리고 뒤 문항에서 풀리는 경우도 잡는다. 테스트 DB는 모델
-# 정의로 만들어 HNSW 인덱스가 없어 계획 자체는 두 경우 모두 정확 탐색이고, 두 경우를 가르는 것은 세션
-# 설정이다.
+# 2026-11-03부터 dense 검색은 앱과 같은 정확 탐색 고정(검색 SQL 바로 앞의 SET LOCAL enable_indexscan =
+# off)으로 --exact 없이도 정확 탐색이고, --exact는 그 위에 평가 세션 전체의 인덱스 스캔을 끄는 문장(SET
+# enable_indexscan = off, 검색 평가의 --exact와 같은 force_exact_search)을 한 번 더한다. 실제 검색
+# 함수(retrieve)를 감싸 문항마다 검색 직후 그 세션의 enable_indexscan을 읽고(두 경우 모두 off), 엔진에 보낸
+# 문장을 모아 문항마다 dense SQL 바로 앞에 고정 문장이 있는지, 세션 전체 SET이 --exact일 때만 한 번 있는지
+# 본다. 그래서 첫 문항에만 걸리고 뒤 문항에서 풀리는 경우도 잡는다. meta에는 exact(--exact 여부)와 그 세션의
+# dense 실행 계획(dense_plans, 이 실행의 top_k, 고정 아래의 계획)이 남아 기록만으로 탐색 방식을 확인할 수
+# 있다(docs/experiments.md v16-A의 2026-11-01 규칙 보충과 '결정 뒤' 소절). 고치기 전(2026-11-01) 이 테스트는
+# --exact가 없으면 검색 직전 설정이 on인 것을 확인했다(그때는 플래너가 고른 계획대로 검색했음). 테스트 DB는
+# 모델 정의로 만들어 HNSW 인덱스가 없으므로 계획 자체는 두 경우 모두 정확 탐색이고, 고정이 HNSW를 이기는지는
+# tests/test_retrieval.py가 본다.
 @pytest.mark.asyncio
 @pytest.mark.parametrize("exact", [True, False])
 async def test_answer_eval_exact_search_holds_for_every_question_and_is_recorded(
@@ -898,9 +901,10 @@ async def test_answer_eval_exact_search_holds_for_every_question_and_is_recorded
     index_scan_settings = []
     real_retrieve = run_answer_eval.retrieve
 
-    async def retrieve_reading_the_session_setting(db, *args, **kwargs):
+    async def retrieve_then_read_the_session_setting(db, *args, **kwargs):
+        chunks = await real_retrieve(db, *args, **kwargs)
         index_scan_settings.append((await db.execute(text("SHOW enable_indexscan"))).scalar())
-        return await real_retrieve(db, *args, **kwargs)
+        return chunks
 
     async def no_ollama(base_url: str) -> dict:
         return {}
@@ -910,7 +914,7 @@ async def test_answer_eval_exact_search_holds_for_every_question_and_is_recorded
         path.write_text(content, encoding="utf-8")
         return path
 
-    monkeypatch.setattr(run_answer_eval, "retrieve", retrieve_reading_the_session_setting)
+    monkeypatch.setattr(run_answer_eval, "retrieve", retrieve_then_read_the_session_setting)
     monkeypatch.setattr(run_answer_eval, "async_session_maker", async_sessionmaker(db_engine))
     monkeypatch.setattr(run_answer_eval, "get_embedding_service", lambda language: embedder)
     monkeypatch.setattr(run_answer_eval, "build_generator", lambda settings: FakeGenerationService())
@@ -935,10 +939,21 @@ async def test_answer_eval_exact_search_holds_for_every_question_and_is_recorded
         ids_file=None,
         exact=exact,
     )
+    sent: list[str] = []
 
-    assert await run_answer_eval.main(args) == 0
+    def record_statement(conn, cursor, statement, parameters, context, executemany):
+        sent.append(statement)
 
-    assert index_scan_settings == (["off", "off"] if exact else ["on", "on"])
+    event.listen(db_engine.sync_engine, "before_cursor_execute", record_statement)
+    try:
+        assert await run_answer_eval.main(args) == 0
+    finally:
+        event.remove(db_engine.sync_engine, "before_cursor_execute", record_statement)
+
+    assert index_scan_settings == ["off", "off"]
+    searches = [i for i, s in enumerate(sent) if "<=>" in s and not s.lstrip().startswith("EXPLAIN")]
+    assert [sent[i - 1] for i in searches] == [EXACT_SEARCH_PIN_SQL] * 2
+    assert sent.count("SET enable_indexscan = off") == (1 if exact else 0)
     meta = json.loads((tmp_path / "runs" / "exact.gen.meta.json").read_text(encoding="utf-8"))
     assert meta["exact"] is exact
     assert set(meta["dense_plans"]) == {"en"}
@@ -946,12 +961,14 @@ async def test_answer_eval_exact_search_holds_for_every_question_and_is_recorded
     assert not any("hnsw" in node for node in meta["dense_plans"]["en"])
 
 
-# 명령행에서 --exact를 받는다(기본은 끔 = 예전 실행과 같은 계획대로 검색). 도움말은 무엇을 하는지 한국어로
-# 적는다. argparse는 터미널 폭에 맞춰 도움말 줄을 바꾸므로(폭 69~73에서는 '정확'과 '탐색' 사이에서 줄이 바뀜)
-# 공백을 하나로 모은 뒤 찾는다.
-def test_answer_eval_parser_takes_exact_and_defaults_to_planned_search():
+# 명령행에서 --exact를 받고 기본은 끔이다. 2026-11-03부터 기본 검색도 앱과 같은 정확 탐색 고정이라 --exact는
+# 평가 세션 전체의 설정만 더하고, 도움말은 그것을 한국어로 적는다('정확 탐색 고정', '세션 전체'). 고치기 전 이
+# 테스트는 기본이 '계획대로 검색'인 것을 이름과 주석에 적고 도움말의 '정확 탐색'만 찾았다. argparse는 터미널
+# 폭에 맞춰 도움말 줄을 낱말 사이에서 바꾸므로 공백을 하나로 모은 뒤 찾는다.
+def test_answer_eval_parser_takes_exact_and_defaults_to_off():
     parser = run_answer_eval.build_parser()
 
     assert parser.parse_args([]).exact is False
     assert parser.parse_args(["--exact"]).exact is True
-    assert "정확 탐색" in " ".join(parser.format_help().split())
+    help_text = " ".join(parser.format_help().split())
+    assert "정확 탐색 고정" in help_text and "세션 전체" in help_text

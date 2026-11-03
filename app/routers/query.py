@@ -70,6 +70,9 @@ async def ask(
     # 읽기 트랜잭션을 여기서 끝내, LLM이 답을 만드는 동안(질문마다 몇 초, Ollama에서 줄 서기도 함) 풀의 DB
     # 연결을 붙잡고 있지 않게 한다. rollback이 아니라 commit인 이유: rollback은 current_user 객체를 만료시켜,
     # 나중에 그 속성을 읽을 때 다시 불러오려면 비동기 IO가 필요해진다.
+    # 이 commit은 검색이 건 정확 탐색 고정(SET LOCAL enable_indexscan = off, app/services/retrieval.py의
+    # pin_exact_dense_search)도 끝낸다. 그래서 아래 질문 기록을 저장하는 트랜잭션은 고정 없이 돈다
+    # (tests/test_query.py).
     await db.commit()
 
     generation_sw = Stopwatch()
