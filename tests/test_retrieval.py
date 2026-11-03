@@ -10,6 +10,7 @@
 # [방법] 벡터를 축 방향 단위 벡터로 만들어 코사인 점수를 정확히 정하고, cross-encoder는 키워드가 있으면 1.0을
 # 주는 가짜로 바꾼다.
 
+import argparse
 import importlib.util
 import re
 from pathlib import Path
@@ -19,13 +20,18 @@ import pytest
 # MigrationContext·Operations: 마이그레이션 0004의 upgrade()를 테스트 DB 연결에서 그대로 돌려 언어별 부분 HNSW
 # 인덱스를 만든다(테스트 스키마는 모델로 만들어 이 인덱스가 없다). event·text: 엔진에 보낸 문장을 순서대로
 # 모으고, 세션 설정(SHOW)과 준비문 정보(pg_prepared_statements)를 직접 읽는다.
+# async_sessionmaker·create_async_engine: 검색 평가 스크립트가 여는 세션을, 연결마다 플래너가 HNSW를 고르게
+# 하는 설정을 건 엔진으로 바꿔 끼운다(2026-11-03 재적재 전 보충의 테스트).
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
 from sqlalchemy import event, text
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 # 테스트 데이터로 넣을 문서·청크 모델, 가짜 재정렬기가 상속할 RerankerService, 테스트 대상 검색 함수와 설정값,
 # 벡터 차원(384). 고정 문장(EXACT_SEARCH_PIN_SQL)과 앱의 dense SQL, 평가의 계획 기록 함수(dense_search_plan)는
 # 정확 탐색 고정 테스트가 쓴다.
+# 검색 평가 스크립트(run_retrieval_eval)와 기록 입출력(read_jsonl·write_jsonl), conftest의 테스트 DB 주소와
+# 가짜 임베딩은 평가 실행 수준의 고정 테스트가 쓴다.
 from app.models.chunk import Chunk
 from app.models.document import Document
 from app.services.reranking import RerankerService
@@ -44,8 +50,10 @@ from app.services.retrieval import (
     score_floor_for,
     similarity_search,
 )
+from eval import run_retrieval_eval
+from eval.common import read_jsonl, write_jsonl
 from eval.retrieval_checks import dense_search_plan
-from tests.conftest import EMBEDDING_DIM
+from tests.conftest import EMBEDDING_DIM, TEST_DATABASE_URL, FakeEmbeddingService
 
 
 # cross-encoder 대신 쓰는 가짜 재정렬기: 패시지에 키워드가 있으면 1.0, 없으면 0.0. 받은 후보 수도 기록해 후보
@@ -646,3 +654,91 @@ async def test_every_vector_ordered_query_is_sent_right_after_the_pin(db_session
     finally:
         for name, listener in listeners:
             event.remove(sync_engine, name, listener)
+
+
+# 검색 평가(eval/run_retrieval_eval.py)를 --exact 없이 돌려도 문항 검색이 정확 탐색인 것을, 계획 기록의 고정이
+# 아니라 검색 함수 자신의 고정으로 얻는지 본다(2026-11-03 재적재 전 보충, docs/experiments.md v16-A의 '결정
+# 뒤' 소절). 평가 스크립트가 여는 세션을 연결마다 seq_page_cost 100·hnsw.ef_search 10을 거는 엔진으로 바꿔
+# 끼워, 평가의 모든 트랜잭션에서 플래너가 HNSW를 고르게 한다. 먼저 그 엔진의 새 트랜잭션에서 고정 없는 계획이
+# HNSW이고 고정 없는 실행이 ef_search(10)개에서 멈추는 것을 확인한 뒤, 문항마다 결과가 전수 거리순 상위
+# 20개인지 본다. 고치기 전(계획 기록이 문항 검색과 같은 트랜잭션에 고정을 남김)에는 similarity_search의 고정
+# 한 줄을 빼도 이 실행이 정확 탐색으로 돌아, 평가 실행으로는 그 빠짐을 잡지 못했다. 고친 뒤에는 그 한 줄을
+# 빼면 이 테스트가 실패하는 것을 2026-11-03에 확인했다.
+@pytest.mark.asyncio
+async def test_the_retrieval_eval_gets_exact_results_from_the_searchs_own_pin(
+    db_session, tmp_path, monkeypatch
+):
+    exact_order = await _seed_hnsw_preferring_corpus(db_session)
+    content_of = {
+        str(chunk_id): content
+        for chunk_id, content in (await db_session.execute(text("SELECT id, content FROM chunks"))).all()
+    }
+    await db_session.commit()
+    dataset = tmp_path / "qa_near.jsonl"
+    write_jsonl(
+        dataset,
+        [
+            {
+                "id": item_id,
+                "question": f"Which chunk is nearest ({item_id})?",
+                "expected_source_paths": ["docs/en/docs/near.md"],
+                "reference_answer": "near 00",
+            }
+            for item_id in ("n1", "n2")
+        ],
+    )
+
+    class TowardTheCorpus(FakeEmbeddingService):
+        """모든 질문을 _unit(1.0)으로 임베딩하는 가짜(코퍼스의 거리순이 정해진 축)."""
+
+        def embed_query(self, text: str) -> list[float]:
+            return _unit(1.0)
+
+    embedder = TowardTheCorpus()
+
+    def write_report_here(filename: str, content: str):
+        path = tmp_path / filename
+        path.write_text(content, encoding="utf-8")
+        return path
+
+    prefers_hnsw = create_async_engine(
+        TEST_DATABASE_URL,
+        connect_args={"server_settings": {"seq_page_cost": "100", "hnsw.ef_search": str(HNSW_EF_SEARCH)}},
+    )
+    monkeypatch.setattr(run_retrieval_eval, "async_session_maker", async_sessionmaker(prefers_hnsw))
+    monkeypatch.setattr(run_retrieval_eval, "get_embedding_service", lambda language: embedder)
+    monkeypatch.setattr(run_retrieval_eval, "RUNS_DIR", tmp_path / "runs")
+    monkeypatch.setattr(run_retrieval_eval, "write_report", write_report_here)
+    args = argparse.Namespace(
+        top_k=HNSW_TOP_K,
+        tag="pin",
+        mode="dense",
+        dataset=[dataset],
+        lexical_weight=0.75,
+        rerank_pool=None,
+        reranker_model=None,
+        score_floor=None,
+        cross_lingual=False,
+        exact=False,
+        no_vector_check=True,
+    )
+    try:
+        async with async_sessionmaker(prefers_hnsw)() as check:
+            free_plan = await dense_search_plan(check, "en", HNSW_TOP_K, pinned=False)
+            unpinned = (
+                await check.execute(
+                    text(dense_search_sql("en")), {"qvec": _literal(_unit(1.0)), "top_k": HNSW_TOP_K}
+                )
+            ).all()
+        assert any("Index Scan using chunks_embedding_en_hnsw_idx" in node for node in free_plan), free_plan
+        assert len(unpinned) == HNSW_EF_SEARCH  # 고정 없는 실행은 ef_search개에서 멈춘다
+
+        await run_retrieval_eval.main(args)
+    finally:
+        await prefers_hnsw.dispose()
+
+    records = read_jsonl(tmp_path / "runs" / "pin.retrieval.jsonl")
+    assert [record["id"] for record in records] == ["n1", "n2"]
+    for record in records:
+        found = [content_of[r["chunk_id"]] for r in record["results"]]
+        assert found == exact_order[:HNSW_TOP_K], record["id"]

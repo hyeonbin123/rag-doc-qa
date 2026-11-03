@@ -7,13 +7,15 @@
 # 정의가 이전과 달라지거나, 다른 모델의 DB를 그대로 재거나, 바닥값 규칙이 틀리면 결정이 틀어진다.
 # [import] SQLAlchemy text는 세션 설정(SHOW enable_indexscan)을 직접 읽는 데 쓴다. async_sessionmaker는 평가
 # main이 여는 DB 세션을 테스트 DB로 바꿔 끼울 때 쓴다.
+# event는 평가 실행이 엔진에 보낸 문장과 트랜잭션 끝을 순서대로 모으는 데, EXACT_SEARCH_PIN_SQL은 그중 앱의
+# 정확 탐색 고정 문장을 알아보는 데 쓴다(2026-11-03 재적재 전 보충).
 
 import argparse
 import hashlib
 from datetime import UTC, datetime
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import event, text
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 # 테스트 데이터로 넣을 문서·청크 모델과 적재와 같은 임베딩 입력 함수, 테스트 대상 평가 모듈들, conftest의 가짜
@@ -21,6 +23,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from app.models.chunk import Chunk
 from app.models.document import Document
 from app.services.chunking import build_embedding_text
+from app.services.retrieval import EXACT_SEARCH_PIN_SQL
 from eval import retrieval_runs, run_retrieval_eval
 from eval.common import corpus_line, corpus_snapshot, dataset_sha256, read_json, write_jsonl
 from eval.retrieval_checks import (
@@ -337,3 +340,94 @@ async def test_retrieval_eval_records_question_set_hashes_and_the_corpus(
     assert report[at + 1].startswith("- corpus: source commit x (1 document); last fetched ")
     search_line = "- search: dense exact, pinned like the app; dense plan: en "
     assert any(line.startswith(search_line) for line in report)
+
+
+# 2026-11-03 재적재 전 보충: 검색 평가는 실행 계획을 먼저 기록하고 rollback해 그 기록이 건 고정을 끝낸 뒤, 새
+# 트랜잭션에서 문항을 검색한다(eval/run_retrieval_eval.py의 main 주석). 실제 검색 함수(retrieve)를 감싸
+# 문항마다 검색 직전·직후의 enable_indexscan을 읽는다. --exact가 없으면 첫 검색 직전은 on이고(계획 기록의
+# 고정이 남지 않음) 직후는 검색 함수 자신의 고정으로 off다. --exact면 rollback 뒤에 세션 전체 설정을 걸므로 첫
+# 검색 직전부터 off다(rollback 앞에 걸면 rollback이 그 설정까지 지워 on이 된다). 둘째 문항은 첫 검색의 고정이
+# 같은 트랜잭션에 남아 직전부터 off다. 엔진에 보낸 문장과 트랜잭션 끝으로는 계획 기록(EXPLAIN)과 첫 검색
+# 사이에 트랜잭션이 끝나는지, 문항마다 dense SQL 바로 앞에 고정 문장이 가는지, 세션 SET이 --exact일 때만 한
+# 번인지 본다. 고치기 전(계획 기록과 문항 검색이 한 트랜잭션)에는 --exact 없이도 첫 검색 직전이 off였다.
+# 테스트 DB에는 HNSW 인덱스가 없으므로 고정이 HNSW를 이기는지는 tests/test_retrieval.py가 본다.
+@pytest.mark.asyncio
+@pytest.mark.parametrize("exact", [True, False])
+async def test_retrieval_eval_searches_outside_the_transaction_the_plan_record_pinned(
+    db_engine, db_session, tmp_path, monkeypatch, exact
+):
+    embedder = FakeEmbeddingService()
+    await _seed_embedded_chunk(db_session, embedder, language="en")
+    dataset = tmp_path / "qa_dev.jsonl"
+    write_jsonl(
+        dataset,
+        [
+            {
+                "id": item_id,
+                "question": f"Where are path parameters declared ({item_id})?",
+                "expected_source_paths": ["docs/en/docs/a.md"],
+                "reference_answer": "In the path string.",
+            }
+            for item_id in ("q001", "q002")
+        ],
+    )
+    around: list[tuple[str, str]] = []
+    real_retrieve = run_retrieval_eval.retrieve
+
+    async def retrieve_reading_the_setting_around_it(db, *args, **kwargs):
+        before = (await db.execute(text("SHOW enable_indexscan"))).scalar()
+        chunks = await real_retrieve(db, *args, **kwargs)
+        around.append((before, (await db.execute(text("SHOW enable_indexscan"))).scalar()))
+        return chunks
+
+    def write_report_here(filename: str, content: str):
+        path = tmp_path / filename
+        path.write_text(content, encoding="utf-8")
+        return path
+
+    monkeypatch.setattr(run_retrieval_eval, "retrieve", retrieve_reading_the_setting_around_it)
+    monkeypatch.setattr(run_retrieval_eval, "async_session_maker", async_sessionmaker(db_engine))
+    monkeypatch.setattr(run_retrieval_eval, "get_embedding_service", lambda language: embedder)
+    monkeypatch.setattr(run_retrieval_eval, "RUNS_DIR", tmp_path / "runs")
+    monkeypatch.setattr(run_retrieval_eval, "write_report", write_report_here)
+    args = argparse.Namespace(
+        top_k=10,
+        tag="pinned",
+        mode="dense",
+        dataset=[dataset],
+        lexical_weight=0.75,
+        rerank_pool=None,
+        reranker_model=None,
+        score_floor=None,
+        cross_lingual=False,
+        exact=exact,
+        no_vector_check=False,
+    )
+    sent: list[str] = []
+
+    def record_statement(conn, cursor, statement, parameters, context, executemany):
+        sent.append(statement)
+
+    def record_end(conn):
+        sent.append("<transaction end>")
+
+    listeners = [
+        ("before_cursor_execute", record_statement),
+        ("commit", record_end),
+        ("rollback", record_end),
+    ]
+    for name, listener in listeners:
+        event.listen(db_engine.sync_engine, name, listener)
+    try:
+        await run_retrieval_eval.main(args)
+    finally:
+        for name, listener in listeners:
+            event.remove(db_engine.sync_engine, name, listener)
+
+    assert around == [("off" if exact else "on", "off"), ("off", "off")]
+    explains = [i for i, s in enumerate(sent) if s.lstrip().startswith("EXPLAIN")]
+    searches = [i for i, s in enumerate(sent) if "<=>" in s and not s.lstrip().startswith("EXPLAIN")]
+    assert len(explains) == 1 and len(searches) == 2
+    assert "<transaction end>" in sent[explains[0] : searches[0]]
+    assert [sent[i - 1] for i in searches] == [EXACT_SEARCH_PIN_SQL] * 2
+    assert sent.count("SET enable_indexscan = off") == (1 if exact else 0)

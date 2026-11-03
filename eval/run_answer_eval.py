@@ -23,11 +23,10 @@ Ollama 기본 문맥에서 돌던 v11 이전 호출을 보낸다.
 # [왜 이렇게 나눴나] v11에서 '모든 답 생성 → 기록 저장 → 일괄 판정'으로 바꿨다. 답과 패시지를 저장해 두면
 # eval/run_judge.py로 생성 없이 다시 판정할 수 있고(판정 설정 비교, J0/J1), 생성과 판정을 번갈아 하면 Ollama가
 # 모델을 계속 바꿔 올려 생성 시간에 그 시간이 섞이기 때문이다(docs/experiments.md v11).
-# [흐름] main: 설정·생성기·토크나이저 준비 → 코퍼스 요약(eval/common.py)과 저장 벡터 확인
-# (eval/retrieval_checks.py) → (--exact면 세션 전체의 인덱스 스캔도 끔) dense 실행 계획 기록(앱과 같은 정확
-# 탐색 고정 아래) → 문항별 generate_answer →
-# <tag>.gen.jsonl과 .meta.json 저장 → (선택) judge_and_save로 판정 → eval/answer_report.render_report로
-# 리포트(머리에 코퍼스 줄을 더함).
+# [흐름] main: 설정·생성기·토크나이저 준비 → dense 실행 계획 기록(앱과 같은 정확 탐색 고정 아래,
+# eval/retrieval_checks.py) → rollback(그 고정을 끝냄) → 코퍼스 요약(eval/common.py)과 저장 벡터 확인 →
+# (--exact면 세션 전체의 인덱스 스캔도 끔) → 문항별 generate_answer → <tag>.gen.jsonl과 .meta.json 저장 →
+# (선택) judge_and_save로 판정 → eval/answer_report.render_report로 리포트(머리에 코퍼스 줄을 더함).
 # [연결] 판정 로직은 eval/judge.py, 판정 실행·기록은 eval/run_judge.py, 토크나이저는 eval/tokens.py, 두 팔
 # 나누기는 eval/generator_arms.py가 이 파일의 기록을 읽는다. tests/test_answer_eval.py가
 # generate_answer·generation_order·build_generator를 검증한다.
@@ -347,9 +346,25 @@ async def main(args: argparse.Namespace) -> int:
     vector_checks: list[dict] = []
     languages = sorted({detect_language(q.question) for q in questions})
     async with async_session_maker() as db:
+        # 이 세션에서 검색하는 언어(교차언어면 영어 포함)의 dense 실행 계획을 먼저, 이 실행의 top_k로 남긴다.
+        # HNSW 인덱스를 탔는지(근사) Sort + Seq Scan(정확 탐색)이었는지를 meta만 보고 알 수 있게 하려는
+        # 것이다(검색 평가의 dense_plans와 같은 방법: 앱과 같은 SQL에 저장된 벡터 하나를 넣은 EXPLAIN,
+        # 실행하지 않음). 2026-11-03부터 dense_search_plan의 기본값은 앱과 같은 고정 아래에서 EXPLAIN하므로 이
+        # 계획은 고정한 검색 SQL이 이 DB에서 받는 계획이다(그 전 기록은 고정 없이 플래너가 고른 계획). 문항
+        # 검색이 실제로 고정됐는지를 잰 값은 아니다.
+        searched = set(languages) | ({"en"} if args.cross_lingual and "ko" in languages else set())
+        dense_plans = {lang: await dense_search_plan(db, lang, args.top_k) for lang in sorted(searched)}
+        # 계획 기록이 이 트랜잭션에 건 고정(SET LOCAL enable_indexscan = off)을 rollback으로 끝내고(읽기만
+        # 했으므로 잃는 것은 없다), 문항은 고정이 없는 새 트랜잭션에서 검색한다. 그래야 --exact 없는 실행의
+        # 검색이 검색 함수(app/services/retrieval.py) 자신의 고정으로만 정확 탐색이 된다. 정확 탐색 고정을
+        # 넣은 첫 커밋(78bff12)에서는 계획 기록의 고정이 모든 문항 검색에 남아, 검색 함수의 고정이 빠져도 이
+        # 실행으로는 드러나지 않았다. 같은 트랜잭션의 둘째 문항부터는 첫 검색의 고정이 남으므로, 검색마다
+        # 고정을 거는지는 단위 테스트가 지킨다(eval/run_retrieval_eval.py의 같은 자리 주석,
+        # docs/experiments.md v16-A '결정 뒤' 소절의 2026-11-03 보충).
+        await db.rollback()
         # 생성 전에 이 DB의 코퍼스(문서의 원본 커밋별 수, 마지막 적재 시각, 언어별 청크 수)를 읽어 meta와
         # 리포트에 남긴다(eval/common.py). 다른 커밋으로 다시 적재한 DB로 잰 실행을 기록만으로 구별하려는
-        # 것이다.
+        # 것이다. rollback 뒤의 첫 문장이라 문항을 검색할 트랜잭션이 여기서 열린다.
         corpus = await corpus_snapshot(db)
         # 측정 전에 이 DB의 저장 벡터가 지금 설정된 모델로 만든 것인지 확인한다. 교차언어면 영어 청크도 한국어
         # 모델로 만든 것이어야 한다.
@@ -362,21 +377,14 @@ async def main(args: argparse.Namespace) -> int:
         # 한다(eval/run_retrieval_eval.py의 --exact와 같은 force_exact_search). docs/experiments.md v16-A의
         # 2026-11-01 규칙 보충이 두 팔(본 DB와, 그것을 복사해 전체를 다시 적재한 사본)을 같은 탐색 방식으로
         # 재려고 넣었다: 사본은 테이블이 커져 영어가 HNSW로 계획될 수 있고 본 DB는 정확 탐색이라, 그대로 재면
-        # 비교에 탐색 방식 차이가 섞인다. SET은 이 세션(연결)에만 걸리고, 이 실행은 처음부터 끝까지 한 세션·한
-        # 트랜잭션에서 검색하므로(중간 commit 없음) 모든 문항에 그대로 적용된다. 세션을 닫을 때의 rollback으로
-        # 설정도 되돌아가므로 앱이나 다른 연결에는 영향이 없다.
+        # 비교에 탐색 방식 차이가 섞인다. SET은 이 세션(연결)에만 걸리고, 위 rollback 뒤에 걸므로 모든 문항을
+        # 검색하는 한 트랜잭션(중간 commit 없음)에 끝까지 남는다(rollback 앞에 걸면 rollback이 이 SET도
+        # 지운다). 세션을 닫을 때의 rollback으로 설정도 되돌아가므로 앱이나 다른 연결에는 영향이 없다.
         # 2026-11-03부터는 --exact가 없어도 모든 문항의 dense 검색이 앱과 같은 정확 탐색 고정(검색 SQL마다
         # 그 앞에 SET LOCAL enable_indexscan = off, app/services/retrieval.py)으로 돈다. --exact는 같은 설정을
         # 세션 범위로 더할 뿐이라 검색 결과는 같고, v16-A 기록과 같은 명령을 다시 돌릴 수 있게 남겼다.
         if args.exact:
             await force_exact_search(db)
-        # 이 세션에서 실제로 검색하는 언어(교차언어면 영어 포함)의 dense 실행 계획을 이 실행의 top_k로 남긴다.
-        # HNSW 인덱스를 탔는지(근사) Sort + Seq Scan(정확 탐색)이었는지를 meta만 보고 알 수 있게 하려는
-        # 것이다(검색 평가의 dense_plans와 같은 방법: 앱과 같은 SQL에 저장된 벡터 하나를 넣은 EXPLAIN,
-        # 실행하지 않음). 2026-11-03부터 dense_search_plan의 기본값은 앱과 같은 고정 아래에서 EXPLAIN하므로 이
-        # 계획은 생성이 실제로 받은 검색의 계획이다(그 전 기록은 고정 없이 플래너가 고른 계획).
-        searched = set(languages) | ({"en"} if args.cross_lingual and "ko" in languages else set())
-        dense_plans = {lang: await dense_search_plan(db, lang, args.top_k) for lang in sorted(searched)}
         for order_index, index in enumerate(generation_order(len(questions), args.order, args.seed)):
             q = questions[index]
             reranker = None

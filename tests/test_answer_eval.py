@@ -860,6 +860,10 @@ async def test_answer_eval_generates_only_its_listed_items_and_records_provenanc
 # --exact가 없으면 검색 직전 설정이 on인 것을 확인했다(그때는 플래너가 고른 계획대로 검색했음). 테스트 DB는
 # 모델 정의로 만들어 HNSW 인덱스가 없으므로 계획 자체는 두 경우 모두 정확 탐색이고, 고정이 HNSW를 이기는지는
 # tests/test_retrieval.py가 본다.
+# 2026-11-03 재적재 전 보충: 계획 기록은 이제 rollback으로 끝낸 다른 트랜잭션에서
+# 하므로(eval/run_answer_eval.py의 main 주석) 검색 직전의 설정도 읽는다. --exact가 없으면 첫 검색 직전은
+# on이고(계획 기록의 고정이 남지 않아 검색 함수가 스스로 고정해야 off가 됨), --exact면 rollback 뒤에 건 세션
+# 설정으로 직전부터 off다. 둘째 문항은 첫 검색의 고정이 같은 트랜잭션에 남아 직전부터 off다.
 @pytest.mark.asyncio
 @pytest.mark.parametrize("exact", [True, False])
 async def test_answer_eval_exact_search_holds_for_every_question_and_is_recorded(
@@ -901,9 +905,10 @@ async def test_answer_eval_exact_search_holds_for_every_question_and_is_recorded
     index_scan_settings = []
     real_retrieve = run_answer_eval.retrieve
 
-    async def retrieve_then_read_the_session_setting(db, *args, **kwargs):
+    async def retrieve_reading_the_session_setting_around_it(db, *args, **kwargs):
+        before = (await db.execute(text("SHOW enable_indexscan"))).scalar()
         chunks = await real_retrieve(db, *args, **kwargs)
-        index_scan_settings.append((await db.execute(text("SHOW enable_indexscan"))).scalar())
+        index_scan_settings.append((before, (await db.execute(text("SHOW enable_indexscan"))).scalar()))
         return chunks
 
     async def no_ollama(base_url: str) -> dict:
@@ -914,7 +919,7 @@ async def test_answer_eval_exact_search_holds_for_every_question_and_is_recorded
         path.write_text(content, encoding="utf-8")
         return path
 
-    monkeypatch.setattr(run_answer_eval, "retrieve", retrieve_then_read_the_session_setting)
+    monkeypatch.setattr(run_answer_eval, "retrieve", retrieve_reading_the_session_setting_around_it)
     monkeypatch.setattr(run_answer_eval, "async_session_maker", async_sessionmaker(db_engine))
     monkeypatch.setattr(run_answer_eval, "get_embedding_service", lambda language: embedder)
     monkeypatch.setattr(run_answer_eval, "build_generator", lambda settings: FakeGenerationService())
@@ -950,7 +955,7 @@ async def test_answer_eval_exact_search_holds_for_every_question_and_is_recorded
     finally:
         event.remove(db_engine.sync_engine, "before_cursor_execute", record_statement)
 
-    assert index_scan_settings == ["off", "off"]
+    assert index_scan_settings == [("off" if exact else "on", "off"), ("off", "off")]
     searches = [i for i, s in enumerate(sent) if "<=>" in s and not s.lstrip().startswith("EXPLAIN")]
     assert [sent[i - 1] for i in searches] == [EXACT_SEARCH_PIN_SQL] * 2
     assert sent.count("SET enable_indexscan = off") == (1 if exact else 0)

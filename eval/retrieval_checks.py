@@ -55,10 +55,16 @@ class VectorModelMismatch(RuntimeError):
 # 문장도 인덱스 스캔 없이 계획됨). 옛 --exact 실행과 같은 명령을 다시 돌릴 수 있게 남겼다. 그 전 기록에서
 # --exact가 없는 실행은 플래너가 고른 계획대로 돌았다.
 async def force_exact_search(db: AsyncSession) -> None:
-    """이 세션의 벡터 검색을 HNSW 인덱스 스캔 대신 정확 탐색으로 바꾼다.
+    """평가 세션 전체에서 인덱스 스캔을 끈다(--exact).
 
-    인덱스 스캔을 끄면 플래너가 그 언어의 모든 행을 거리순으로 정렬한다. 이것이 근사 HNSW 탐색과 비교할
-    정확한 상위 k개다.
+    2026-11-03부터 dense 검색은 이 함수 없이도 검색마다 정확 탐색으로 고정된다
+    (app.services.retrieval.pin_exact_dense_search). 이 함수는 그 위에 세션 범위의 설정을 더해, 같은 세션의
+    다른 문장도 인덱스 스캔 없이 계획되게 할 뿐이다(검색 결과는 같다). 그 전에는 이것이 근사 HNSW 탐색과
+    비교할 정확한 상위 k개를 만드는 방법이었다.
+
+    LOCAL이 아닌 SET이라 트랜잭션 안에서 보내면 그 트랜잭션이 rollback될 때 함께 사라지고, commit되면 그
+    연결(세션)이 끝날 때까지 남는다. 두 평가 스크립트는 계획 기록 뒤의 rollback 다음, 문항을 검색하는
+    트랜잭션 안에서 부르고 중간에 commit하지 않으므로 세션을 닫을 때의 rollback이 설정을 되돌린다.
     """
     await db.execute(text("SET enable_indexscan = off"))
 
@@ -137,11 +143,15 @@ async def dense_search_plan(
     "Index Scan using chunks_embedding_<language>_hnsw_idx"는 근사 HNSW 탐색이고, Sort 아래의
     "Seq Scan on chunks"는 정확 탐색이다. 질의 대신 저장된 벡터 하나를 쓴다.
 
-    pinned=True(기본)면 앱의 검색처럼 pin_exact_dense_search를 먼저 불러, 앱이 실제로 도는 계획(정확 탐색)을
-    돌려준다. 그 고정은 앱의 검색과 같이 이 트랜잭션이 끝날 때까지 남는다.
+    pinned=True(기본)면 앱의 검색처럼 pin_exact_dense_search를 먼저 불러, 고정한 검색 SQL이 받는 계획(정확
+    탐색)을 돌려준다. 그 고정은 앱의 검색과 같이 이 트랜잭션이 끝날 때까지 남는다. 그래서 두 평가 스크립트는
+    계획을 먼저 기록하고 rollback한 뒤 새 트랜잭션에서 문항을 검색한다(이 고정이 문항 검색에 남으면 검색
+    함수 자신의 고정이 빠져도 평가 실행으로는 드러나지 않음, 2026-11-03).
     pinned=False면 고정을 걸지 않고 EXPLAIN한다. 다만 고정을 풀지는 않는다: 같은 트랜잭션에서 이미
     고정했거나(앞선 검색이나 pinned=True 호출) --exact(force_exact_search)로 세션 설정을 바꿨으면 그 값이 남아
     정확 탐색 계획이 나온다. 플래너가 고정 없이 고를 계획을 보려면 새 트랜잭션에서 검색·고정보다 먼저 부른다.
+    다만 --exact의 세션 설정이 든 트랜잭션이 commit된 연결이면 새 트랜잭션에도 그 설정이 남으므로(LOCAL이
+    아닌 SET은 commit 뒤 세션 끝까지 남음), 그때는 새 연결(세션)에서 부른다.
     """
     # 실제 질문 벡터 대신 저장된 벡터 하나를 질의로 쓴다. 계획은 값보다 SQL 모양과 테이블 통계로 정해지므로
     # 이것으로 충분하다.
