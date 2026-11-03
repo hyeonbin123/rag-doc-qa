@@ -134,9 +134,9 @@ async def check_stored_vectors(
 # 한다.
 # 2026-11-03부터 앱은 dense 검색을 정확 탐색으로 고정하므로(app.services.retrieval.pin_exact_dense_search),
 # 기본값(pinned=True)은 같은 고정을 이 트랜잭션에 건 뒤 EXPLAIN해, 고정한 검색 SQL이 이 DB에서 받는 계획을
-# 적는다. 문항 검색마다 고정이 걸렸는지는 보여 주지 않는다(그것은 단위 테스트가 지킨다, docs/experiments.md
-# v16-A '결정 뒤' 소절의 보충 (마)). 그 전 기록의 dense_plans는 고정 없이 플래너가 고른 계획(--exact면 세션
-# 전체에서 인덱스 스캔을 끈 계획)이다.
+# 적는다. 문항 검색마다 고정이 걸렸는지는 보여 주지 않는다(docs/experiments.md v16-A '결정 뒤' 소절의 보충
+# (마). 검색마다 고정을 거는지는 단위 테스트가 지킨다: 같은 소절의 보충 (가)). 그 전 기록의 dense_plans는 고정
+# 없이 플래너가 고른 계획(--exact면 세션 전체에서 인덱스 스캔을 끈 계획)이다.
 # pinned=False는 고정 없이 플래너가 고를 계획을 보고용으로 볼 때 쓴다(예: DB를 다시 적재한 뒤의 기록).
 # 그 언어의 청크가 없으면 빈 목록을 돌려준다(그때는 고정도 걸지 않는다).
 async def dense_search_plan(

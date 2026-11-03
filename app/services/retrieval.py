@@ -256,9 +256,12 @@ EXACT_SEARCH_PIN_SQL = "SET LOCAL enable_indexscan = off"
 #   2026-11-03 확인: 인덱스 단위 pg_index_has_property의 bitmap_scan이 f이고, 열 단위
 #   pg_index_column_has_property의 returnable이 f다. returnable은 열 단위 성질이라 pg_index_has_property로
 #   물으면 NULL이 나온다). 게다가 enable_indexscan을 끄면 플래너는 인덱스 전용 스캔도 고려하지
-#   않는다(PostgreSQL 문서의 enable_indexonlyscan 설명). 그래서 인덱스 스캔 하나만 끄면 HNSW 경로가 모두
-#   빠지고 순차 스캔은 남아, 결과는 늘 '그 언어의 모든 청크를 거리순으로 정렬한 상위 k개'다. BM25의 GIN
-#   인덱스는 비트맵 스캔만 쓰므로 hybrid·rerank의 어휘 검색은 고정 아래에서도 그 인덱스를 그대로 쓴다.
+#   않는다(PostgreSQL 문서의 enable_indexonlyscan 설명). 그래서 인덱스 스캔(enable_indexscan) 하나만 끄면
+#   된다. 이 설정은 인덱스 스캔 경로를 지우지 않고 큰 비용 벌점(disable_cost)을 붙이므로, 순차 스캔이 켜져
+#   있는 한(앱은 enable_seqscan을 건드리지 않음) 벌점 없는 순차 스캔 + 정렬 계획이 골라지고, 결과는 늘 '그
+#   언어의 모든 청크를 거리순으로 정렬한 상위 k개'다. enable_seqscan까지 끄면 두 경로가 모두 벌점을 받아
+#   HNSW가 다시 골라진다(2026-11-04 본 DB에서 확인). BM25의 GIN 인덱스는 비트맵 스캔만 쓰므로 hybrid·rerank의
+#   어휘 검색은 고정 아래에서도 그 인덱스를 그대로 쓴다.
 # 설정으로 끄고 켜는 스위치는 두지 않는다. 결정이 '고정'이고, 스위치가 있으면 측정 경로와 서비스 경로가 다시
 # 갈라질 수 있기 때문이다. 다른 계획으로 바꾸려면 docs/experiments.md에 새 규칙을 먼저 적고 이 코드를
 # 바꾼다. HNSW 인덱스(마이그레이션 0004)는 코퍼스가 커질 때를 위해 그대로 둔다.
