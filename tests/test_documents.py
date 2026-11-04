@@ -7,17 +7,26 @@
 # '전체 적재 + 사라진 문서 삭제', 음수가 '뒤 n개를 빼고 처리'가 됐고, 'master' 같은 ref 이름이 문서 행의
 # source_commit_sha에 그대로 저장됐다(이제 적재가 GitHub에 물어 40자 SHA로 바꾼다, tests/test_ingestion.py).
 
+import logging
 import secrets
 import uuid
 
+# httpx: GitHub 응답을 MockTransport로 흉내 내고, 500 응답을 받으려고 앱 예외를 올리지 않는 클라이언트를 따로
+# 만든다. SQLAlchemy: 오류로 끝난 적재가 문서·청크 행을 남기지 않았는지 센다.
+import httpx
 import pytest
+from httpx import ASGITransport, AsyncClient
+from sqlalchemy import func, select
 
 # 관리자 토큰 검사 의존성을 테스트에서 통과시키고, 적재 함수를 바꿔 끼우려고 라우터 모듈을 가져온다. 설정
 # 의존성(get_settings)은 관리자 토큰만 바꾼 설정으로 갈아 끼우고, 가짜 적재는 IngestOutcome을 돌려준다. 적재
-# 모듈(ingestion)은 '적재가 이미 진행 중' 예외를 참조하는 데 쓴다.
+# 모듈(ingestion)은 '적재가 이미 진행 중' 예외를 참조하고, GitHub 클라이언트(github_client)와 기본 ref 설정을
+# 바꿔 끼우는 데 쓴다. 문서·청크 모델은 남은 행을 세는 데 쓴다.
 from app.config import get_settings
 from app.dependencies import require_admin_token
 from app.main import app
+from app.models.chunk import Chunk
+from app.models.document import Document
 from app.routers import documents
 from app.services import ingestion
 from app.services.ingestion import IngestOutcome
@@ -143,6 +152,143 @@ async def test_ingest_reports_a_running_ingestion_as_a_conflict(client, monkeypa
 
     assert resp.status_code == 409
     assert resp.json()["detail"] == "ingestion already running"
+
+
+# --- GitHub가 모르는 ref·GitHub 장애 (2026-11-05) ---
+# 아래 테스트는 적재 함수를 바꾸지 않고 GitHub 쪽 HTTP만 httpx.MockTransport로 흉내
+# 낸다(ingestion.github_client 자리). 그래서 ref 해석부터 라우터의 오류 응답까지 실제 코드가 돈다. 예전에는
+# GitHub가 모르는 ref(commits API의 404)와 GitHub 장애(5xx, 요청 한도 초과, 연결 실패·시간 초과)가 모두
+# 처리되지 않은 예외라 500이 됐다.
+
+
+# 가짜 GitHub의 응답 하나를 만드는 함수들. 응답 객체를 테스트끼리 함께 쓰지 않으려고 요청마다 새로 만든다.
+# answer(code, ...)는 그 상태 코드의 응답을, fail(예외 클래스)는 그 요청에서 httpx 요청 오류(연결 실패·시간
+# 초과 흉내)를 낸다.
+def answer(code: int, **kwargs):
+    return lambda request: httpx.Response(code, **kwargs)
+
+
+def fail(error_type: type[httpx.RequestError]):
+    def raise_error(request: httpx.Request) -> httpx.Response:
+        raise error_type("simulated failure", request=request)
+
+    return raise_error
+
+
+COMMIT_OK = answer(200, json={"sha": "c0ffee" + "0" * 34})
+TREE_OK = answer(200, json={"tree": [{"path": "docs/en/docs/a.md", "type": "blob"}], "truncated": False})
+
+
+# 적재가 쓰는 GitHub 클라이언트를 가짜로 바꾼다. 커밋 조회(.../commits/{ref})는 commits, 트리 목록
+# (.../git/trees/...)은 tree, 그 밖(raw 원문)은 raw가 답한다. 받은 요청의 URL을 차례로 모아 돌려준다.
+def serve_github(monkeypatch, commits, tree=None, raw=None) -> list[str]:
+    requests: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(str(request.url))
+        if "/commits/" in request.url.path:
+            return commits(request)
+        if "/git/trees/" in request.url.path:
+            return tree(request)
+        return raw(request)
+
+    monkeypatch.setattr(
+        ingestion, "github_client", lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    )
+    return requests
+
+
+# 적재 테이블에 행이 하나도 없는지 센다(오류로 끝난 적재가 DB에 아무것도 쓰지 않았는지).
+async def stored_rows(db_session) -> tuple[int, int]:
+    documents = await db_session.scalar(select(func.count()).select_from(Document))
+    chunks = await db_session.scalar(select(func.count()).select_from(Chunk))
+    return documents, chunks
+
+
+# 요청이 준 ref를 GitHub가 모르면(commits API 404, 커밋으로 풀 수 없는 값의 422) 422로 답한다. 오류 항목은
+# 다른 검증 오류(위 형식 검사)와 같은 꼴이라 loc이 body.commit_sha를 가리키고, 보낸 값은 되돌려 주지 않는다.
+# 트리와 원문은 받지 않고 DB에도 쓰지 않는다.
+@pytest.mark.asyncio
+@pytest.mark.parametrize("github_status", [404, 422])
+async def test_ingest_reports_a_ref_github_does_not_know_as_unprocessable(
+    client, db_session, monkeypatch, github_status
+):
+    requests = serve_github(monkeypatch, commits=answer(github_status, json={"message": "No commit found"}))
+    app.dependency_overrides[require_admin_token] = lambda: None
+
+    resp = await client.post("/admin/documents/ingest", json={"commit_sha": "no-such-branch"})
+
+    assert resp.status_code == 422
+    assert resp.json()["detail"] == [
+        {"type": "unknown_docs_ref", "loc": ["body", "commit_sha"], "msg": "GitHub does not know this ref"}
+    ]
+    assert len(requests) == 1
+    assert await stored_rows(db_session) == (0, 0)
+
+
+# GitHub에 닿지 못하거나(연결 실패·시간 초과) GitHub가 오류 상태로 답하면(5xx, 요청 한도 초과의 403) 커밋
+# 해석·트리 목록·원문 받기 어느 단계든 502로 답하고 DB에는 아무것도 쓰지 않는다. 원인은 응답에 싣지 않고 서버
+# 로그 한 줄(WARNING)에만 남겨, 운영자가 '우리 버그(500)'와 '상류 장애(502)'를 가를 수 있게 한다.
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "commits, tree, raw",
+    [
+        (answer(503), None, None),
+        (fail(httpx.ConnectError), None, None),
+        (COMMIT_OK, answer(403, json={"message": "API rate limit exceeded"}), None),
+        (COMMIT_OK, TREE_OK, fail(httpx.ReadTimeout)),
+        (COMMIT_OK, TREE_OK, answer(500)),
+    ],
+    ids=["commit-503", "commit-connect-error", "tree-rate-limited", "raw-timeout", "raw-500"],
+)
+async def test_ingest_reports_an_unreachable_github_as_a_bad_gateway(
+    client, db_session, monkeypatch, caplog, commits, tree, raw
+):
+    serve_github(monkeypatch, commits, tree, raw)
+    app.dependency_overrides[require_admin_token] = lambda: None
+
+    with caplog.at_level(logging.WARNING, logger="app.routers.documents"):
+        resp = await client.post("/admin/documents/ingest", json={"commit_sha": "master"})
+
+    assert resp.status_code == 502
+    assert resp.json()["detail"] == "docs source unavailable"
+    assert "docs source unavailable" in caplog.text
+    assert await stored_rows(db_session) == (0, 0)
+
+
+# 요청이 ref를 주지 않았는데 서버 기본 ref(설정 FASTAPI_DOCS_COMMIT_SHA)를 GitHub가 모르면, 요청을 고쳐서 풀릴
+# 일이 아닌 서버 설정 오류라 422가 아니라 500으로 남긴다(본문은 다른 예기치 않은 오류와 같은 'Internal Server
+# Error', 원인은 서버 로그의 트레이스백). 기본 테스트 클라이언트는 앱 예외를 테스트로 올리므로
+# raise_app_exceptions=False 클라이언트를 따로 만든다(의존성 교체는 client 픽스처의 것을 그대로 쓴다).
+@pytest.mark.asyncio
+async def test_an_unknown_configured_ref_stays_a_server_error(client, db_session, monkeypatch):
+    settings = get_settings().model_copy(update={"fastapi_docs_commit_sha": "no-such-branch"})
+    monkeypatch.setattr(ingestion, "get_settings", lambda: settings)
+    requests = serve_github(monkeypatch, commits=answer(404, json={"message": "No commit found"}))
+    app.dependency_overrides[require_admin_token] = lambda: None
+    transport = ASGITransport(app=app, raise_app_exceptions=False)
+
+    async with AsyncClient(transport=transport, base_url="http://test") as raw_client:
+        resp = await raw_client.post("/admin/documents/ingest", json={})
+
+    assert resp.status_code == 500
+    assert resp.text == "Internal Server Error"
+    assert requests == [f"{ingestion.GITHUB_API}/repos/{ingestion.REPO}/commits/no-such-branch"]
+    assert await stored_rows(db_session) == (0, 0)
+
+
+# 적재 API의 422(검증 오류와 GitHub가 모르는 ref)와 502(GitHub 장애)가 OpenAPI 문서에 적혀 있는지 본다. 422를
+# 따로 적어도 다른 경로의 자동 422와 같은 검증 오류 스키마(HTTPValidationError)를 가리켜야, 문서를 보는 쪽이
+# 같은 꼴로 처리할 수 있다.
+@pytest.mark.asyncio
+async def test_ingest_errors_are_documented_in_openapi(client):
+    spec = (await client.get("/openapi.json")).json()
+
+    responses = spec["paths"]["/admin/documents/ingest"]["post"]["responses"]
+    assert {"409", "422", "502"} <= set(responses)
+    schema = responses["422"]["content"]["application/json"]["schema"]
+    assert schema == {"$ref": "#/components/schemas/HTTPValidationError"}
+    assert "HTTPValidationError" in spec["components"]["schemas"]
 
 
 # --- 관리자 토큰 (app/dependencies.py의 require_admin_token) ---

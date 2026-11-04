@@ -144,7 +144,7 @@ cp .env.example .env
 
 설정값은 타입뿐 아니라 범위도 시작할 때 검사한다. `JWT_ALGORITHM`은 `HS256`(기본)·`HS384`·`HS512`만, `ACCESS_TOKEN_EXPIRE_MINUTES`·`REFRESH_TOKEN_EXPIRE_DAYS`·`MODEL_THREADS`는 1 이상만 받고, 어긋나면 서버와 `alembic`이 어느 설정이 틀렸는지 알리며 시작하지 않는다(2026-10-29부터. 그 전에는 서버가 뜬 뒤 첫 로그인이나 첫 질문에서 500이 나거나, 발급하자마자 만료된 토큰이 나왔다).
 
-관리자 적재 API(`POST /admin/documents/ingest`, `X-Admin-Token` 헤더)는 `ADMIN_INGEST_TOKEN`이 비어 있으면(기본값) 꺼져 있고 403을 돌려준다. 예전 예시 값 `change-me-admin-token`도 공개된 값이라 같은 취급을 한다. 쓰려면 `python -c "import secrets; print(secrets.token_urlsafe(32))"`로 만든 값을 넣는다. 아래 3단계의 CLI 적재는 이 토큰이 필요 없다. 요청 본문의 `commit_sha`·`limit`은 3단계의 `--commit`·`--limit`과 같은 규칙으로 검증하고(어긋나면 422), 같은 DB에서 적재가 이미 진행 중이면 409를 돌려준다.
+관리자 적재 API(`POST /admin/documents/ingest`, `X-Admin-Token` 헤더)는 `ADMIN_INGEST_TOKEN`이 비어 있으면(기본값) 꺼져 있고 403을 돌려준다. 예전 예시 값 `change-me-admin-token`도 공개된 값이라 같은 취급을 한다. 쓰려면 `python -c "import secrets; print(secrets.token_urlsafe(32))"`로 만든 값을 넣는다. 아래 3단계의 CLI 적재는 이 토큰이 필요 없다. 요청 본문의 `commit_sha`·`limit`은 3단계의 `--commit`·`--limit`과 같은 규칙으로 검증하고(어긋나면 422), 같은 DB에서 적재가 이미 진행 중이면 409를 돌려준다. 2026-11-05 추가: 형식은 맞지만 GitHub가 모르는 `commit_sha`(없는 브랜치·태그·SHA)도 422로 답하고(오류 항목의 `loc`은 다른 검증 오류처럼 `["body", "commit_sha"]`), GitHub에 닿지 못하거나 GitHub가 오류 상태로 답하면(장애, 요청 한도 초과) 502로 답한다. 둘 다 그 전에는 500이었고, 어느 쪽이든 DB에는 아무것도 쓰지 않는다. `commit_sha` 없이 보냈는데 서버의 `FASTAPI_DOCS_COMMIT_SHA`를 GitHub가 모르면 요청이 아니라 서버 설정의 문제라 500으로 남긴다(서버 로그에 그 설정 이름이 남음). 3단계의 CLI는 이런 경우 트레이스백 대신 한 줄 오류와 종료 코드 1로 끝난다.
 
 호스트의 5432 포트를 쓸 수 없으면 `.env`의 `POSTGRES_HOST_PORT`와 `DATABASE_URL`의 포트를 같이 바꾼다(테스트용 `TEST_DATABASE_URL`도 마찬가지). 로컬에 Postgres가 이미 떠 있는 경우도 있지만, Windows에서는 Hyper-V/WSL이 부팅할 때 이 포트를 예약 범위에 넣는 경우도 있다(`netsh interface ipv4 show excludedportrange protocol=tcp`로 확인).
 

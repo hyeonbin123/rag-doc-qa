@@ -89,6 +89,55 @@ class IngestionAlreadyRunning(RuntimeError):
     """같은 DB에서 다른 적재가 적재 잠금(PostgreSQL 어드바이저리 잠금)을 쥐고 있다."""
 
 
+# GitHub에서 문서를 받지 못해 적재를 멈췄을 때의 예외 셋(2026-11-05). 셋 다 네트워크 단계(커밋 해석 → 트리
+# 목록 → 원문 받기)에서만 나고 그 뒤의 DB 단계보다 앞이라, 이 예외로 끝난 적재는 DB에 아무것도 쓰지 않는다
+# (잡아 둔 적재 잠금은 세션이 닫히며 롤백과 함께 풀린다). 예전에는 httpx 예외가 그대로 올라가 관리자 API가
+# 모두 500으로 답했다. 지금은 관리자 API(app/routers/documents.py)가 UnknownDocsRef를 422로,
+# DocsSourceUnavailable을 502로 바꾸고 UnknownConfiguredDocsRef는 서버 설정 오류로 500에 남긴다. CLI
+# (scripts/ingest_fastapi_docs.py)는 셋 다 한 줄 오류와 종료 코드 1로 끝낸다.
+class UnknownDocsRef(RuntimeError):
+    """요청이 준 ref(관리자 API의 commit_sha, CLI의 --commit)를 GitHub가 모른다.
+
+    GitHub commits API가 404(없는 브랜치·태그·SHA)나 422(커밋으로 풀 수 없는 값)로 답한 경우다. 요청을 고치면
+    풀리는 클라이언트 오류다. ref는 GitHub에 물은 ref, status_code는 GitHub의 상태 코드다.
+    """
+
+    def __init__(self, ref: str, status_code: int) -> None:
+        super().__init__(f"GitHub does not know the docs ref {ref!r} (HTTP {status_code})")
+        self.ref = ref
+        self.status_code = status_code
+
+
+class UnknownConfiguredDocsRef(RuntimeError):
+    """요청이 ref를 주지 않았는데 서버 기본 ref를 GitHub가 모른다.
+
+    기본 ref는 설정 FASTAPI_DOCS_COMMIT_SHA이고, 비어 있으면 측정 스냅숏(DOCS_SNAPSHOT_COMMIT)이다. 요청을
+    고쳐서는 풀리지 않는 서버 설정 오류라 UnknownDocsRef와 따로 둔다. ref·status_code는 UnknownDocsRef와 같다.
+    """
+
+    def __init__(self, ref: str, status_code: int) -> None:
+        super().__init__(
+            f"GitHub does not know the default docs ref {ref!r} (HTTP {status_code}); "
+            "check FASTAPI_DOCS_COMMIT_SHA"
+        )
+        self.ref = ref
+        self.status_code = status_code
+
+
+class DocsSourceUnavailable(RuntimeError):
+    """GitHub(API·raw 호스트)에 닿지 못했거나 GitHub가 오류 상태로 답해 문서를 받지 못했다.
+
+    연결 실패·시간 초과 같은 요청 오류(httpx.RequestError)와, 2xx가 아닌 응답 중 커밋 해석의 404·422(위 두
+    예외)를 뺀 모든 것(5xx, 요청 한도 초과의 403·429 등)이다. 상류 장애라 잠시 뒤 다시 시도하면 될 수 있다.
+    메시지에는 요청 주소와 원인이 들어간다(GitHub에는 인증 정보를 보내지 않아 주소에 비밀값이 없다).
+    """
+
+
+# GitHub commits API가 '그런 ref는 없다'고 답하는 상태 코드. 404는 없는 브랜치·태그·SHA, 422는 커밋으로 풀 수
+# 없는 값이다.
+UNKNOWN_REF_STATUSES = frozenset({404, 422})
+
+
 # GitHub API·raw 파일을 받는 HTTP 클라이언트. 30초 제한, User-Agent(GitHub API는 User-Agent 없는 요청을 거부),
 # 리디렉션 따라가기(저장소가 fastapi/fastapi로 옮겨져 tiangolo/fastapi 주소는 301로 안내된다). 함수로 둔 이유:
 # run_ingestion과 scripts/fetch_docs.py가 같은 설정을 쓰고, 테스트가 이 함수를 MockTransport 클라이언트로 바꿔
@@ -96,6 +145,24 @@ class IngestionAlreadyRunning(RuntimeError):
 # tests/test_fetch_docs.py).
 def github_client() -> httpx.AsyncClient:
     return httpx.AsyncClient(timeout=30.0, headers={"User-Agent": "rag-doc-qa-ingest"}, follow_redirects=True)
+
+
+# GitHub(API·raw 호스트)에 GET 하나를 보낸다. 응답을 받지 못한 요청 오류(httpx.RequestError: 연결 실패, 시간
+# 초과, 리디렉션 반복 등)는 DocsSourceUnavailable로 바꾸고, 받은 응답은 상태 코드를 보지 않고 그대로 돌려준다.
+# 상태 코드의 뜻은 부르는 쪽이 정한다(커밋 해석의 404·422는 '모르는 ref', 나머지는 _require_success).
+async def _github_get(client: httpx.AsyncClient, url: str, **kwargs) -> httpx.Response:
+    try:
+        return await client.get(url, **kwargs)
+    except httpx.RequestError as exc:
+        raise DocsSourceUnavailable(f"GET {url} failed: {type(exc).__name__}: {exc}") from exc
+
+
+# 2xx가 아닌 응답을 DocsSourceUnavailable로 바꾼다. 예전 resp.raise_for_status()의 자리라 2xx만 통과시키는
+# 기준은 같다(예전에는 httpx.HTTPStatusError가 그대로 올라가 관리자 API가 500으로 답했다).
+def _require_success(resp: httpx.Response) -> httpx.Response:
+    if not resp.is_success:
+        raise DocsSourceUnavailable(f"GET {resp.request.url} returned HTTP {resp.status_code}")
+    return resp
 
 
 # 언어별 문서 폴더 경로(docs/<언어>/docs/). 경로 선택과 사라진 문서 판정에 쓴다.
@@ -143,14 +210,22 @@ def default_commit_ref() -> str:
 #   내주므로 다른 내용의 주입은 막지 못한다. 막는 것은 '..' 세그먼트로 다른 API 경로를 두드리는 일(httpx가 점
 #   세그먼트를 정규화한다), 저장 열(String(40))을 넘는 값이 임베딩 뒤에 실패하는 일, 시험 적재 의도와 출처
 #   기록이 어긋나는 일이다.
-# - GitHub가 모르는 ref면 404가 HTTPStatusError로 그대로 올라가 트리·원문을 받기 전에 끝난다. 응답이 커밋
-#   하나(JSON 객체)가 아니거나 그 sha가 40자 16진수가 아니면 RuntimeError(저장 열과 URL이 가정하는 형식). JSON
-#   배열도 같은 RuntimeError로 거부하는 이유: GitHub는 commits/{ref} 아래에 목록을 돌려주는 하위 경로(예:
-#   {ref}/statuses, {ref}/pulls)도 두어, 형식 검사를 통과한 ref가 그런 경로에 닿으면 커밋 대신 목록이 온다.
+# - GitHub가 모르는 ref(commits API의 404·422)면 트리·원문을 받기 전에 끝난다. 요청이 준 ref면 UnknownDocsRef,
+#   ref를 주지 않아 기본 ref를 물은 것이면 UnknownConfiguredDocsRef다(2026-11-05 전에는 둘 다
+#   httpx.HTTPStatusError가 그대로 올라갔다). GitHub에 닿지 못했거나 그 밖의 오류 상태면
+#   DocsSourceUnavailable.
+# - 응답이 커밋 하나(JSON 객체)가 아니거나 그 sha가 40자 16진수가 아니면 RuntimeError(저장 열과 URL이 가정하는
+#   형식). JSON 배열도 같은 RuntimeError로 거부하는 이유: GitHub는 commits/{ref} 아래에 목록을 돌려주는 하위
+#   경로(예: {ref}/statuses, {ref}/pulls)도 두어, 형식 검사를 통과한 ref가 그런 경로에 닿으면 커밋 대신 목록이
+#   온다.
 async def resolve_commit_sha(client: httpx.AsyncClient, commit_sha: str | None = None) -> str:
     ref = validate_git_ref(commit_sha) if commit_sha is not None else default_commit_ref()
-    resp = await client.get(f"{GITHUB_API}/repos/{REPO}/commits/{ref}")
-    resp.raise_for_status()
+    resp = await _github_get(client, f"{GITHUB_API}/repos/{REPO}/commits/{ref}")
+    if resp.status_code in UNKNOWN_REF_STATUSES:
+        if commit_sha is None:
+            raise UnknownConfiguredDocsRef(ref, resp.status_code)
+        raise UnknownDocsRef(ref, resp.status_code)
+    _require_success(resp)
     data = resp.json()
     sha = data.get("sha") if isinstance(data, dict) else None
     if not isinstance(sha, str) or _COMMIT_SHA_RE.fullmatch(sha) is None:
@@ -158,12 +233,14 @@ async def resolve_commit_sha(client: httpx.AsyncClient, commit_sha: str | None =
     return sha
 
 
-# 커밋의 전체 파일 트리를 한 번에(recursive) 받아 문서 경로를 고른다.
+# 커밋의 전체 파일 트리를 한 번에(recursive) 받아 문서 경로를 고른다. GitHub에 닿지 못하거나 2xx가 아닌
+# 응답이면 DocsSourceUnavailable(_github_get·_require_success).
 async def list_doc_paths(
     client: httpx.AsyncClient, sha: str, languages: Sequence[str]
 ) -> list[tuple[str, str]]:
-    resp = await client.get(f"{GITHUB_API}/repos/{REPO}/git/trees/{sha}", params={"recursive": "1"})
-    resp.raise_for_status()
+    resp = _require_success(
+        await _github_get(client, f"{GITHUB_API}/repos/{REPO}/git/trees/{sha}", params={"recursive": "1"})
+    )
     data = resp.json()
     # 전체 적재는 목록에 없는 문서를 지우므로, 잘린(일부만 담긴) 목록으로 적재하면 아직 있는 페이지까지
     # 지운다. 그래서 GitHub가 트리 목록을 잘랐다고 알리면 적재를 거부한다.
@@ -172,11 +249,10 @@ async def list_doc_paths(
     return select_doc_paths(data["tree"], languages)
 
 
-# raw.githubusercontent.com에서 커밋 고정 경로로 원문 마크다운 한 파일을 받는다. 실패하면 HTTP 오류 예외가
-# 그대로 올라간다.
+# raw.githubusercontent.com에서 커밋 고정 경로로 원문 마크다운 한 파일을 받는다. 닿지 못하거나 2xx가 아닌
+# 응답이면 DocsSourceUnavailable이다(2026-11-05 전에는 httpx 예외가 그대로 올라갔다).
 async def fetch_raw_file(client: httpx.AsyncClient, sha: str, path: str) -> str:
-    resp = await client.get(f"{RAW_BASE}/{REPO}/{sha}/{path}")
-    resp.raise_for_status()
+    resp = _require_success(await _github_get(client, f"{RAW_BASE}/{REPO}/{sha}/{path}"))
     return resp.text
 
 
@@ -251,6 +327,8 @@ class IngestOutcome:
 # - dry_run: DB를 바꾸지 않고 처리·삭제될 개수만 센다(잠금도 잡지 않는다).
 # - languages: 적재할 언어(CLI의 --languages). 삭제도 이 언어 범위 안에서만 한다.
 # 같은 DB에서 다른 적재가 진행 중이면(어드바이저리 잠금) 아무 일도 하지 않고 IngestionAlreadyRunning을 낸다.
+# GitHub가 ref를 모르거나 GitHub에서 문서를 받지 못하면 네트워크 단계에서 UnknownDocsRef,
+# UnknownConfiguredDocsRef, DocsSourceUnavailable 중 하나로 끝나고, 그때까지 DB에는 아무것도 쓰지 않았다.
 async def run_ingestion(
     db: AsyncSession,
     embedder_for: Callable[[str], EmbeddingService],

@@ -73,3 +73,28 @@ async def test_a_running_ingestion_ends_with_exit_code_1(monkeypatch, capsys):
 
     assert code == 1
     assert "already running" in capsys.readouterr().err
+
+
+# GitHub가 모르는 ref(--commit으로 준 것이든 설정 기본 ref든)와 GitHub 장애도 트레이스백 대신 'error: <이유>'
+# 한 줄과 종료 코드 1로 끝난다. 셋 다 적재의 네트워크 단계에서 나서 DB에는 아무것도 쓰지 않았다
+# (app/services/ingestion.py). 예전에는 처리하지 않은 httpx 예외의 트레이스백으로 끝났다.
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "error",
+    [
+        ingestion.UnknownDocsRef("no-such-branch", 404),
+        ingestion.UnknownConfiguredDocsRef("no-such-branch", 404),
+        ingestion.DocsSourceUnavailable("GET https://api.github.com/x returned HTTP 503"),
+    ],
+    ids=["unknown-ref", "unknown-configured-ref", "github-unavailable"],
+)
+async def test_github_errors_end_with_one_line_and_exit_code_1(monkeypatch, capsys, error):
+    async def failing(*args, **kwargs):
+        raise error
+
+    monkeypatch.setattr(cli, "run_ingestion", failing)
+
+    code = await cli.main(None, None, False, ("en",))
+
+    assert code == 1
+    assert capsys.readouterr().err == f"error: {error}\n"

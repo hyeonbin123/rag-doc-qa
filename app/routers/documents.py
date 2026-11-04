@@ -3,6 +3,7 @@
 # [연결] 적재 로직 자체는 app/services/ingestion.py의 run_ingestion에 있고, 같은 함수를
 # CLI(scripts/ingest_fastapi_docs.py)도 쓴다. 이 라우터는 HTTP 입력·출력만 맡는다.
 
+import logging
 import uuid
 from collections.abc import Callable
 
@@ -16,11 +17,29 @@ from app.models.chunk import Chunk
 from app.models.document import Document
 from app.schemas.document import DocumentOut, IngestRequest, IngestResult
 from app.services.embedding import EmbeddingService
-from app.services.ingestion import IngestionAlreadyRunning, run_ingestion
+from app.services.ingestion import (
+    DocsSourceUnavailable,
+    IngestionAlreadyRunning,
+    UnknownDocsRef,
+    run_ingestion,
+)
 from app.services.language import Language
 
 # prefix 없이 경로를 각각 적는다(관리자 경로와 공개 경로의 앞부분이 다르다).
 router = APIRouter(tags=["documents"])
+
+# 이 모듈의 로그(GitHub 장애로 적재가 멈춘 한 줄). configure_logging의 형식으로 'app.routers.documents' 이름이
+# 찍힌다.
+logger = logging.getLogger(__name__)
+
+# 요청의 commit_sha를 GitHub가 모를 때의 422 본문 항목. 요청 본문 검증 오류(app/main.py의 422 처리기가
+# 만드는 type·loc·msg 항목)와 같은 꼴로 두어, 클라이언트가 같은 방식으로 '어느 필드가 틀렸는지'를 읽게 한다.
+# 보낸 값은 다른 422와 마찬가지로 되돌려 주지 않는다. 응답으로 그대로 나가는 글이라 영어로 둔다.
+UNKNOWN_DOCS_REF_ERROR = {
+    "type": "unknown_docs_ref",
+    "loc": ["body", "commit_sha"],
+    "msg": "GitHub does not know this ref",
+}
 
 
 # 관리자 적재. dependencies=[Depends(require_admin_token)]로 X-Admin-Token 헤더가 맞아야만 실행된다.
@@ -31,13 +50,29 @@ router = APIRouter(tags=["documents"])
 # 적재하는 동안에도 서버가 다른 요청에 답한다.
 # 적재는 몇 분 걸릴 수 있는데 요청 하나 안에서 끝까지 한다(백그라운드 잡 큐는 README '하지 않은 것'에 있다).
 # 같은 DB에서 다른 적재(이 API의 다른 요청이나 CLI)가 진행 중이면 409다.
-# responses의 409 설명은 OpenAPI 문서(/docs)에 그대로 나가는 글이라 다른 라우터(auth의 가입 409)처럼 영어로
-# 둔다.
+# GitHub 쪽 실패(2026-11-05, 그 전에는 모두 500): 요청이 준 commit_sha를 GitHub가 모르면 422(위 검증 오류와
+# 같은 꼴의 항목), GitHub에 닿지 못하거나 GitHub가 오류 상태로 답하면 502다. 어느 쪽이든 적재의 네트워크
+# 단계에서 멈춰 DB에는 아무것도 쓰지 않았다. commit_sha를 주지 않았는데 서버 기본
+# ref(FASTAPI_DOCS_COMMIT_SHA)를 GitHub가 모르면(UnknownConfiguredDocsRef) 요청을 고쳐서 풀릴 일이 아닌 서버
+# 설정 오류라 잡지 않고 500으로 둔다(서버 로그에 설정 이름이 든 트레이스백이 남는다).
+# responses의 설명은 OpenAPI 문서(/docs)에 그대로 나가는 글이라 다른 라우터(auth의 가입 409)처럼 영어로 둔다.
+# 422를 여기 적으면 FastAPI가 자동으로 붙이던 422 항목을 대신하므로, 자동 항목과 같은 검증 오류
+# 스키마(HTTPValidationError)를 직접 가리킨다(위 본문 항목도 그 스키마의 꼴이다. tests/test_documents.py가
+# 확인한다).
 @router.post(
     "/admin/documents/ingest",
     response_model=IngestResult,
     dependencies=[Depends(require_admin_token)],
-    responses={status.HTTP_409_CONFLICT: {"description": "Ingestion already running"}},
+    responses={
+        status.HTTP_409_CONFLICT: {"description": "Ingestion already running"},
+        status.HTTP_422_UNPROCESSABLE_CONTENT: {
+            "description": "Validation Error, or a commit_sha that GitHub does not know",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/HTTPValidationError"}}},
+        },
+        status.HTTP_502_BAD_GATEWAY: {
+            "description": "GitHub could not be reached or answered with an error; nothing was ingested"
+        },
+    },
 )
 async def ingest_documents(
     payload: IngestRequest,
@@ -57,6 +92,18 @@ async def ingest_documents(
         # 늦은 쪽이 먼저 쪽의 commit을 몇 분 기다린 뒤 유일 제약 위반 500으로 끝났다,
         # app/services/ingestion.py 주석).
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="ingestion already running") from exc
+    except UnknownDocsRef as exc:
+        # 요청이 준 ref를 GitHub가 모른다(commits API 404·422). 요청을 고치면 되는 오류라 422로 알린다.
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=[UNKNOWN_DOCS_REF_ERROR]
+        ) from exc
+    except DocsSourceUnavailable as exc:
+        # GitHub 장애(연결 실패·시간 초과·5xx·요청 한도 초과 등). 원인(요청 주소와 상태)은 응답에 싣지 않고
+        # 서버 로그 한 줄에만 남긴다. 운영자는 이 줄로 '우리 버그(500)'와 '상류 장애(502)'를 가른다.
+        logger.warning("admin ingestion stopped, docs source unavailable: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY, detail="docs source unavailable"
+        ) from exc
     # 내부 결과(IngestOutcome)에서 API로 보일 필드만 골라 응답 모델로 옮긴다(commit_sha는 응답에 넣지 않는다).
     return IngestResult(
         documents_processed=outcome.documents_processed,

@@ -350,16 +350,34 @@ async def test_an_unsafe_ref_is_rejected_before_any_github_request(monkeypatch, 
     assert requests == []
 
 
-# GitHub가 모르는 ref(없는 브랜치, 오타 난 SHA)는 commits 조회의 404가 그대로 올라와 트리·원문을 하나도 받지
-# 않고 끝난다. 예전에는 40자가 아닌 값이 트리 조회에서 404로, 트리 조회를 통과한 긴 값은 문서 행을 flush할 때
-# DataError로 끝났다.
+# GitHub가 모르는 ref(없는 브랜치, 오타 난 SHA)는 commits 조회의 404에서 트리·원문을 하나도 받지 않고 끝난다.
+# 예전에는 40자가 아닌 값이 트리 조회에서 404로, 트리 조회를 통과한 긴 값은 문서 행을 flush할 때 DataError로
+# 끝났다. 2026-11-05부터는 404가 httpx.HTTPStatusError 그대로가 아니라 UnknownDocsRef(물은 ref와 상태 코드를
+# 담음)로 올라와, 관리자 API가 500 대신 422로 답한다(tests/test_documents.py).
 @pytest.mark.asyncio
 async def test_a_ref_github_does_not_know_fails_before_any_download(monkeypatch):
     requests = serve_github(monkeypatch, PAGES, known_refs=set())
 
     async with ingestion.github_client() as client:
-        with pytest.raises(httpx.HTTPStatusError):
+        with pytest.raises(ingestion.UnknownDocsRef) as excinfo:
             await ingestion.resolve_commit_sha(client, "no-such-branch")
+
+    assert (excinfo.value.ref, excinfo.value.status_code) == ("no-such-branch", 404)
+    assert len(requests) == 1
+
+
+# commit_sha를 주지 않았는데 서버 기본 ref(설정 FASTAPI_DOCS_COMMIT_SHA)를 GitHub가 모르면, 요청이 준 ref와
+# 다른 예외(UnknownConfiguredDocsRef)로 끝나고 오류 문구가 설정 이름을 담는다. 요청을 고쳐서 풀릴 일이 아니라
+# 서버 설정 오류라서다(관리자 API는 500, CLI는 한 줄 오류와 종료 코드 1).
+@pytest.mark.asyncio
+async def test_an_unknown_configured_ref_is_a_configuration_error(monkeypatch):
+    settings = get_settings().model_copy(update={"fastapi_docs_commit_sha": "no-such-branch"})
+    monkeypatch.setattr(ingestion, "get_settings", lambda: settings)
+    requests = serve_github(monkeypatch, PAGES, known_refs=set())
+
+    async with ingestion.github_client() as client:
+        with pytest.raises(ingestion.UnknownConfiguredDocsRef, match="FASTAPI_DOCS_COMMIT_SHA"):
+            await ingestion.resolve_commit_sha(client)
 
     assert len(requests) == 1
 

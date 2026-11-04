@@ -4,8 +4,8 @@
     python -m scripts.ingest_fastapi_docs [--commit REF] [--limit N] [--dry-run]
                                           [--languages en,ko]
 
-종료 코드: 0 성공, 1 같은 DB에서 다른 적재가 진행 중(잠금, 아무것도 바꾸지 않음) 또는 적재 중
-오류(트레이스백), 2 옵션 오류.
+종료 코드: 0 성공, 1 같은 DB에서 다른 적재가 진행 중(잠금), GitHub가 모르는 ref, GitHub 장애(이 셋은 한 줄
+오류, 아무것도 바꾸지 않음) 또는 적재 중 다른 오류(트레이스백), 2 옵션 오류.
 """
 
 # [파일 역할] FastAPI 공식 문서를 GitHub에서 받아 청킹·임베딩한 뒤 DB에 적재하는 명령행 진입점(README '3. 문서
@@ -27,17 +27,27 @@ import argparse
 import asyncio
 import sys
 
-# 앱의 DB 세션, ref 형식 검사, 언어별 임베딩 서비스 조회 함수, 적재 함수와 상수를 그대로 쓴다. 지원 언어
-# 목록(DOC_LANGUAGES)이 --languages의 기본값이다.
+# 앱의 DB 세션, ref 형식 검사, 언어별 임베딩 서비스 조회 함수, 적재 함수와 상수, 한 줄 오류로 끝낼 적재
+# 예외(잠금, GitHub가 모르는 ref, GitHub 장애)를 그대로 쓴다. 지원 언어 목록(DOC_LANGUAGES)이 --languages의
+# 기본값이다.
 from app.db.session import async_session_maker
 from app.schemas.text import validate_git_ref
 from app.services.embedding import get_embedding_service
 from app.services.ingestion import (
     DOC_LANGUAGES,
     DOCS_SNAPSHOT_COMMIT,
+    DocsSourceUnavailable,
     IngestionAlreadyRunning,
+    UnknownConfiguredDocsRef,
+    UnknownDocsRef,
     run_ingestion,
 )
+
+# 트레이스백 없이 'error: <이유>' 한 줄과 종료 코드 1로 끝낼 예외. 모두 DB에 쓰기 전에 나므로(잠금은 적재를
+# 시작하기 전, GitHub 쪽 셋은 네트워크 단계) 아무것도 바뀌지 않았고, 이유 한 줄로 무엇을 고칠지(기다리기,
+# --commit이나 FASTAPI_DOCS_COMMIT_SHA 고치기, 잠시 뒤 다시 실행) 알 수 있다. 그 밖의 오류는 버그일 수 있어
+# 트레이스백을 그대로 남긴다.
+ONE_LINE_ERRORS = (IngestionAlreadyRunning, UnknownDocsRef, UnknownConfiguredDocsRef, DocsSourceUnavailable)
 
 
 # argparse type 함수: --commit 값이 브랜치·태그·커밋 SHA로 안전한 형식인지 관리자 API와 같은 규칙으로
@@ -76,8 +86,9 @@ def build_parser() -> argparse.ArgumentParser:
             "적재한다. 내용 해시가 같은 문서는 건너뛰므로 다시 실행해도 바뀐 문서만 처리한다."
         ),
         epilog=(
-            "종료 코드: 0 성공, 1 같은 DB에서 다른 적재(관리자 API 또는 다른 CLI 실행)가 진행 "
-            "중(이때는 아무것도 바꾸지 않고 바로 끝남)이거나 적재 중 오류(트레이스백), 2 옵션 오류. "
+            "종료 코드: 0 성공, 1 같은 DB에서 다른 적재(관리자 API 또는 다른 CLI 실행)가 진행 중이거나 "
+            "GitHub가 --commit(또는 기본 ref FASTAPI_DOCS_COMMIT_SHA)을 모르거나 GitHub에 닿지 못함(이 셋은 "
+            "아무것도 바꾸지 않고 한 줄 오류로 끝남), 또는 적재 중 다른 오류(트레이스백), 2 옵션 오류. "
             "--limit 없이 전체를 적재하면 적재한 언어에서 GitHub 트리에 더는 없는 문서를 청크와 함께 지우고, "
             "바뀐 문서가 있으면 VACUUM (ANALYZE)를 돌린다."
         ),
@@ -122,7 +133,8 @@ def build_parser() -> argparse.ArgumentParser:
 # get_embedding_service를 함수째 넘기는 이유: run_ingestion이 문서마다 언어에 맞는 모델(영어 bge-small, 한국어
 # granite-311m)을 골라 쓰기 때문이다.
 # dry_run이면 DB에 쓰지 않고 처리·삭제될 개수만 센다. 같은 DB에서 다른 적재가 진행
-# 중이면(IngestionAlreadyRunning) 메시지를 stderr에 적고 1을 돌려준다(아무것도 바꾸지 않았다).
+# 중이거나(IngestionAlreadyRunning) GitHub가 ref를 모르거나 GitHub에서 문서를 받지 못하면(ONE_LINE_ERRORS)
+# 메시지를 stderr에 한 줄로 적고 1을 돌려준다(아무것도 바꾸지 않았다).
 async def main(
     commit_sha: str | None, limit: int | None, dry_run: bool, languages: tuple[str, ...]
 ) -> int:
@@ -136,7 +148,7 @@ async def main(
                 dry_run=dry_run,
                 languages=languages,
             )
-        except IngestionAlreadyRunning as exc:
+        except ONE_LINE_ERRORS as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1
 
