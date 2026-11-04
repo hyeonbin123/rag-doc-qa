@@ -10,8 +10,9 @@ ENV PATH="/app/.venv/bin:${PATH}"
 
 # 서버는 root가 아닌 app 사용자(uid 10001)로 돈다(맨 아래 USER). 이 사용자가 쓸 수 있는 곳은 홈(/home/app)과 모델
 # 캐시(/opt/hf)뿐이고, 코드와 가상환경(/app)은 root 소유로 남긴다. 서버는 실행 중에 /app 아래에 아무것도 쓰지 않으므로
-# (질문 기록·사용자는 DB에, tiktoken 인코딩 캐시는 /tmp에 쓴다) 이렇게 두면 프로세스가 뚫려도 자기 코드와 의존성을
-# 고쳐 쓸 수 없다. uid를 10001로 두는 것은 호스트의 보통 사용자 uid(1000 부근)와 겹치지 않게 하려는 관례다.
+# (질문 기록·사용자는 DB에 쓰고, 청킹이 읽는 tiktoken 인코딩은 빌드 때 /opt/tiktoken에 넣어 둔다. 아래 의존성 층 뒤)
+# 이렇게 두면 프로세스가 뚫려도 자기 코드와 의존성을 고쳐 쓸 수 없다. uid를 10001로 두는 것은 호스트의 보통 사용자
+# uid(1000 부근)와 겹치지 않게 하려는 관례다.
 RUN useradd --create-home --uid 10001 app \
  && install -d -o app -g app /opt/hf
 
@@ -70,6 +71,22 @@ WORKDIR /app
 # 메모리에서 다시 컴파일해 시작이 느려진다(전에는 root가 빌드 중 모델을 받으며 import한 모듈의 .pyc가 층에 남았다).
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project --compile-bytecode
+
+# tiktoken 인코딩 층. 청킹(app/services/chunking.py)은 import 때 tiktoken의 cl100k_base 인코딩 파일을 읽는다.
+# tiktoken은 이 파일을 처음 쓸 때 openaipublic.blob.core.windows.net에서 받아 캐시에 두는데, 캐시 기본 위치가
+# /tmp라 컨테이너를 새로 띄울 때마다 다시 받았고, 인터넷이 없으면 import에서 멈춰 서버가 시작하지 못했다. 그래서
+# 빌드 때 고정 경로(TIKTOKEN_CACHE_DIR)에 받아 두고, 실행 때는 같은 ENV로 그 파일을 읽기만 한다. 위 모델의
+# HF_HUB_OFFLINE과 같은 목적이다.
+# - tiktoken은 캐시 파일의 sha256을 라이브러리에 적힌 값과 비교해, 다르면 그 파일을 쓰지 않고 다시 받는다
+#   (tiktoken/load.py). 빌드 때 받은 파일도 같은 검사를 거친다.
+# - 가상환경의 tiktoken(uv.lock의 판)으로 받으려고 uv sync 뒤에 둔다. COPY . . 앞이라 코드만 바꾼 재빌드는 이
+#   층을 그대로 다시 쓴다(인코딩 파일을 다시 받지 않음).
+# - root가 받고 권한은 읽기만 연다. 실행 사용자(app)는 이 캐시를 고쳐 쓸 수 없다.
+# - 인코딩 이름은 청커와 같아야 한다(tests/test_docker_image.py가 확인).
+ENV TIKTOKEN_CACHE_DIR=/opt/tiktoken
+RUN mkdir -p /opt/tiktoken \
+ && python -c "import tiktoken; tiktoken.get_encoding('cl100k_base')" \
+ && chmod -R a+rX /opt/tiktoken
 
 COPY . .
 

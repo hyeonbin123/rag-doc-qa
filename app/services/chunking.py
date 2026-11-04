@@ -50,7 +50,9 @@ HARD_CAP_TOKENS = 1000
 _HEADING_RE = re.compile(r"^(#{1,4})\s+(.*)$")
 _FENCE_RE = re.compile(r"^\s*```")
 
-# 인코딩 객체를 모듈을 불러올 때 한 번만 만들어 재사용한다.
+# 인코딩 객체를 모듈을 불러올 때 한 번만 만들어 재사용한다. tiktoken은 인코딩 파일을 처음 쓸 때 인터넷에서
+# 받아 캐시에 두므로, Docker 이미지는 빌드 때 이 파일을 넣어 둔다(Dockerfile의 TIKTOKEN_CACHE_DIR, 인터넷 없이
+# 시작하려고). 인코딩 이름을 바꾸면 그 RUN도 함께 바꾼다(tests/test_docker_image.py가 확인한다).
 _encoding = tiktoken.get_encoding("cl100k_base")
 
 

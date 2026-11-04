@@ -167,6 +167,8 @@ DB 헬스체크 통과 후 API가 마이그레이션(`alembic upgrade head`)을 
 
 이렇게 다시 빌드한 이미지는 `docker image ls` 기준 약 5.4GB다(2026-10-30. 미리 컴파일한 `.pyc`만큼 가상환경 층이 1.21GB에서 1.54GB로 커지고, 저장소 복사 층은 54MB에서 2MB로 줄었다).
 
+2026-11-05 추가: 청킹이 쓰는 tiktoken 인코딩(`cl100k_base`)도 빌드할 때 이미지에 넣는다(`TIKTOKEN_CACHE_DIR=/opt/tiktoken`). 그 전에는 컨테이너가 시작할 때마다 이 파일을 인터넷(`openaipublic.blob.core.windows.net`)에서 받아서, 인터넷이 없으면 앱을 불러오는 단계에서 멈춰 서버가 시작하지 못했다. 이제 서버는 인터넷 없이 시작한다(문서 적재와 생성기 호출은 따로 네트워크가 필요).
+
 ### 3. 문서 수집 (최초 1회)
 ```bash
 docker compose exec api python -m scripts.ingest_fastapi_docs
