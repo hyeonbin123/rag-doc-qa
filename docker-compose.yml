@@ -21,7 +21,12 @@ services:
       # (README '2. 전체 스택 실행').
       - "${DB_BIND_ADDRESS:-127.0.0.1}:${POSTGRES_HOST_PORT:-5432}:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-raguser}"]
+      # -d로 실제 DB 이름을 준다. -d가 없으면 pg_isready가 사용자 이름과 같은 DB(raguser, 없음)로 접속을
+      # 시도해, 서버 로그에 5초마다 FATAL 'database "raguser" does not exist' 한 줄이 쌓였다. PostgreSQL
+      # 문서대로 pg_isready는 서버가 연결을 받는지만 보므로 이름이 틀려도 healthy 판정은 같지만, 틀린 이름의
+      # 접속 시도는 서버가 실패로 기록한다. 그래서 판정은 전과 같고 로그 잡음만 없어진다. DB 이름은 위
+      # environment의 POSTGRES_DB와 같은 변수를 따른다.
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-raguser} -d ${POSTGRES_DB:-ragdb}"]
       interval: 5s
       timeout: 5s
       retries: 10
