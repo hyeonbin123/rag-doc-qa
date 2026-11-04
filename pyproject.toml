@@ -6,7 +6,7 @@ requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
-    "sqlalchemy[asyncio]>=2.0.52,<2.2",  # 2.1+ installs greenlet (needed by the async engine) only with this extra
+    "sqlalchemy[asyncio]>=2.0.52,<2.2",  # 2.1부터 비동기 엔진에 필요한 greenlet은 이 extra로만 설치된다
     "asyncpg>=0.29",
     "alembic>=1.13",
     "pgvector>=0.3",
@@ -18,7 +18,7 @@ dependencies = [
     "python-multipart>=0.0.9",
     "anthropic>=0.34",
     "sentence-transformers>=3.0",
-    "torch>=2.4",  # listed directly only so tool.uv.sources can pin the CPU build
+    "torch>=2.4",  # 아래 tool.uv.sources가 CPU 빌드로 고정한다(앱 코드도 dtype 등에 직접 import)
     "httpx>=0.27",
     "tiktoken>=0.7",
 ]
@@ -30,7 +30,9 @@ dev = [
     "ruff>=0.5",
 ]
 
-# CPU-only torch: embeddings run on CPU, and PyPI's Linux wheel pulls in ~3GB of CUDA libraries.
+# torch는 CPU 전용 빌드를 쓴다. 임베딩·재정렬을 CPU에서 돌리고, PyPI의 Linux 휠은 CUDA 라이브러리 약 3GB를
+# 함께 끌어오기 때문이다. explicit = true라 이 색인은 tool.uv.sources로 지정한 torch에만 쓰이고, 다른
+# 패키지는 PyPI에서 받는다.
 [tool.uv.sources]
 torch = { index = "pytorch-cpu" }
 
@@ -52,4 +54,4 @@ line-length = 110
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
-ignore = ["B008"]  # FastAPI's Depends() default-argument pattern is intentional
+ignore = ["B008"]  # 인자 기본값에 Depends()를 두는 것은 FastAPI의 의도된 사용법이다

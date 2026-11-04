@@ -1,7 +1,7 @@
-# Scan target for zap/run_zap.sh (docs/security-scan.md): the same api image, but on a copy of the database
-# and with a stand-in generator, so the scan neither writes into ragdb nor runs the LLM. Start it with
+# zap/run_zap.sh가 스캔하는 대상(docs/security-scan.md). 같은 api 이미지를 쓰되 DB 사본과 생성기 대역에
+# 붙여, 스캔이 ragdb에 쓰지도 않고 LLM을 돌리지도 않게 한다. createdb -T ragdb로 사본(SCAN_DB, 기본
+# ragdb_scan)을 만든 뒤 아래 명령으로 띄운다.
 #   docker compose -f docker-compose.yml -f zap/compose.scan.yml up -d --wait api
-# after making the copy (SCAN_DB, default ragdb_scan) with createdb -T ragdb.
 services:
   ollama-stub:
     image: python:3.11-slim-trixie
@@ -21,7 +21,7 @@ services:
       # inspect, /proc/<pid>/environ)에도 그대로 보인다. 여기서 빈 값으로 덮어써 스캔 대상에는 키가 없게 한다.
       ANTHROPIC_API_KEY: ""
       OLLAMA_BASE_URL: http://ollama-stub:11434
-      # One token has to last the whole scan (the default is 30 minutes).
+      # 접근 토큰 하나로 스캔 전체를 버텨야 한다(기본 수명은 30분).
       ACCESS_TOKEN_EXPIRE_MINUTES: "240"
       # 관리자 적재 API를 켜 두되 ZAP은 이 값을 모르게 한다(3차부터). 그래야 스캐너가 보내는 X-Admin-Token이
       # '꺼짐(403 disabled)'에서 멈추지 않고 '틀린 토큰(403 Invalid admin token)' 비교 경로까지 간다. 값은 스캔을

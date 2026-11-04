@@ -1,6 +1,8 @@
-# Pin the Debian codename (trixie, what python:3.11-slim resolves to today) so the next Debian
-# release can't slip in under a floating tag. uv is a fixed release copied from its official
-# image, not whatever the install script serves on the day of the build.
+# 베이스 이미지는 Debian 코드명(trixie, 지금 python:3.11-slim 태그가 가리키는 판)까지 적어 고정한다.
+# 코드명이 없는 태그는 다음 Debian 판이 나오면 그쪽으로 옮겨 가, 같은 Dockerfile이 어느 날부터 다른 OS
+# 위에서 빌드된다. uv도 설치 스크립트로 받지 않고 공식 이미지에서 정해진 릴리스를 복사한다. 설치 스크립트는
+# 빌드하는 날의 최신 판을 주기 때문이다. uv 판을 바꿀 때는 CI 워크플로의 setup-uv 두 곳과 README
+# '로컬 개발'도 함께 바꾼다.
 FROM python:3.11-slim-trixie
 
 COPY --from=ghcr.io/astral-sh/uv:0.12.23 /uv /uvx /bin/
@@ -56,7 +58,9 @@ RUN $HF_CLI download cross-encoder/ms-marco-MiniLM-L-6-v2 --revision 233902d25c4
 RUN $HF_CLI download cross-encoder/mmarco-mMiniLMv2-L12-H384-v1 --revision 1427fd652930e4ba29e8149678df786c240d8825 \
       config.json model.safetensors sentencepiece.bpe.model tokenizer.json tokenizer_config.json special_tokens_map.json
 USER root
-# The models are cached above; without this, every startup still round-trips to the Hub.
+# 모델은 위에서 캐시에 넣어 두었다. HF_HUB_OFFLINE=1이 없으면 그래도 서버가 시작할 때마다 Hub에 요청을
+# 보낸다. 이 값이 있으면 huggingface-hub가 네트워크 없이 캐시만 본다(캐시에 없는 모델은 받지 못해 오류가
+# 난다).
 ENV HF_HUB_OFFLINE=1
 
 WORKDIR /app

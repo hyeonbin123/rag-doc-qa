@@ -1,6 +1,8 @@
 services:
   db:
-    # Same image as CI. The bare pg16 tag moves with every pgvector release and Debian codename.
+    # CI(.github/workflows/ci.yml의 서비스 컨테이너)와 같은 이미지. 판을 적지 않은 pg16 태그는 pgvector
+    # 릴리스와 Debian 코드명이 바뀔 때마다 다른 이미지로 옮겨 가므로 pgvector 판·PostgreSQL 주 판(16)·코드명까지
+    # 고정한다.
     image: pgvector/pgvector:0.8.7-pg16-bookworm
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-raguser}
@@ -10,9 +12,10 @@ services:
       - pgdata:/var/lib/postgresql/data
       - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
     ports:
-      # Override when 5432 is taken on the host: a local Postgres, or a Windows
-      # Hyper-V/WSL excluded port range (see `netsh interface ipv4 show excludedportrange
-      # protocol=tcp`). DATABASE_URL/TEST_DATABASE_URL on the host must use the same port.
+      # 호스트의 5432를 쓸 수 없으면 POSTGRES_HOST_PORT로 바꾼다. 로컬에 Postgres가 이미 떠 있거나,
+      # Windows에서 Hyper-V/WSL이 이 포트를 예약 범위에 넣은 경우다(`netsh interface ipv4 show
+      # excludedportrange protocol=tcp`로 확인). 호스트에서 쓰는 DATABASE_URL·TEST_DATABASE_URL도 같은
+      # 포트로 맞춘다.
       # 호스트의 127.0.0.1에만 연다(기본). DB 기본 비밀번호(ragpass)가 공개돼 있으므로 같은 네트워크의 다른
       # 기기가 접속하지 못하게 한다. 컨테이너끼리(api → db)는 이 게시와 상관없이 compose 네트워크로 붙는다.
       # 게시 주소는 API의 HOST_BIND_ADDRESS와 따로인 DB_BIND_ADDRESS가 정한다. 그래서 데모를 보려고 API를
@@ -38,7 +41,8 @@ services:
         condition: service_healthy
     env_file: .env
     environment:
-      # .env targets an app run on the host; inside the container "localhost" is the container itself.
+      # .env는 호스트에서 실행하는 앱 기준(localhost)이다. 컨테이너 안에서 localhost는 컨테이너 자신이라,
+      # DB는 compose 네트워크의 db 서비스로, Ollama는 호스트(host.docker.internal)로 바꿔 쓴다.
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-raguser}:${POSTGRES_PASSWORD:-ragpass}@db:5432/${POSTGRES_DB:-ragdb}
       OLLAMA_BASE_URL: http://host.docker.internal:11434
     extra_hosts:
