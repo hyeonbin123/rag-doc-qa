@@ -443,7 +443,9 @@ def main() -> int:
     cp.add_argument("--gen", type=Path, nargs="+", required=True, help="판정한 생성 기록(.gen.jsonl)")
     mp = sub.add_parser("median", help="판정 파일 여러 개를 문항별 중앙값으로 합친다")
     mp.add_argument("--labels", nargs="+", required=True, help="합칠 판정 라벨들(보통 3개)")
-    mp.add_argument("--out-label", required=True, help="합친 판정 파일의 라벨")
+    mp.add_argument(
+        "--out-label", required=True, help="합친 판정 파일의 라벨. 입력 라벨과 같으면 안 된다(덮어쓰기 방지)"
+    )
     mp.add_argument("--gen", type=Path, nargs="+", required=True)
     rp = sub.add_parser(
         "repeats",
@@ -525,6 +527,13 @@ def main() -> int:
             print(f"{gen.name}: {args.out_label} <- mean of {', '.join(args.labels)} -> {out}")
         return 0
 
+    # median도 average처럼 출력 라벨이 입력 라벨 중 하나면 쓰기 전에 멈춘다. 같으면
+    # <gen>.<out-label>.judge.jsonl이 입력 판정 파일 자체라 합친 결과가 그 파일을 덮어쓴다. 경계 규칙
+    # (docs/experiments.md v15 절 끝 '규칙 변경 (v16부터): 판정 절차')에서 1회 판정 파일이 덮이면 결정의
+    # 근거가 된 원래 판정이 사라지고, 되살리려면 판정을 다시 돌려야 한다. 판정 파일을 하나도 읽거나 쓰기
+    # 전에 확인하므로 이 오류로 멈추면 아무 파일도 바뀌지 않는다.
+    if args.out_label in args.labels:
+        parser.error("--out-label must differ from the input labels")
     for gen in args.gen:
         per_label = [read_jsonl(judged_path(gen, label)) for label in args.labels]
         out = judged_path(gen, args.out_label)

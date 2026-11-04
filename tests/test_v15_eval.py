@@ -302,6 +302,29 @@ def test_an_average_label_sums_in_half_points_through_generator_arms_and_refusal
     assert result["conditions"]["F3_answer_quality"] is True
 
 
+# median·average 명령은 --out-label이 --labels 중 하나면 아무것도 쓰지 않고 argparse 오류(종료 코드 2)로
+# 멈춘다. 경계 규칙(docs/experiments.md v15 절 끝 '규칙 변경 (v16부터): 판정 절차')은 1회 판정 파일과 이력을
+# 바꾼 추가 판정을 median으로 합치는데, 출력 라벨이 입력 라벨과 같으면 합친 결과가 1회 판정 파일을 덮어써
+# 결정 근거가 사라진다. 그래서 입력 판정 파일의 바이트가 그대로인지까지 본다. average는 전부터 막았고
+# (같은 꼴로 고정), median은 이 확인이 없어 덮어쓰던 것을 막는다.
+@pytest.mark.parametrize("command", ["median", "average"])
+def test_merge_commands_refuse_an_out_label_that_would_overwrite_an_input_judgment(
+    tmp_path, monkeypatch, capsys, command
+):
+    gen = tmp_path / "v16_c5_qa_dev.lg.gen.jsonl"
+    write_jsonl(gen, [_gen_record("d1", "Use Path.", 1000.0, [1])])
+    for label, c in (("J1", 4), ("J1b", 5)):
+        write_jsonl(judged_path(gen, label), [_judgment("d1", c=c, f=c, answer="Use Path.", label=label)])
+    before = judged_path(gen, "J1").read_bytes()
+    argv = ["judge_stability", command, "--labels", "J1", "J1b", "--out-label", "J1", "--gen", str(gen)]
+    monkeypatch.setattr(sys, "argv", argv)
+    with pytest.raises(SystemExit) as excinfo:
+        judge_stability.main()
+    assert excinfo.value.code == 2
+    assert "--out-label must differ from the input labels" in capsys.readouterr().err
+    assert judged_path(gen, "J1").read_bytes() == before
+
+
 # 커밋된 판정 기록이 있는 곳. 아래 두 테스트는 저장된 v15 판정만 읽으므로 DB·Ollama 없이 돈다.
 V15_RUNS = Path(judge_stability.__file__).parent / "runs"
 
