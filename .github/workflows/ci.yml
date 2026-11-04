@@ -22,22 +22,25 @@ jobs:
     services:
       postgres:
         image: pgvector/pgvector:0.8.7-pg16-bookworm
-        # Only the app database exists up front, like a fresh `docker compose up -d db`,
-        # so every run also exercises the test fixtures' database/extension setup.
+        # 처음에는 앱 DB(ragdb)만 있다. 새로 띄운 `docker compose up -d db`와 같은 상태라, 매 실행이 테스트
+        # 픽스처가 ragdb_test DB와 확장(vector, pgcrypto)을 직접 만드는 경로(tests/conftest.py)도 함께 거친다.
         env:
           POSTGRES_USER: raguser
           POSTGRES_PASSWORD: ragpass
           POSTGRES_DB: ragdb
         ports:
           - 5432:5432
+        # 헬스체크는 docker-compose.yml의 db와 같다. -d로 실제 DB 이름을 줘야 pg_isready가 사용자 이름과 같은
+        # 없는 DB(raguser)로 접속을 시도하지 않아, 서비스 로그에 5초마다 FATAL이 남지 않는다(판정은 같음).
         options: >-
-          --health-cmd "pg_isready -U raguser"
+          --health-cmd "pg_isready -U raguser -d ragdb"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
 
     env:
-      # Settings reads these at import time; the tests swap in their own DB session.
+      # 앱 설정(Settings)이 import 때 이 값들을 읽는다. 테스트는 DB 세션을 TEST_DATABASE_URL 쪽으로 바꿔
+      # 끼운다(tests/conftest.py).
       DATABASE_URL: postgresql+asyncpg://raguser:ragpass@localhost:5432/ragdb
       # 32바이트 이상: 더 짧으면 PyJWT가 HS256 키 길이 경고를 내고, 앱도 시작할 때 약한 키 경고를 남긴다.
       JWT_SECRET_KEY: ci-only-secret-not-used-by-any-deployment
@@ -50,7 +53,12 @@ jobs:
       # 돌 수 있기 때문이다. 갱신은 손으로 한다: `gh api repos/<owner>/<repo>/git/ref/tags/<새 태그>`의 object.sha로
       # SHA와 주석을 함께 바꾼다(object.type이 tag인 annotated 태그면 `gh api repos/<owner>/<repo>/git/tags/<그 sha>`를
       # 한 번 더 따라가 커밋 SHA를 얻는다).
+      # persist-credentials: false: checkout이 받은 GITHUB_TOKEN을 git 설정에 남기지 않는다. 뒤 단계는 git으로
+      # 원격에 닿지 않으므로 토큰이 필요 없고, 남겨 두면 같은 작업의 뒤 단계(의존성 설치, 테스트 코드)가 읽을 수
+      # 있다.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       # uv 판은 Dockerfile의 `COPY --from=ghcr.io/astral-sh/uv:0.12.23`과 같게 고정한다. version을 주지 않으면
       # setup-uv가 실행 때의 최신 uv를 받아(2026-10-24 실행은 0.13.5) 이미지 빌드와 CI가 서로 다른 uv로 같은
@@ -80,8 +88,10 @@ jobs:
   audit:
     runs-on: ubuntu-latest
     steps:
-      # 액션 SHA 고정과 uv 판은 test 작업과 같다(이유와 갱신 방법은 그쪽 주석).
+      # 액션 SHA 고정, persist-credentials, uv 판은 test 작업과 같다(이유와 갱신 방법은 그쪽 주석).
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
         with:
