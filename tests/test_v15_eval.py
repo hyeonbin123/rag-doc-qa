@@ -307,22 +307,27 @@ def test_an_average_label_sums_in_half_points_through_generator_arms_and_refusal
 # 바꾼 추가 판정을 median으로 합치는데, 출력 라벨이 입력 라벨과 같으면 합친 결과가 1회 판정 파일을 덮어써
 # 결정 근거가 사라진다. 그래서 입력 판정 파일의 바이트가 그대로인지까지 본다. average는 전부터 막았고
 # (같은 꼴로 고정), median은 이 확인이 없어 덮어쓰던 것을 막는다.
+# 대소문자만 다른 출력 라벨(j1, J1B)도 같이 막는다(2026-11-05). 판정 파일 이름이 <gen>.<라벨>.judge.jsonl이라
+# 대소문자를 가리지 않는 파일 시스템(측정이 도는 Windows NTFS, macOS 기본 APFS)에서는 J1과 j1이 같은 파일이
+# 되어, 문자열을 그대로 비교하던 가드를 지나 입력 판정 파일을 덮어썼다. 대소문자를 가리는 Linux에서는 다른
+# 파일이지만, 가드는 파일 시스템이 아니라 라벨을 보므로 어디서 돌려도 같게 멈춘다.
 @pytest.mark.parametrize("command", ["median", "average"])
+@pytest.mark.parametrize("out_label", ["J1", "j1", "J1B"], ids=["same", "case-of-first", "case-of-second"])
 def test_merge_commands_refuse_an_out_label_that_would_overwrite_an_input_judgment(
-    tmp_path, monkeypatch, capsys, command
+    tmp_path, monkeypatch, capsys, command, out_label
 ):
     gen = tmp_path / "v16_c5_qa_dev.lg.gen.jsonl"
     write_jsonl(gen, [_gen_record("d1", "Use Path.", 1000.0, [1])])
     for label, c in (("J1", 4), ("J1b", 5)):
         write_jsonl(judged_path(gen, label), [_judgment("d1", c=c, f=c, answer="Use Path.", label=label)])
-    before = judged_path(gen, "J1").read_bytes()
-    argv = ["judge_stability", command, "--labels", "J1", "J1b", "--out-label", "J1", "--gen", str(gen)]
+    before = {label: judged_path(gen, label).read_bytes() for label in ("J1", "J1b")}
+    argv = ["judge_stability", command, "--labels", "J1", "J1b", "--out-label", out_label, "--gen", str(gen)]
     monkeypatch.setattr(sys, "argv", argv)
     with pytest.raises(SystemExit) as excinfo:
         judge_stability.main()
     assert excinfo.value.code == 2
     assert "--out-label must differ from the input labels" in capsys.readouterr().err
-    assert judged_path(gen, "J1").read_bytes() == before
+    assert {label: judged_path(gen, label).read_bytes() for label in before} == before
 
 
 # 커밋된 판정 기록이 있는 곳. 아래 두 테스트는 저장된 v15 판정만 읽으므로 DB·Ollama 없이 돈다.

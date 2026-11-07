@@ -425,6 +425,17 @@ def average_judgments(per_label: list[list[dict]], out_label: str, where: str = 
     return merged
 
 
+# median·average의 --out-label이 --labels 중 하나와 같은 판정 파일을 가리키는지 본다(2026-11-05). 판정 파일
+# 이름이 <gen>.<라벨>.judge.jsonl이라, 대소문자를 가리지 않는 파일 시스템(측정이 도는 Windows NTFS, macOS 기본
+# APFS)에서는 대소문자만 다른 라벨(J1과 j1)이 같은 파일이 된다. 그래서 문자열을 그대로 비교하지 않고
+# casefold()로 비교한다(그대로 비교하던 때는 'median --labels J1 J1b --out-label j1'이 가드를 지나 J1 판정
+# 파일을 덮어썼다). 대소문자를 가리는 Linux에서는 둘이 다른 파일이지만, 파일 시스템을 묻지 않고 라벨로 보므로
+# 어디서 돌려도 같게 막는다. 대소문자만 다른 라벨은 기록을 읽을 때도 헷갈려 막아서 잃는 쓰임이 없다.
+def _out_label_overlaps(out_label: str, labels: list[str]) -> bool:
+    folded = out_label.casefold()
+    return any(label.casefold() == folded for label in labels)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="판정 흔들림 진단(v15 I2), 반복 판정 비교, 여러 판정의 중앙값·평균 합치기"
@@ -444,7 +455,9 @@ def main() -> int:
     mp = sub.add_parser("median", help="판정 파일 여러 개를 문항별 중앙값으로 합친다")
     mp.add_argument("--labels", nargs="+", required=True, help="합칠 판정 라벨들(보통 3개)")
     mp.add_argument(
-        "--out-label", required=True, help="합친 판정 파일의 라벨. 입력 라벨과 같으면 안 된다(덮어쓰기 방지)"
+        "--out-label",
+        required=True,
+        help="합친 판정 파일의 라벨. 입력 라벨과 같으면 안 된다(대소문자만 달라도 안 됨, 덮어쓰기 방지)",
     )
     mp.add_argument("--gen", type=Path, nargs="+", required=True)
     rp = sub.add_parser(
@@ -489,7 +502,9 @@ def main() -> int:
         help="합칠 두 판정기의 판정 라벨. 예: J2v15 J3v15(v15 I5의 J2+J3 평균 구성)",
     )
     ap.add_argument(
-        "--out-label", required=True, help="합친 판정 파일의 라벨. 입력 라벨과 같으면 안 된다(덮어쓰기 방지)"
+        "--out-label",
+        required=True,
+        help="합친 판정 파일의 라벨. 입력 라벨과 같으면 안 된다(대소문자만 달라도 안 됨, 덮어쓰기 방지)",
     )
     ap.add_argument("--gen", type=Path, nargs="+", required=True, help="판정한 생성 기록(.gen.jsonl)")
     args = parser.parse_args()
@@ -518,8 +533,8 @@ def main() -> int:
         return 0
 
     if args.command == "average":
-        if args.out_label in args.labels:
-            parser.error("--out-label must differ from the input labels")
+        if _out_label_overlaps(args.out_label, args.labels):
+            parser.error("--out-label must differ from the input labels (ignoring case)")
         for gen in args.gen:
             per_label = [read_jsonl(judged_path(gen, label)) for label in args.labels]
             out = judged_path(gen, args.out_label)
@@ -531,9 +546,10 @@ def main() -> int:
     # <gen>.<out-label>.judge.jsonl이 입력 판정 파일 자체라 합친 결과가 그 파일을 덮어쓴다. 경계 규칙
     # (docs/experiments.md v15 절 끝 '규칙 변경 (v16부터): 판정 절차')에서 1회 판정 파일이 덮이면 결정의
     # 근거가 된 원래 판정이 사라지고, 되살리려면 판정을 다시 돌려야 한다. 판정 파일을 하나도 읽거나 쓰기
-    # 전에 확인하므로 이 오류로 멈추면 아무 파일도 바뀌지 않는다.
-    if args.out_label in args.labels:
-        parser.error("--out-label must differ from the input labels")
+    # 전에 확인하므로 이 오류로 멈추면 아무 파일도 바뀌지 않는다. 대소문자만 다른 라벨도 같은 파일일 수 있어
+    # 함께 막는다(_out_label_overlaps).
+    if _out_label_overlaps(args.out_label, args.labels):
+        parser.error("--out-label must differ from the input labels (ignoring case)")
     for gen in args.gen:
         per_label = [read_jsonl(judged_path(gen, label)) for label in args.labels]
         out = judged_path(gen, args.out_label)
