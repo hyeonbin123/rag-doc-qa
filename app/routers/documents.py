@@ -93,13 +93,15 @@ async def ingest_documents(
         # app/services/ingestion.py 주석).
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="ingestion already running") from exc
     except UnknownDocsRef as exc:
-        # 요청이 준 ref를 GitHub가 모른다(commits API 404·422). 요청을 고치면 되는 오류라 422로 알린다.
+        # 요청이 준 ref를 GitHub가 모른다(commits API 422 'No commit found for SHA'). 요청을 고치면 되는
+        # 오류라 422로 알린다.
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=[UNKNOWN_DOCS_REF_ERROR]
         ) from exc
     except DocsSourceUnavailable as exc:
-        # GitHub 장애(연결 실패·시간 초과·5xx·요청 한도 초과 등). 원인(요청 주소와 상태)은 응답에 싣지 않고
-        # 서버 로그 한 줄에만 남긴다. 운영자는 이 줄로 '우리 버그(500)'와 '상류 장애(502)'를 가른다.
+        # GitHub 쪽 문제(연결 실패·시간 초과·5xx·요청 한도 초과, 저장소·경로를 찾지 못한 404 등). 원인(요청
+        # 주소와 상태)은 응답에 싣지 않고 서버 로그 한 줄에만 남긴다. 운영자는 이 줄로 '우리 버그(500)'와
+        # '상류 장애(502)'를 가른다.
         logger.warning("admin ingestion stopped, docs source unavailable: %s", exc)
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY, detail="docs source unavailable"

@@ -82,8 +82,8 @@ async def test_a_running_ingestion_ends_with_exit_code_1(monkeypatch, capsys):
 @pytest.mark.parametrize(
     "error",
     [
-        ingestion.UnknownDocsRef("no-such-branch", 404),
-        ingestion.UnknownConfiguredDocsRef("no-such-branch", 404),
+        ingestion.UnknownDocsRef("no-such-branch", 422),
+        ingestion.UnknownConfiguredDocsRef("no-such-branch", 422),
         ingestion.DocsSourceUnavailable("GET https://api.github.com/x returned HTTP 503"),
     ],
     ids=["unknown-ref", "unknown-configured-ref", "github-unavailable"],

@@ -227,7 +227,9 @@ FULL_SHA = "c0ffee" + "0" * 34
 
 
 # GitHub를 통째로 흉내 내는 클라이언트를 ingestion.github_client 자리에 끼운다.
-# - GET /repos/{REPO}/commits/{ref}: ref가 known_refs에 있으면 {"sha": FULL_SHA}, 아니면 404.
+# - GET /repos/{REPO}/commits/{ref}: ref가 known_refs에 있으면 {"sha": FULL_SHA}, 아니면 실제 GitHub처럼 422
+#   'No commit found for SHA: <ref>'(GitHub는 모르는 브랜치·태그·SHA에 이렇게 답한다. 404 'Not Found'는
+#   저장소나 경로를 찾지 못할 때다. 2026-11-05에 공개 API로 확인).
 # - GET /repos/{REPO}/git/trees/{FULL_SHA}: pages의 경로를 blob으로 담은 트리.
 # - GET raw.githubusercontent.com/{REPO}/{FULL_SHA}/{path}: pages[path]의 원문.
 # 그 밖의 요청은 404. 요청한 URL은 돌려주는 목록에 차례로 모아 테스트가 확인한다.
@@ -244,7 +246,7 @@ def serve_github(monkeypatch, pages: dict[str, str], known_refs: set[str]) -> li
             ref = path[len(commits_prefix) :]
             if ref in known_refs:
                 return httpx.Response(200, json={"sha": FULL_SHA})
-            return httpx.Response(404, json={"message": f"No commit found for SHA: {ref}"})
+            return httpx.Response(422, json={"message": f"No commit found for SHA: {ref}", "status": "422"})
         if request.url.host == "api.github.com" and path == tree_path:
             tree = [{"path": page, "type": "blob"} for page in pages]
             return httpx.Response(200, json={"tree": tree, "truncated": False})
@@ -350,10 +352,11 @@ async def test_an_unsafe_ref_is_rejected_before_any_github_request(monkeypatch, 
     assert requests == []
 
 
-# GitHub가 모르는 ref(없는 브랜치, 오타 난 SHA)는 commits 조회의 404에서 트리·원문을 하나도 받지 않고 끝난다.
-# 예전에는 40자가 아닌 값이 트리 조회에서 404로, 트리 조회를 통과한 긴 값은 문서 행을 flush할 때 DataError로
-# 끝났다. 2026-11-05부터는 404가 httpx.HTTPStatusError 그대로가 아니라 UnknownDocsRef(물은 ref와 상태 코드를
-# 담음)로 올라와, 관리자 API가 500 대신 422로 답한다(tests/test_documents.py).
+# GitHub가 모르는 ref(없는 브랜치, 오타 난 SHA)에는 commits 조회가 422 'No commit found for SHA'로 답하고,
+# 적재는 그 자리에서 트리·원문을 하나도 받지 않고 끝난다. 예전에는 40자가 아닌 값이 트리 조회에서 404로, 트리
+# 조회를 통과한 긴 값은 문서 행을 flush할 때 DataError로 끝났다. 2026-11-05부터는 이 422가
+# httpx.HTTPStatusError 그대로가 아니라 UnknownDocsRef(물은 ref와 상태 코드를 담음)로 올라와, 관리자 API가 500
+# 대신 422로 답한다(tests/test_documents.py).
 @pytest.mark.asyncio
 async def test_a_ref_github_does_not_know_fails_before_any_download(monkeypatch):
     requests = serve_github(monkeypatch, PAGES, known_refs=set())
@@ -362,7 +365,30 @@ async def test_a_ref_github_does_not_know_fails_before_any_download(monkeypatch)
         with pytest.raises(ingestion.UnknownDocsRef) as excinfo:
             await ingestion.resolve_commit_sha(client, "no-such-branch")
 
-    assert (excinfo.value.ref, excinfo.value.status_code) == ("no-such-branch", 404)
+    assert (excinfo.value.ref, excinfo.value.status_code) == ("no-such-branch", 422)
+    assert len(requests) == 1
+
+
+# commits 조회의 404 'Not Found'는 '모르는 ref'가 아니다. GitHub는 모르는 ref에는 422로 답하고 404는 저장소나
+# 경로를 찾지 못할 때 쓰므로(2026-11-05에 공개 API로 확인), 요청이 ref를 줬든(commit_sha) 서버 기본 ref를
+# 물었든(None) 상류 문제인 DocsSourceUnavailable(관리자 API 502)로 끝나야 한다. 404를 모르는 ref로 묶으면
+# 저장소 주소가 404가 되는 상류 문제(예: 저장소 이름 리디렉션이 끊김)에서 '요청의 ref가 틀렸다'(422)나
+# 'FASTAPI_DOCS_COMMIT_SHA를 고쳐라'(500)라는 틀린 안내가 나간다.
+@pytest.mark.asyncio
+@pytest.mark.parametrize("commit_sha", ["master", None], ids=["request-ref", "configured-ref"])
+async def test_a_missing_repository_is_a_source_problem_not_an_unknown_ref(monkeypatch, commit_sha):
+    settings = get_settings().model_copy(update={"fastapi_docs_commit_sha": ""})
+    monkeypatch.setattr(ingestion, "get_settings", lambda: settings)
+    requests: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(str(request.url))
+        return httpx.Response(404, json={"message": "Not Found", "status": "404"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(ingestion.DocsSourceUnavailable, match="returned HTTP 404"):
+            await ingestion.resolve_commit_sha(client, commit_sha)
+
     assert len(requests) == 1
 
 

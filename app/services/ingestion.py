@@ -98,8 +98,9 @@ class IngestionAlreadyRunning(RuntimeError):
 class UnknownDocsRef(RuntimeError):
     """요청이 준 ref(관리자 API의 commit_sha, CLI의 --commit)를 GitHub가 모른다.
 
-    GitHub commits API가 404(없는 브랜치·태그·SHA)나 422(커밋으로 풀 수 없는 값)로 답한 경우다. 요청을 고치면
-    풀리는 클라이언트 오류다. ref는 GitHub에 물은 ref, status_code는 GitHub의 상태 코드다.
+    GitHub commits API가 422 'No commit found for SHA: <ref>'로 답한 경우다(아래 UNKNOWN_REF_STATUS). GitHub는
+    없는 브랜치·태그 이름, 짧은 SHA, 40자 SHA 모두에 이 422로 답한다. 요청을 고치면 풀리는 클라이언트 오류다.
+    ref는 GitHub에 물은 ref, status_code는 GitHub의 상태 코드(지금은 늘 422)다.
     """
 
     def __init__(self, ref: str, status_code: int) -> None:
@@ -127,15 +128,20 @@ class UnknownConfiguredDocsRef(RuntimeError):
 class DocsSourceUnavailable(RuntimeError):
     """GitHub(API·raw 호스트)에 닿지 못했거나 GitHub가 오류 상태로 답해 문서를 받지 못했다.
 
-    연결 실패·시간 초과 같은 요청 오류(httpx.RequestError)와, 2xx가 아닌 응답 중 커밋 해석의 404·422(위 두
-    예외)를 뺀 모든 것(5xx, 요청 한도 초과의 403·429 등)이다. 상류 장애라 잠시 뒤 다시 시도하면 될 수 있다.
-    메시지에는 요청 주소와 원인이 들어간다(GitHub에는 인증 정보를 보내지 않아 주소에 비밀값이 없다).
+    연결 실패·시간 초과 같은 요청 오류(httpx.RequestError)와, 2xx가 아닌 응답 중 커밋 해석의 422(위 두 예외)를
+    뺀 모든 것(5xx, 요청 한도 초과의 403·429, 저장소·경로를 찾지 못한 404 등)이다. 상류 문제라 잠시 뒤 다시
+    시도하면 될 수 있다. 메시지에는 요청 주소와 원인이 들어간다(GitHub에는 인증 정보를 보내지 않아 주소에
+    비밀값이 없다).
     """
 
 
-# GitHub commits API가 '그런 ref는 없다'고 답하는 상태 코드. 404는 없는 브랜치·태그·SHA, 422는 커밋으로 풀 수
-# 없는 값이다.
-UNKNOWN_REF_STATUSES = frozenset({404, 422})
+# GitHub commits API가 '그런 ref는 없다'고 답하는 상태 코드. GitHub는 모르는 ref(없는 브랜치·태그 이름, 짧은
+# SHA, 40자 SHA, 슬래시가 든 ref)에 모두 422 'No commit found for SHA: <ref>'로 답하고, 404 'Not Found'는
+# 저장소나 경로를 찾지 못할 때 쓴다(2026-11-05에 공개 API로 확인). 그래서 404는 모르는 ref로 보지 않고 다른
+# 2xx 아닌 응답처럼 DocsSourceUnavailable(관리자 API 502)로 보낸다. 404까지 모르는 ref로 묶으면, 저장소 주소가
+# 404가 되는 상류 문제(예: 저장소 이름 리디렉션이 끊김)에서 ref를 준 요청은 '요청의 ref가 틀렸다'(422), ref를
+# 주지 않은 요청은 'FASTAPI_DOCS_COMMIT_SHA를 고쳐라'(500)라는 틀린 안내를 받는다.
+UNKNOWN_REF_STATUS = 422
 
 
 # GitHub API·raw 파일을 받는 HTTP 클라이언트. 30초 제한, User-Agent(GitHub API는 User-Agent 없는 요청을 거부),
@@ -149,7 +155,7 @@ def github_client() -> httpx.AsyncClient:
 
 # GitHub(API·raw 호스트)에 GET 하나를 보낸다. 응답을 받지 못한 요청 오류(httpx.RequestError: 연결 실패, 시간
 # 초과, 리디렉션 반복 등)는 DocsSourceUnavailable로 바꾸고, 받은 응답은 상태 코드를 보지 않고 그대로 돌려준다.
-# 상태 코드의 뜻은 부르는 쪽이 정한다(커밋 해석의 404·422는 '모르는 ref', 나머지는 _require_success).
+# 상태 코드의 뜻은 부르는 쪽이 정한다(커밋 해석의 422는 '모르는 ref', 나머지는 _require_success).
 async def _github_get(client: httpx.AsyncClient, url: str, **kwargs) -> httpx.Response:
     try:
         return await client.get(url, **kwargs)
@@ -210,10 +216,10 @@ def default_commit_ref() -> str:
 #   내주므로 다른 내용의 주입은 막지 못한다. 막는 것은 '..' 세그먼트로 다른 API 경로를 두드리는 일(httpx가 점
 #   세그먼트를 정규화한다), 저장 열(String(40))을 넘는 값이 임베딩 뒤에 실패하는 일, 시험 적재 의도와 출처
 #   기록이 어긋나는 일이다.
-# - GitHub가 모르는 ref(commits API의 404·422)면 트리·원문을 받기 전에 끝난다. 요청이 준 ref면 UnknownDocsRef,
-#   ref를 주지 않아 기본 ref를 물은 것이면 UnknownConfiguredDocsRef다(2026-11-05 전에는 둘 다
-#   httpx.HTTPStatusError가 그대로 올라갔다). GitHub에 닿지 못했거나 그 밖의 오류 상태면
-#   DocsSourceUnavailable.
+# - GitHub가 모르는 ref(commits API의 422, 위 UNKNOWN_REF_STATUS)면 트리·원문을 받기 전에 끝난다. 요청이 준
+#   ref면 UnknownDocsRef, ref를 주지 않아 기본 ref를 물은 것이면 UnknownConfiguredDocsRef다(2026-11-05 전에는
+#   둘 다 httpx.HTTPStatusError가 그대로 올라갔다). GitHub에 닿지 못했거나 그 밖의 오류 상태(저장소·경로를
+#   찾지 못한 404 포함)면 DocsSourceUnavailable.
 # - 응답이 커밋 하나(JSON 객체)가 아니거나 그 sha가 40자 16진수가 아니면 RuntimeError(저장 열과 URL이 가정하는
 #   형식). JSON 배열도 같은 RuntimeError로 거부하는 이유: GitHub는 commits/{ref} 아래에 목록을 돌려주는 하위
 #   경로(예: {ref}/statuses, {ref}/pulls)도 두어, 형식 검사를 통과한 ref가 그런 경로에 닿으면 커밋 대신 목록이
@@ -221,7 +227,7 @@ def default_commit_ref() -> str:
 async def resolve_commit_sha(client: httpx.AsyncClient, commit_sha: str | None = None) -> str:
     ref = validate_git_ref(commit_sha) if commit_sha is not None else default_commit_ref()
     resp = await _github_get(client, f"{GITHUB_API}/repos/{REPO}/commits/{ref}")
-    if resp.status_code in UNKNOWN_REF_STATUSES:
+    if resp.status_code == UNKNOWN_REF_STATUS:
         if commit_sha is None:
             raise UnknownConfiguredDocsRef(ref, resp.status_code)
         raise UnknownDocsRef(ref, resp.status_code)

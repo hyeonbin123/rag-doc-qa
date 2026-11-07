@@ -157,7 +157,7 @@ async def test_ingest_reports_a_running_ingestion_as_a_conflict(client, monkeypa
 # --- GitHub가 모르는 ref·GitHub 장애 (2026-11-05) ---
 # 아래 테스트는 적재 함수를 바꾸지 않고 GitHub 쪽 HTTP만 httpx.MockTransport로 흉내
 # 낸다(ingestion.github_client 자리). 그래서 ref 해석부터 라우터의 오류 응답까지 실제 코드가 돈다. 예전에는
-# GitHub가 모르는 ref(commits API의 404)와 GitHub 장애(5xx, 요청 한도 초과, 연결 실패·시간 초과)가 모두
+# GitHub가 모르는 ref(commits API의 422)와 GitHub 장애(5xx, 요청 한도 초과, 연결 실패·시간 초과)가 모두
 # 처리되지 않은 예외라 500이 됐다.
 
 
@@ -205,15 +205,14 @@ async def stored_rows(db_session) -> tuple[int, int]:
     return documents, chunks
 
 
-# 요청이 준 ref를 GitHub가 모르면(commits API 404, 커밋으로 풀 수 없는 값의 422) 422로 답한다. 오류 항목은
-# 다른 검증 오류(위 형식 검사)와 같은 꼴이라 loc이 body.commit_sha를 가리키고, 보낸 값은 되돌려 주지 않는다.
-# 트리와 원문은 받지 않고 DB에도 쓰지 않는다.
+# 요청이 준 ref를 GitHub가 모르면 422로 답한다. GitHub commits API는 모르는 ref(없는 브랜치·태그, 짧은 SHA,
+# 40자 SHA)에 모두 422 'No commit found for SHA: <ref>'로 답한다(2026-11-05에 공개 API로 확인, 가짜 응답도 그
+# 꼴). 오류 항목은 다른 검증 오류(위 형식 검사)와 같은 꼴이라 loc이 body.commit_sha를 가리키고, 보낸 값은
+# 되돌려 주지 않는다. 트리와 원문은 받지 않고 DB에도 쓰지 않는다.
 @pytest.mark.asyncio
-@pytest.mark.parametrize("github_status", [404, 422])
-async def test_ingest_reports_a_ref_github_does_not_know_as_unprocessable(
-    client, db_session, monkeypatch, github_status
-):
-    requests = serve_github(monkeypatch, commits=answer(github_status, json={"message": "No commit found"}))
+async def test_ingest_reports_a_ref_github_does_not_know_as_unprocessable(client, db_session, monkeypatch):
+    unknown = answer(422, json={"message": "No commit found for SHA: no-such-branch", "status": "422"})
+    requests = serve_github(monkeypatch, commits=unknown)
     app.dependency_overrides[require_admin_token] = lambda: None
 
     resp = await client.post("/admin/documents/ingest", json={"commit_sha": "no-such-branch"})
@@ -256,6 +255,31 @@ async def test_ingest_reports_an_unreachable_github_as_a_bad_gateway(
     assert await stored_rows(db_session) == (0, 0)
 
 
+# commits 조회의 404 'Not Found'는 저장소나 경로를 찾지 못했다는 GitHub의 답이라(모르는 ref에는 422로 답한다,
+# 2026-11-05에 공개 API로 확인) 요청이 ref를 줬든 주지 않았든 상류 문제인 502로 답한다. 404를 모르는 ref로
+# 묶으면 저장소 주소가 404가 되는 상류 문제(예: 저장소 이름 리디렉션이 끊김)에서 ref를 준 관리자는 '요청 탓'인
+# 422를, ref를 주지 않은 관리자는 '서버 설정(FASTAPI_DOCS_COMMIT_SHA) 탓'인 500을 받는다. 원인(HTTP 404)은
+# 서버 로그 한 줄에 남는다. 서버 기본 ref는 측정 스냅숏(설정 빈 값)으로 고정해 로컬 설정과 상관없이 돈다.
+@pytest.mark.asyncio
+@pytest.mark.parametrize("body", [{"commit_sha": "master"}, {}], ids=["request-ref", "configured-ref"])
+async def test_a_missing_repository_is_a_bad_gateway_not_an_unknown_ref(
+    client, db_session, monkeypatch, caplog, body
+):
+    settings = get_settings().model_copy(update={"fastapi_docs_commit_sha": ""})
+    monkeypatch.setattr(ingestion, "get_settings", lambda: settings)
+    requests = serve_github(monkeypatch, commits=answer(404, json={"message": "Not Found", "status": "404"}))
+    app.dependency_overrides[require_admin_token] = lambda: None
+
+    with caplog.at_level(logging.WARNING, logger="app.routers.documents"):
+        resp = await client.post("/admin/documents/ingest", json=body)
+
+    assert resp.status_code == 502
+    assert resp.json()["detail"] == "docs source unavailable"
+    assert "returned HTTP 404" in caplog.text
+    assert len(requests) == 1
+    assert await stored_rows(db_session) == (0, 0)
+
+
 # 요청이 ref를 주지 않았는데 서버 기본 ref(설정 FASTAPI_DOCS_COMMIT_SHA)를 GitHub가 모르면, 요청을 고쳐서 풀릴
 # 일이 아닌 서버 설정 오류라 422가 아니라 500으로 남긴다(본문은 다른 예기치 않은 오류와 같은 'Internal Server
 # Error', 원인은 서버 로그의 트레이스백). 기본 테스트 클라이언트는 앱 예외를 테스트로 올리므로
@@ -264,7 +288,8 @@ async def test_ingest_reports_an_unreachable_github_as_a_bad_gateway(
 async def test_an_unknown_configured_ref_stays_a_server_error(client, db_session, monkeypatch):
     settings = get_settings().model_copy(update={"fastapi_docs_commit_sha": "no-such-branch"})
     monkeypatch.setattr(ingestion, "get_settings", lambda: settings)
-    requests = serve_github(monkeypatch, commits=answer(404, json={"message": "No commit found"}))
+    unknown = answer(422, json={"message": "No commit found for SHA: no-such-branch", "status": "422"})
+    requests = serve_github(monkeypatch, commits=unknown)
     app.dependency_overrides[require_admin_token] = lambda: None
     transport = ASGITransport(app=app, raise_app_exceptions=False)
 
