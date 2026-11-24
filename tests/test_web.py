@@ -6,8 +6,10 @@
 # [import] re는 HTML에서 스크립트·스타일·이벤트 속성과 외부 파일 주소를 찾는 데 쓴다. generation은 생성기 장애
 # code 목록(503 응답의 detail.code)을 가져오는 데 쓴다. importlib·config·main_module·Settings·httpx는
 # APP_ENV=production으로 만든 앱(문서 페이지를 끈 앱)을 따로 세워 볼 때 쓴다.
+# logging은 서버가 시작할 때(lifespan) 남기는 경고를 읽는 데 쓴다.
 
 import importlib
+import logging
 import re
 
 import pytest
@@ -201,3 +203,42 @@ async def test_the_waiting_counter_is_not_announced_again_and_again(client):
         assert f"{name}.setAttribute('aria-hidden', 'true')" in body, name
     assert "중이에요" not in tick.group(1)
     assert 'id="log" aria-live="polite"' in html
+
+
+# --- 서버 시작 때의 약한 관리자 토큰 경고 (app/main.py의 lifespan) ---
+
+
+# lifespan(서버 시작 훅)을 모델 없이 한 번 돌린다. 경고를 내는 함수 자체는 tests/test_security.py가
+# 보지만, 서버가 시작에서 그 함수를 부르는 연결이 빠지면 development 운영자는 아무 경고도 받지 못한다.
+# 설정은 넘긴 것으로 바꾸고, 임베딩 모델은 올리지 않으며(가짜로 바꿈), 루트 로거 설정도 건드리지 않는다.
+async def _run_startup(monkeypatch, settings: Settings) -> None:
+    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
+    monkeypatch.setattr(main_module, "get_embedding_service", lambda language: None)
+    monkeypatch.setattr(main_module, "configure_logging", lambda: None)
+    async with main_module.lifespan(main_module.app):
+        pass
+
+
+# 서버가 시작할 때 (켜져 있는) 관리자 적재 토큰이 32바이트 미만이면 경고가 남고, 로그에는 토큰 값이 없다.
+@pytest.mark.asyncio
+async def test_startup_warns_about_a_short_admin_token(monkeypatch, caplog):
+    weak = "weak-marker-7f3a9c1e"
+    settings = Settings(database_url="x", jwt_secret_key="k" * 48, admin_ingest_token=weak, _env_file=None)
+
+    with caplog.at_level(logging.WARNING, logger="app.config"):
+        await _run_startup(monkeypatch, settings)
+
+    assert "ADMIN_INGEST_TOKEN" in caplog.text
+    assert weak not in caplog.text
+
+
+# 충분히 긴 토큰이나 비어 있는(꺼진) 토큰이면 시작이 조용하다.
+@pytest.mark.asyncio
+@pytest.mark.parametrize("token", ["fake-admin-token-for-tests-0123456789abcdef", ""])
+async def test_startup_is_quiet_about_a_long_or_switched_off_admin_token(monkeypatch, caplog, token):
+    settings = Settings(database_url="x", jwt_secret_key="k" * 48, admin_ingest_token=token, _env_file=None)
+
+    with caplog.at_level(logging.WARNING, logger="app.config"):
+        await _run_startup(monkeypatch, settings)
+
+    assert [record for record in caplog.records if record.name == "app.config"] == []

@@ -56,11 +56,51 @@ def jwt_secret_problem(secret: str, algorithm: str = "HS256") -> str | None:
     return None
 
 
+# 관리자 적재 API(/admin/documents/ingest)가 꺼진 것으로 보는 토큰 값: 비어 있음(설정 기본값)과 예전
+# 기본값이자 .env.example에 있던 공개 예시 문자열. 누구나 아는 값이므로 이 값이면 어떤 헤더가 와도
+# 403이다(app/dependencies.py의 require_admin_token). CLI 적재(scripts/ingest_fastapi_docs.py)는 이 토큰을
+# 쓰지 않으므로 로컬 개발 흐름은 그대로다. 아래 admin_ingest_token_problem(시작 검사)도 같은 값들을
+# '꺼짐'으로 보고 시작을 막지 않는다. 시작 검사와 요청 검사가 서로 다른 목록을 보는 틈이 생기지 않도록 한
+# 곳(여기)에만 두고 app/dependencies.py가 가져다 쓴다.
+PLACEHOLDER_ADMIN_TOKENS = frozenset({"", "change-me-admin-token"})
+# 관리자 적재 토큰이 켜져 있을 때(위 값이 아닐 때) 받는 최소 길이(바이트). JWT 비밀키의 최소 길이
+# (MIN_JWT_SECRET_BYTES)와 같은 32바이트다. README가 만들라고 안내하는 secrets.token_urlsafe(32)는 문자
+# 43개라 넘고, 사람이 고른 admin·password 같은 짧은 값은 걸린다. 이 API는 실패한 요청 횟수를 제한하지
+# 않고(실패마다 경고 로그 한 줄뿐) 토큰 하나로 문서 삭제까지 하는 적재를 돌리므로, 토큰이 맞히기 어려운
+# 길이여야 한다.
+MIN_ADMIN_INGEST_TOKEN_BYTES = 32
+
+
+# 관리자 적재 토큰(ADMIN_INGEST_TOKEN)의 문제를 사람이 읽을 문장으로 돌려준다(문제가 없으면 None). JWT
+# 비밀키 검사(jwt_secret_problem)와 같은 꼴이지만 두 가지가 다르다.
+# - 비어 있거나 공개 예시 값이면 문제가 아니다. 그 값은 관리자 적재 API가 꺼진 상태라 토큰이 지킬 것이
+#   없고, 지금까지 그 값으로도 서버가 시작했다. 켜진 토큰만 길이를 본다. 앞뒤 공백을 뗀 값으로 판정하는
+#   것은 require_admin_token과 같다(공백뿐인 값도 꺼짐).
+# - 길이도 앞뒤 공백을 뗀 값의 UTF-8 바이트 수로 센다. 공백으로 길이만 채운 짧은 값이 검사를 피하지 못하게
+#   한다.
+# 돌려주는 문장은 시작 오류와 경고 로그에 그대로 나가므로 토큰 값도 실제 길이도 담지 않는다.
+def admin_ingest_token_problem(token: str) -> str | None:
+    stripped = token.strip()
+    if stripped in PLACEHOLDER_ADMIN_TOKENS:
+        return None
+    if len(stripped.encode("utf-8")) < MIN_ADMIN_INGEST_TOKEN_BYTES:
+        return (
+            f"ADMIN_INGEST_TOKEN is shorter than {MIN_ADMIN_INGEST_TOKEN_BYTES} bytes "
+            "(use a random value, or leave it empty to keep the admin ingest API off)"
+        )
+    return None
+
+
 # 설정 모델. 필드 이름의 대문자 형태가 환경 변수 이름이다(예: retrieval_mode ↔ RETRIEVAL_MODE).
 class Settings(BaseSettings):
     # env_file=".env": 현재 작업 폴더의 .env를 읽는다(실제 환경 변수가 있으면 그쪽이 우선). extra="ignore":
     # .env에는 compose만 쓰는 POSTGRES_USER 같은 키도 있으므로 모르는 키가 있어도 오류를 내지 않는다.
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    # hide_input_in_errors=True: 검증 오류 문자열에 pydantic이 붙이는 입력값(input_value=...)을 뺀다. 모델
+    # 검증기(아래 _refuse_*)가 낸 오류는 검증에 넘어간 입력 전체(dict)의 앞뒤 일부가 입력값으로 찍히는데,
+    # 환경 변수로 설정을 줄 때 그 dict의 마지막 키가 admin_ingest_token이라 시작을 거부하는 오류가 이
+    # 토큰의 값(끝부분)을 로그에 그대로 실었다. 오류 항목의 loc·type·msg와 ValidationError.errors()는
+    # 그대로라 어느 설정이 왜 틀렸는지는 똑같이 알 수 있다.
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore", hide_input_in_errors=True)
 
     # 기본값이 없는 필수 설정. DB 주소와 JWT 서명 키가 없으면 Settings()를 만들 때 검증 오류로 앱이 뜨지
     # 않는다.
@@ -158,6 +198,9 @@ class Settings(BaseSettings):
     # admin_ingest_token: 관리자 적재 API(/admin/documents/ingest)의 X-Admin-Token 헤더와 비교하는
     # 값(app/dependencies.py의 require_admin_token). 기본값은 비어 있고, 비어 있거나 예전 공개 예시
     # 값('change-me-admin-token')이면 관리자 적재 API가 꺼진다(403). 쓰려면 .env에 추측할 수 없는 값을 넣는다.
+    # 켜 두려면 32바이트 이상이어야 한다(위 admin_ingest_token_problem): 더 짧으면 production은 시작하지
+    # 않고 (아래 _refuse_weak_admin_token_in_production), 그 밖의 환경은 시작할 때
+    # 경고한다(warn_if_weak_admin_ingest_token).
     fastapi_docs_commit_sha: str = ""
     admin_ingest_token: str = ""
 
@@ -196,6 +239,20 @@ class Settings(BaseSettings):
             raise ValueError(f"{problem}; refusing to start with APP_ENV=production")
         return self
 
+    # APP_ENV=production일 때만 짧은 관리자 적재 토큰을 거부한다. 위 _refuse_weak_secret_in_production과
+    # 같은 방식이다: ValueError가 ValidationError가 되어 Settings()가 실패하므로 uvicorn
+    # 시작(app/main.py)과 Alembic(alembic/env.py)이 멈춘다. 비어 있거나 공개 예시 값인(관리자 적재 API가
+    # 꺼진) 설정은 그대로 받는다. 이 검증기는 JWT 비밀키 검증기 다음에 돌므로 두 설정이 모두 약하면 JWT 쪽
+    # 오류가 먼저 나오고, 그것을 고친 뒤 다음 시작에서 이 오류가 나온다. 오류 문구에는 토큰 값이
+    # 없다(admin_ingest_token_problem). pydantic이 붙이는 입력값도 model_config의 hide_input_in_errors가
+    # 막는다.
+    @model_validator(mode="after")
+    def _refuse_weak_admin_token_in_production(self) -> "Settings":
+        problem = admin_ingest_token_problem(self.admin_ingest_token)
+        if self.app_env == "production" and problem:
+            raise ValueError(f"{problem}; refusing to start with APP_ENV=production")
+        return self
+
 
 # 개발 모드에서 JWT 비밀키가 약하면 눈에 띄는 경고를 남기고 True를 돌려준다(괜찮으면 False). 서버 시작 때
 # app/main.py의 lifespan이 한 번 부른다. 값 자체는 로그에 쓰지 않는다. 안내하는 최소 길이는 설정한 서명
@@ -214,6 +271,27 @@ def warn_if_weak_jwt_secret(settings: Settings) -> bool:
         problem,
         MIN_JWT_SECRET_BYTES_BY_ALGORITHM.get(settings.jwt_algorithm, MIN_JWT_SECRET_BYTES),
         "=" * 78,
+    )
+    return True
+
+
+# 관리자 적재 토큰이 켜져 있는데 짧으면(production이 아닌 환경, production은 설정을 만들 때 이미 시작이
+# 거부된다) 경고를 남기고 True를 돌려준다(충분히 길거나 꺼져 있으면 False). 서버 시작 때 app/main.py의
+# lifespan이 JWT 비밀키 경고 다음에 한 번 부른다. 토큰 값은 로그에 쓰지 않는다. JWT 경고처럼 큰 배너까지는
+# 두지 않는다: 이 토큰은 기본이 꺼진 상태이고, 짧은 값을 일부러 둔 경우에만 나오는 경고라서다.
+def warn_if_weak_admin_ingest_token(settings: Settings) -> bool:
+    problem = admin_ingest_token_problem(settings.admin_ingest_token)
+    if problem is None:
+        return False
+    logger.warning(
+        "INSECURE: %s. The admin ingest API (POST /admin/documents/ingest) can delete documents and "
+        "replace the corpus every user is answered from, and failed attempts are not limited, so a "
+        "short token can be guessed.\n"
+        "Set ADMIN_INGEST_TOKEN in .env to a random value of at least %d bytes, e.g.\n"
+        '  python -c "import secrets; print(secrets.token_urlsafe(32))"\n'
+        "APP_ENV=production refuses to start with such a token.",
+        problem,
+        MIN_ADMIN_INGEST_TOKEN_BYTES,
     )
     return True
 

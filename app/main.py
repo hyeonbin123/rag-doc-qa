@@ -27,7 +27,7 @@ from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Res
 from fastapi.staticfiles import StaticFiles
 
 # 앱 내부: 설정, 로깅 설정, 각 라우터, 시작 시 미리 올릴 모델 조회 함수, 생성기 장애 예외, 지원 언어 목록.
-from app.config import get_settings, warn_if_weak_jwt_secret
+from app.config import get_settings, warn_if_weak_admin_ingest_token, warn_if_weak_jwt_secret
 from app.core.logging import configure_logging
 from app.routers import auth, documents, health, logs, query
 from app.services.embedding import get_embedding_service
@@ -46,11 +46,14 @@ logger = logging.getLogger(__name__)
 # 재정렬 모델은 RETRIEVAL_MODE=rerank일 때만 올린다(기본 dense에서는 쓰지 않으므로).
 # JWT 비밀키가 공개 예시 값이거나 짧으면 로깅을 켠 직후 큰 경고를 남긴다(APP_ENV=production이면 설정을 만들 때
 # 이미 시작이 거부된다, app/config.py).
+# 관리자 적재 토큰이 켜져 있는데 32바이트보다 짧을 때도 같은 자리에서 경고한다(production이면 이 경우도 시작이
+# 거부된다. 비어 있는 토큰은 기능이 꺼진 것이라 경고하지 않는다).
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     configure_logging()
     settings = get_settings()
     warn_if_weak_jwt_secret(settings)
+    warn_if_weak_admin_ingest_token(settings)
     rerank = settings.retrieval_mode == "rerank"
     for language in SUPPORTED_LANGUAGES:  # 시작할 때 언어마다 모델을 한 번씩 올린다
         get_embedding_service(language)

@@ -15,7 +15,7 @@ from fastapi import Depends, Header, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import Settings, get_settings
+from app.config import PLACEHOLDER_ADMIN_TOKENS, Settings, get_settings
 from app.db.session import get_db
 from app.models.user import User
 from app.services.embedding import EmbeddingService, get_embedding_service
@@ -90,17 +90,14 @@ def get_reranker(
     return get_reranker_service
 
 
-# 관리자 토큰으로 받지 않는 값: 비어 있음(설정 기본값)과 예전 기본값이자 .env.example에 있던 공개 예시 문자열.
-# 누구나 아는 값이므로 이 값이면 관리자 적재 API를 끈다. CLI 적재(scripts/ingest_fastapi_docs.py)는 이 토큰을
-# 쓰지 않으므로 로컬 개발 흐름은 그대로다.
-PLACEHOLDER_ADMIN_TOKENS = frozenset({"", "change-me-admin-token"})
-
-
 # 관리자 적재 API(/admin/documents/ingest)를 지키는 의존성. X-Admin-Token 헤더가 설정의 admin_ingest_token과
 # 같아야 통과한다. Header(...)라 헤더가 아예 없으면 FastAPI가 422를, 값이 다르면 403을 돌려준다.
 # 적재는 GitHub 접속, DB 변경, 사라진 문서 삭제까지 하는 작업이라 일반 JWT 사용자와 분리된 별도 토큰으로
 # 막는다.
 # - 설정값이 비었거나 공개 예시 값이면 어떤 헤더가 와도 403이다(API 포트는 compose가 모든 인터페이스에 연다).
+#   '꺼짐'으로 보는 값의 집합(PLACEHOLDER_ADMIN_TOKENS)은 시작 검사와 같은 것을 쓰려고 app/config.py에 있다.
+# - 이 함수는 토큰의 길이를 보지 않는다. 켜져 있는 토큰이 32바이트보다 짧은 설정은 시작할 때 app/config.py가
+#   거른다(production은 시작 거부, 그 밖의 환경은 경고).
 # - 비교는 secrets.compare_digest로 해 일치하는 앞부분 길이에 따라 응답 시간이 달라지지 않게 한다. 바이트로
 #   바꿔 넘기는 이유: 헤더는 latin-1로 풀리므로 ASCII 밖 문자가 올 수 있는데, compare_digest는 ASCII 밖
 #   문자가 든 str을 받으면 TypeError(500)를 낸다.
