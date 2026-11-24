@@ -5,7 +5,12 @@
 # '로컬 개발'도 함께 바꾼다.
 FROM python:3.11-slim-trixie
 
-COPY --from=ghcr.io/astral-sh/uv:0.12.23 /uv /uvx /bin/
+# uv 판은 0.13.4 이상이어야 한다. 그보다 앞선 판은 번들한 루트 인증서 묶음에 emSign의 ECC 루트가 들어
+# 있고, 그 아래 중간 CA 여덟 개의 개인키가 침해돼(공개 권고 GHSA-hq85-5cpj-mr62) 그 키를 가진 쪽이
+# 네트워크 경로에 있으면 uv가 받는 내용을 바꿔칠 수 있다. 이 빌드에서는 uv.lock의 해시로 검사되지 않는
+# 길인 uvx 내려받기(아래 모델 층의 HF_CLI)가 그 영향을 받는다. 그래서 2026-11-24에 0.12.23에서 0.13.6으로
+# 올렸다.
+COPY --from=ghcr.io/astral-sh/uv:0.13.6 /uv /uvx /bin/
 ENV PATH="/app/.venv/bin:${PATH}"
 
 # 서버는 root가 아닌 app 사용자(uid 10001)로 돈다(맨 아래 USER). 이 사용자가 쓸 수 있는 곳은 홈(/home/app)과 모델

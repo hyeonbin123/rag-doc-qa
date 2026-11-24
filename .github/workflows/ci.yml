@@ -60,12 +60,15 @@ jobs:
         with:
           persist-credentials: false
 
-      # uv 판은 Dockerfile의 `COPY --from=ghcr.io/astral-sh/uv:0.12.23`과 같게 고정한다. version을 주지 않으면
+      # uv 판은 Dockerfile의 `COPY --from=ghcr.io/astral-sh/uv:0.13.6`과 같게 고정한다. version을 주지 않으면
       # setup-uv가 실행 때의 최신 uv를 받아(2026-10-24 실행은 0.13.5) 이미지 빌드와 CI가 서로 다른 uv로 같은
       # uv.lock을 읽는다. 판을 바꿀 때는 Dockerfile, 아래 audit 작업, README의 '로컬 개발'을 함께 바꾼다.
+      # 2026-11-24: 고정 판을 0.12.23에서 0.13.6으로 올렸다. 0.13.4보다 앞선 uv는 번들한 루트 인증서에
+      # 키가 침해된 중간 CA의 루트가 들어 있어 공개 권고(GHSA-hq85-5cpj-mr62)에 든다(이유는 Dockerfile의
+      # uv 줄 위 주석).
       - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
         with:
-          version: "0.12.23"
+          version: "0.13.6"
           enable-cache: true
 
       - name: Install dependencies
@@ -112,7 +115,7 @@ jobs:
       # 이득도 작다.
       - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
         with:
-          version: "0.12.23"
+          version: "0.13.6"
           enable-cache: false
 
       # shell: bash를 적으면 `bash -eo pipefail`로 돈다(적지 않은 기본 셸은 `bash -e`뿐이라 파이프 앞쪽 명령이

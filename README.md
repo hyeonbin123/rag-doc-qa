@@ -223,7 +223,7 @@ uv sync
 uv run alembic upgrade head   # DATABASE_URL이 로컬 Postgres를 가리켜야 함
 uv run uvicorn app.main:app --reload
 ```
-uv 판은 0.12.23으로 맞춘다. Docker 이미지(`Dockerfile`의 `COPY --from=ghcr.io/astral-sh/uv:0.12.23`)와 CI(`.github/workflows/ci.yml`의 setup-uv `version`)가 이 판으로 고정돼 있어서, 로컬에서도 같은 판을 쓰면(독립 설치본이면 `uv self update 0.12.23`) 세 곳이 같은 uv로 `uv.lock`을 다룬다. 더 새 판도 지금 `uv.lock`을 바꾸지 않고 읽지만(2026-10-29 uv 0.13.1로 `uv lock --check` 확인), 고정한 판을 바꿀 때는 세 곳을 함께 바꾼다.
+uv 판은 0.13.6으로 맞춘다. Docker 이미지(`Dockerfile`의 `COPY --from=ghcr.io/astral-sh/uv:0.13.6`)와 CI(`.github/workflows/ci.yml`의 setup-uv `version`)가 이 판으로 고정돼 있어서, 로컬에서도 같은 판을 쓰면(독립 설치본이면 `uv self update 0.13.6`) 세 곳이 같은 uv로 `uv.lock`을 다룬다. 더 새 판도 지금 `uv.lock`을 바꾸지 않고 읽지만(2026-10-29 uv 0.13.1로 `uv lock --check` 확인), 고정한 판을 바꿀 때는 세 곳을 함께 바꾼다. 2026-11-24 추가: 고정 판을 0.12.23에서 0.13.6으로 올렸다. 0.13.4보다 앞선 uv는 번들한 루트 인증서 묶음에 키가 침해된 중간 CA의 루트가 들어 있어(공개 권고 GHSA-hq85-5cpj-mr62) 네트워크 경로의 공격자가 uv가 받는 내용을 바꿔칠 수 있다. 0.13.6도 지금 `uv.lock`을 바꾸지 않고 읽고(`uv lock --check`), CI audit 단계의 `uv export`는 0.12.23과 같은 85개 목록을 낸다. 위 문장의 '더 새 판'은 0.12.23을 고정하던 때의 확인이다. 로컬 uv가 0.13.4보다 앞선 판이면 `uv self update 0.13.6`으로 올린다.
 
 ## 테스트
 
