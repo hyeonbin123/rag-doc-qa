@@ -29,13 +29,21 @@ FastAPI 공식 문서(영어 원문 154개, 한국어 번역 123개, 청크 1,53
 ## 구조
 
 ```mermaid
-flowchart LR
+flowchart BT
+    %% 줄 둘로 놓는다(위: 질문 처리, 아래: 수집). 한 줄로 길게 놓으면 README 폭에서 글자가 읽을 수 없게 작아지고,
+    %% GitHub 그림 보기 도구가 오른쪽 아래에 늘 띄우는 확대·이동 버튼이 마지막 상자를 가린다.
     subgraph ingest["수집 (변경된 문서만 다시 처리)"]
+        direction LR
         GH["GitHub<br/>FastAPI 문서<br/>영어 원문 + 한국어 번역"] --> CL["마크다운 정제<br/>청킹"] --> EP["언어별 임베딩<br/>en BGE-small<br/>ko Granite-311M"]
     end
-    EP --> PG[("PostgreSQL 16<br/>언어별 HNSW 인덱스<br/>(dense 검색은<br/>정확 탐색으로 고정)<br/>tsvector GIN")]
+    ingest --> PG[("PostgreSQL 16<br/>언어별 HNSW 인덱스<br/>(dense 검색은<br/>정확 탐색으로 고정)<br/>tsvector GIN")]
     subgraph ask["POST /query/ask"]
-        Q["질문 + JWT"] --> LANG["질문 언어 판별<br/>한글이 있으면 ko"] --> EQ["같은 언어 모델로<br/>질문 임베딩"] --> MODE{"RETRIEVAL_MODE"}
+        direction LR
+        subgraph prep[" "]
+            direction TB
+            Q["질문 + JWT"] --> LANG["질문 언어 판별<br/>한글이 있으면 ko"] --> EQ["같은 언어 모델로<br/>질문 임베딩"]
+        end
+        prep --> MODE{"RETRIEVAL_MODE"}
         MODE -->|dense| D["벡터 검색"]
         MODE -->|hybrid| H["벡터 + BM25<br/>가중 RRF"]
         MODE -->|rerank| R["벡터·BM25 후보를<br/>언어별 cross-encoder로 재채점"]
@@ -44,9 +52,7 @@ flowchart LR
         R --> GEN
         GEN --> LOG["query_logs<br/>검색 결과·단계별 지연"]
     end
-    PG --> D
-    PG --> H
-    PG --> R
+    PG --> ask
 ```
 
 ## 화면
