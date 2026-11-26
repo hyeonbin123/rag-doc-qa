@@ -28,6 +28,14 @@ dev = [
     "pytest>=8.2",
     "pytest-asyncio>=0.23",
     "ruff>=0.5",
+    # MCP 검색 도구(app/mcp_server.py)의 시험이 이 환경에서 돌도록 아래 mcp 그룹을 품는다.
+    { include-group = "mcp" },
+]
+# MCP 검색 도구만 쓰는 SDK. 기본 의존성이 아니라 그룹으로 둔 이유: 서비스 이미지는 `uv sync --no-dev`로
+# 만들어 이 그룹을 설치하지 않으므로, HTTP 서비스의 의존성 목록이 도구를 더하기 전과 같게 남는다.
+# 도구만 쓰려면 `uv sync --group mcp`, 개발 환경(`uv sync`)에는 dev 그룹을 거쳐 함께 깔린다.
+mcp = [
+    "mcp>=2.3,<3",
 ]
 
 # torch는 CPU 전용 빌드를 쓴다. 임베딩·재정렬을 CPU에서 돌리고, PyPI의 Linux 휠은 CUDA 라이브러리 약 3GB를
